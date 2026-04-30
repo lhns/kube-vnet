@@ -6,9 +6,10 @@ on:
   pull_request:
     branches: [main]
 
-# Two CNI lanes run sequentially: kube-router first (faster boot, cheaper
-# fail-fast signal), Calico only on success (covers a more complex enforcer
-# without paying its bootstrap cost when kube-router already failed).
+# Two CNI lanes run in parallel: faster wall-clock feedback per PR
+# (~max(kube-router, calico) instead of the sum). We accept the extra CI
+# minutes when one lane fails because the time saved on the common case
+# (both pass) is the larger win.
 
 jobs:
   e2e-kube-router:
@@ -72,7 +73,6 @@ jobs:
   e2e-calico:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    needs: e2e-kube-router
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

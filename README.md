@@ -158,4 +158,4 @@ The three test rungs (unit, integration, e2e) and their CI lanes are documented 
 
 ## License
 
-TBD.
+Apache License 2.0 — see [LICENSE](LICENSE).

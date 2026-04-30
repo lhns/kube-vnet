@@ -48,14 +48,14 @@ Build tag `integration` keeps these out of the default `go test ./...` run becau
 
 Build tag `e2e`. Bootstrap is `hack/e2e-up.sh [kube-router|calico]` locally or `.github/workflows/e2e.yaml` in CI.
 
-#### Two CNI lanes: kube-router and Calico
+#### Two CNI lanes: kube-router and Calico (in parallel)
 
-The same e2e suite runs against **two CNIs sequentially**:
+The same e2e suite runs against **two CNIs in parallel**:
 
-1. **kube-router** (first). Single DaemonSet, iptables-based NetworkPolicy enforcement, ~30s boot. Cheap, fast feedback. Catches the common case.
-2. **Calico** (second, only on success). Tigera-operator-managed install, ~2 min boot. The most widely-deployed NetworkPolicy enforcer in production; runs only after kube-router has already validated correctness so we don't pay its bootstrap cost on broken changes.
+1. **kube-router**. Single DaemonSet, iptables-based NetworkPolicy enforcement, ~30s boot.
+2. **Calico**. Tigera-operator-managed install, ~2 min boot. The most widely-deployed NetworkPolicy enforcer in production.
 
-Sequential rather than parallel: a single failure in either CNI blocks merge, so running them in series saves CI minutes when kube-router catches a regression. We accept ~5 minutes additional wall-time for the Calico lane in exchange for confidence that the operator's output works on both classes of enforcer.
+Parallel rather than sequential: PR feedback time is `max(kube-router, calico)` ≈ 5 min instead of the sum. The common case (both pass) is the optimization target; we accept the extra runner-minutes when one lane fails since the time saved per PR is the larger win.
 
 Why two CNIs at all (we generate stock `NetworkPolicy` regardless): different enforcers have subtly different edge-case behavior (e.g. how they treat policies during pod startup, ordering of allow vs deny when multiple policies match, behavior on Pod IP reuse). Two enforcers caught more than one would; expanding the matrix to Antrea/Cilium has diminishing returns.
 
