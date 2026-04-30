@@ -279,7 +279,7 @@ make generate            # regenerate deepcopy
 make test                # unit tests (sub-second)
 make integration-test    # envtest-backed integration suite (~10s; needs Go only)
 make e2e                 # kind end-to-end (needs Docker). Default CNI: kube-router.
-                         #   override with: ./hack/e2e-up.sh calico
+                         #   override with: ./test/e2e/up.sh calico
 make build               # build the binary into bin/manager
 make docker-build IMG=…  # build the container image
 ```

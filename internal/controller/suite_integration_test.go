@@ -6,7 +6,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
+	goruntime "runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -110,10 +114,43 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	code := m.Run()
+	// Cleanup is consolidated so it runs from every termination path —
+	// normal exit, m.Run() panic, or interrupt signal — without leaking the
+	// envtest etcd / kube-apiserver children.
+	//
+	// On Windows, controller-runtime's testEnv.Stop() reliably calls
+	// TerminateProcess on the children but a small fraction of runs still
+	// leaves a pair behind (suspected race between manager-goroutine
+	// teardown and process kill). Belt-and-braces: after Stop(), forcefully
+	// taskkill any leftover etcd / kube-apiserver. On Linux this is a
+	// silent no-op (taskkill isn't on PATH; the exec.Command call returns
+	// an error we discard).
+	stop := func() {
+		cancel()
+		_ = testEnv.Stop()
+		if goruntime.GOOS == "windows" {
+			for _, name := range []string{"etcd.exe", "kube-apiserver.exe"} {
+				_ = exec.Command("taskkill", "/F", "/IM", name).Run()
+			}
+		}
+	}
 
-	cancel()
-	_ = testEnv.Stop()
+	// Signal handler for Ctrl+C. On Windows os.Interrupt is delivered for
+	// CTRL_C_EVENT / CTRL_BREAK_EVENT; SIGTERM is included for unix shells.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		stop()
+		os.Exit(130)
+	}()
+
+	// Wrap m.Run() so a panic in setup-after-Start or in any Test* still
+	// runs `stop()` before the process exits.
+	code := func() (rc int) {
+		defer stop()
+		return m.Run()
+	}()
 	os.Exit(code)
 }
 

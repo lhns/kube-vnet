@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# e2e-up.sh — bootstrap a kind cluster with a chosen CNI and the kube-vnet operator.
+# test/e2e/up.sh — bootstrap a kind cluster with a chosen CNI and the kube-vnet operator.
 #
-# Usage:  ./hack/e2e-up.sh [kube-router|calico]   (default: kube-router)
+# Usage:  ./test/e2e/up.sh [kube-router|calico]   (default: kube-router)
 #
 # CI uses the helm/kind-action steps in .github/workflows/e2e.yaml directly,
 # but the local-dev path mirrors that flow.
@@ -18,12 +18,14 @@ IMG=${IMG:-kube-vnet:e2e}
 CALICO_VERSION=${CALICO_VERSION:-v3.28.0}
 KUBE_ROUTER_MANIFEST=${KUBE_ROUTER_MANIFEST:-https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml}
 
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# Resolve the script's own directory and the repo root.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 cd "$REPO_ROOT"
 
 echo "==> creating kind cluster $CLUSTER_NAME (CNI=$CNI)"
 if ! kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
-  kind create cluster --name "$CLUSTER_NAME" --config hack/kind-config.yaml
+  kind create cluster --name "$CLUSTER_NAME" --config "$SCRIPT_DIR/kind-config.yaml"
 fi
 
 case "$CNI" in
@@ -38,7 +40,7 @@ case "$CNI" in
     echo "==> installing Calico (tigera operator $CALICO_VERSION)"
     kubectl apply --server-side -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
     kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
-    kubectl apply -f hack/calico-installation.yaml
+    kubectl apply -f "$SCRIPT_DIR/calico-installation.yaml"
     # calico-system pods take a moment to materialize after the Installation CR.
     for i in $(seq 1 60); do
       if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1; then

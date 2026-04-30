@@ -22,7 +22,7 @@ The design doc (`docs/kube-vnet-design.md`) lists items required for a "complete
 
 - **envtest controller suite** — implemented in `internal/controller/integration_test.go` (build tag `integration`). Run via `make integration-test`. See [ADR 0018](0018-test-strategy-envtest-and-kind-calico.md).
 
-- **kind+Calico end-to-end suite** — implemented in `test/e2e/` (build tag `e2e`). Bootstrapped by `hack/e2e-up.sh` or `.github/workflows/e2e.yaml`. See [ADR 0018](0018-test-strategy-envtest-and-kind-calico.md).
+- **kind+Calico end-to-end suite** — implemented in `test/e2e/` (build tag `e2e`). Bootstrapped by `test/e2e/up.sh` or `.github/workflows/e2e.yaml`. See [ADR 0018](0018-test-strategy-envtest-and-kind-calico.md).
 
 ### Still deferred
 

@@ -46,7 +46,7 @@ Build tag `integration` keeps these out of the default `go test ./...` run becau
 - No vnet (in a namespace with a vnet) → blocked by the baseline default-deny
 - `allowedNamespaces.all=true` → cross-namespace traffic flows
 
-Build tag `e2e`. Bootstrap is `hack/e2e-up.sh [kube-router|calico]` locally or `.github/workflows/e2e.yaml` in CI.
+Build tag `e2e`. Bootstrap is `test/e2e/up.sh [kube-router|calico]` locally or `.github/workflows/e2e.yaml` in CI.
 
 #### Two CNI lanes: kube-router and Calico (in parallel)
 
