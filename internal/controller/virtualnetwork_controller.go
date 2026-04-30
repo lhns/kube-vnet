@@ -57,6 +57,11 @@ var nameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // VirtualNetworkReconciler reconciles VirtualNetwork resources into NetworkPolicies.
 type VirtualNetworkReconciler struct {
 	client.Client
+	// APIReader is an uncached reader, used in cases where we just deleted an
+	// object and need a strongly-consistent read to make a follow-up decision
+	// (e.g. baseline GC must not skip due to a stale cache showing the just-
+	// deleted membership policy as present).
+	APIReader   client.Reader
 	Scheme      *runtime.Scheme
 	Recorder    record.EventRecorder
 	LabelPrefix string
@@ -330,7 +335,8 @@ func (r *VirtualNetworkReconciler) applyPolicy(ctx context.Context, p *networkin
 	return r.Patch(ctx, p, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
-// deleteStale removes operator-managed policies for this vnet that aren't in the desired set.
+// deleteStale removes operator-managed policies for this vnet that aren't in
+// the desired set, and GCs the baseline in any namespace that became empty.
 func (r *VirtualNetworkReconciler) deleteStale(
 	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, desired map[string]bool,
 ) error {
@@ -342,19 +348,28 @@ func (r *VirtualNetworkReconciler) deleteStale(
 	}); err != nil {
 		return err
 	}
+	emptied := map[string]struct{}{}
 	for i := range existing.Items {
 		p := &existing.Items[i]
 		if desired[p.Namespace+"/"+p.Name] {
 			continue
 		}
+		emptied[p.Namespace] = struct{}{}
 		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	for ns := range emptied {
+		if err := r.gcBaselineIfEmpty(ctx, ns); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// cleanupForDeleted removes all operator-managed policies for a deleted VirtualNetwork.
+// cleanupForDeleted removes all operator-managed policies for a deleted VirtualNetwork
+// and garbage-collects the baseline in any namespace that no longer has any
+// operator-managed membership policy.
 func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, name string) error {
 	netID := ns + "." + name
 	var policies networkingv1.NetworkPolicyList
@@ -364,11 +379,56 @@ func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, na
 	}); err != nil {
 		return err
 	}
+	touchedNS := map[string]struct{}{}
 	for i := range policies.Items {
 		p := &policies.Items[i]
+		touchedNS[p.Namespace] = struct{}{}
 		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
+	}
+	for nsName := range touchedNS {
+		if err := r.gcBaselineIfEmpty(ctx, nsName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// gcBaselineIfEmpty deletes the kube-vnet-default-deny baseline in ns if there
+// are no operator-managed membership policies left there. The baseline only
+// exists to backstop kube-vnet's membership policies; once the last membership
+// policy in a namespace is gone, the baseline serves no purpose and should not
+// remain to silently isolate workloads.
+func (r *VirtualNetworkReconciler) gcBaselineIfEmpty(ctx context.Context, ns string) error {
+	// Use the uncached reader: we may have just deleted membership policies
+	// and need a strongly-consistent count.
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	var pols networkingv1.NetworkPolicyList
+	if err := reader.List(ctx, &pols,
+		client.InNamespace(ns),
+		client.MatchingLabels{
+			LabelManagedBy: LabelManagedByValue,
+			LabelRole:      LabelRoleMembership,
+		},
+	); err != nil {
+		return err
+	}
+	if len(pols.Items) > 0 {
+		return nil
+	}
+	bp := &networkingv1.NetworkPolicy{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if err := r.Delete(ctx, bp); err != nil && !apierrors.IsNotFound(err) {
+		return err
 	}
 	return nil
 }

@@ -396,5 +396,130 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 	})
 }
 
+// TestIntegration_BaselineGC_OnVNetDelete: deleting the vnet must remove the
+// baseline default-deny in the namespace too, since the baseline only exists
+// to backstop the operator's membership policies. Leaving it behind would
+// silently keep the namespace in a deny-by-default state with no operator
+// resource left to explain it.
+func TestIntegration_BaselineGC_OnVNetDelete(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "bgc")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	v := &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	}
+	mustCreate(t, v)
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+
+	// Wait for the baseline to appear.
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Delete the vnet.
+	if err := testClient.Delete(ctx, v); err != nil {
+		t.Fatalf("delete vnet: %v", err)
+	}
+
+	// Baseline should be GC'd.
+	eventually(t, 10*time.Second, func() error {
+		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("baseline still exists after vnet delete (err=%v)", err)
+	})
+}
+
+// TestIntegration_BaselineGC_TwoVNetsKeepBaseline: deleting one vnet must NOT
+// remove the baseline if another vnet in the same namespace still has members.
+// Guards against over-eager GC.
+func TestIntegration_BaselineGC_TwoVNetsKeepBaseline(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "twovnet")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	a := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: ns}}
+	b := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns}}
+	mustCreate(t, a)
+	mustCreate(t, b)
+	mustCreate(t, makePod(ns, "pa", map[string]string{"kube-vnet/net.a": "true"}))
+	mustCreate(t, makePod(ns, "pb", map[string]string{"kube-vnet/net.b": "true"}))
+
+	// Wait for the baseline.
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Delete vnet a only. b's pod is still a member, so the baseline must stay.
+	if err := testClient.Delete(ctx, a); err != nil {
+		t.Fatalf("delete vnet a: %v", err)
+	}
+
+	// Wait for a's policy to be gone.
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, "kube-vnet-a-"+ns)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("a's policy still exists: %v", err)
+	})
+
+	// Baseline must still be present.
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
+		t.Fatalf("baseline disappeared while vnet b still has members: %v", err)
+	}
+}
+
+// TestIntegration_BaselineGC_ForeignNamespaceEmpties: shrinking
+// allowedNamespaces so that a foreign namespace no longer has any membership
+// policy must GC the baseline in that foreign namespace. Exercises the
+// deleteStale path (different from cleanupForDeleted).
+func TestIntegration_BaselineGC_ForeignNamespaceEmpties(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "fhome")
+	foreign := uniqueNS(t, "fforeign")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(foreign, nil, nil))
+
+	v := &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
+		},
+	}
+	mustCreate(t, v)
+	// Pod in foreign joins via the namespace-prefixed label.
+	mustCreate(t, makePod(foreign, "p", map[string]string{
+		"kube-vnet/net." + home + ".v": "true",
+	}))
+
+	// Wait for the foreign baseline to appear (member triggers it).
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: BaselinePolicyName}, bp)
+	})
+
+	// Now shrink the spec: remove `foreign` from allowedNamespaces.
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "v"}, v); err != nil {
+		t.Fatalf("get vnet: %v", err)
+	}
+	v.Spec.AllowedNamespaces = nil
+	if err := testClient.Update(ctx, v); err != nil {
+		t.Fatalf("update vnet: %v", err)
+	}
+
+	// Foreign membership policy should be deleted (deleteStale path), and
+	// then the baseline in `foreign` should be GC'd.
+	eventually(t, 15*time.Second, func() error {
+		err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: BaselinePolicyName}, bp)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("foreign baseline still exists after allowedNamespaces shrank (err=%v)", err)
+	})
+}
+
 // ensure imports stay used when individual tests are commented out
 var _ = corev1.Namespace{}

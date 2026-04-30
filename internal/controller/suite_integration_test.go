@@ -77,6 +77,7 @@ func TestMain(m *testing.M) {
 
 	r := &VirtualNetworkReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		Recorder:    mgr.GetEventRecorderFor("kube-vnet-test"),
 		LabelPrefix: DefaultLabelPrefix,

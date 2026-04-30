@@ -71,6 +71,7 @@ func main() {
 
 	r := &controller.VirtualNetworkReconciler{
 		Client:      mgr.GetClient(),
+		APIReader:   mgr.GetAPIReader(),
 		Scheme:      mgr.GetScheme(),
 		Recorder:    mgr.GetEventRecorderFor("kube-vnet"),
 		LabelPrefix: labelPrefix,
