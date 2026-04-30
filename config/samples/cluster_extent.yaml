@@ -1,0 +1,32 @@
+# Cluster-extent VirtualNetwork: pods from any namespace can join.
+apiVersion: kube-vnet/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: observability
+  namespace: monitoring
+spec:
+  extent: Cluster
+  description: |
+    Cluster-wide observability network. Apps in any namespace can join with the
+    label kube-vnet/net.monitoring.observability=true.
+---
+# Workload in a foreign namespace joining via the namespace-prefixed label form.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: orders
+  template:
+    metadata:
+      labels:
+        app: orders
+        kube-vnet/net.monitoring.observability: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine

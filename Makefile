@@ -1,0 +1,85 @@
+# Image and tooling
+IMG ?= ghcr.io/lhns/kube-vnet:latest
+CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
+CONTROLLER_GEN_VERSION ?= v0.16.5
+
+.PHONY: all
+all: build
+
+##@ Development
+
+.PHONY: tidy
+tidy: ## go mod tidy
+	go mod tidy
+
+.PHONY: fmt
+fmt: ## go fmt
+	go fmt ./...
+
+.PHONY: vet
+vet: ## go vet
+	go vet ./...
+
+.PHONY: test
+test: ## Run unit tests
+	go test ./... -count=1
+
+.PHONY: build
+build: ## Build the operator binary
+	CGO_ENABLED=0 go build -o bin/manager ./cmd
+
+.PHONY: run
+run: ## Run the operator locally against the current kubeconfig context
+	go run ./cmd
+
+##@ Codegen
+
+.PHONY: controller-gen
+controller-gen:
+	@command -v $(CONTROLLER_GEN) >/dev/null 2>&1 || \
+		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
+
+.PHONY: manifests
+manifests: controller-gen ## Generate CRD and RBAC manifests
+	$(CONTROLLER_GEN) crd paths="./api/v1alpha1/..." output:crd:dir=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
+
+.PHONY: generate
+generate: controller-gen ## Generate deepcopy methods
+	$(CONTROLLER_GEN) object paths="./api/v1alpha1/..."
+
+##@ Docker
+
+.PHONY: docker-build
+docker-build: ## Build the manager image
+	docker build -t $(IMG) .
+
+.PHONY: docker-push
+docker-push: ## Push the manager image
+	docker push $(IMG)
+
+##@ Deploy
+
+.PHONY: install
+install: manifests ## Install CRDs into the current cluster
+	kubectl apply -f config/crd/bases/
+
+.PHONY: uninstall
+uninstall: ## Remove CRDs from the current cluster
+	kubectl delete -f config/crd/bases/ --ignore-not-found
+
+.PHONY: deploy
+deploy: ## Apply the full default kustomization to the cluster
+	kubectl apply -k config/default
+
+.PHONY: undeploy
+undeploy: ## Remove the operator from the cluster
+	kubectl delete -k config/default --ignore-not-found
+
+.PHONY: release-yaml
+release-yaml: ## Render config/default/ into a single release.yaml
+	kubectl kustomize config/default > release.yaml
+
+.PHONY: help
+help:
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) }' $(MAKEFILE_LIST)
