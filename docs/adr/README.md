@@ -26,6 +26,8 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 18. [0018 — Test strategy: unit + envtest + kind+Calico](0018-test-strategy-envtest-and-kind-calico.md)
 19. [0019 — Baseline durability via drift correction; AdminNetworkPolicy deferred](0019-baseline-durability.md)
 20. [0020 — `--default-deny-everywhere` flag for cluster-wide default-deny](0020-default-deny-unmanaged-namespaces.md)
+21. [0021 — Direction modes on join labels (`both` / `ingress` / `egress` / `none`)](0021-direction-modes-on-join-labels.md)
+22. [0022 — Long-form join label accepted in the home namespace](0022-long-form-join-label-in-home-namespace.md)
 
 ## Format
 

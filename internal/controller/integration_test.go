@@ -673,6 +673,154 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
+// ----- direction modes + long-form-in-home tests ---------------------------
+
+// TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
+// direction values produce three direction-class policies in their namespace.
+func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "dir")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "bidi", map[string]string{"kube-vnet/net.v": "both"}))
+	mustCreate(t, makePod(ns, "ingr", map[string]string{"kube-vnet/net.v": "ingress"}))
+	mustCreate(t, makePod(ns, "egr", map[string]string{"kube-vnet/net.v": "egress"}))
+
+	eventually(t, 10*time.Second, func() error {
+		for _, name := range []string{
+			"kube-vnet-v-" + ns,
+			"kube-vnet-v-" + ns + "-ingress",
+			"kube-vnet-v-" + ns + "-egress",
+		} {
+			if _, err := findPolicy(ctx, ns, name); err != nil {
+				return fmt.Errorf("policy %s missing: %v", name, err)
+			}
+		}
+		return nil
+	})
+}
+
+// TestIntegration_DirectionEnum_TrueAliasIsBoth: legacy "true" value still
+// produces the same single bidi policy with the v1alpha1 name.
+func TestIntegration_DirectionEnum_TrueAliasIsBoth(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "alias")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		return err
+	})
+	// And no -ingress / -egress suffixed variants.
+	if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-ingress"); !apierrors.IsNotFound(err) {
+		t.Errorf("ingress policy should not exist for true-only members: %v", err)
+	}
+}
+
+// TestIntegration_DirectionEnum_UnknownValue_Degraded: a typo in the direction
+// value surfaces as InvalidJoiner with reason UnknownDirection.
+func TestIntegration_DirectionEnum_UnknownValue_Degraded(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "unknown")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "typo", map[string]string{"kube-vnet/net.v": "bothh"}))
+
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+			return fmt.Errorf("Degraded != True")
+		}
+		for _, c := range v.Status.Conditions {
+			if c.Type == "Degraded" && strings.Contains(c.Message, ns+"/typo") {
+				return nil
+			}
+		}
+		return fmt.Errorf("Degraded message missing %s/typo: %+v", ns, v.Status.Conditions)
+	})
+}
+
+// TestIntegration_LongForm_InHome: a pod in the home namespace using the
+// prefixed form is a member, with a separate -prefixed-suffix policy
+// generated.
+func TestIntegration_LongForm_InHome(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "longform")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "longform-pod", map[string]string{
+		"kube-vnet/net." + ns + ".v": "true",
+	}))
+
+	eventually(t, 10*time.Second, func() error {
+		// The -prefixed policy is what matches this pod.
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-prefixed")
+		return err
+	})
+	// And status should list the pod as a member.
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		for _, m := range v.Status.Members {
+			if m.Namespace == ns {
+				for _, name := range m.Pods {
+					if name == "longform-pod" {
+						return nil
+					}
+				}
+			}
+		}
+		return fmt.Errorf("longform-pod not in status.members: %+v", v.Status.Members)
+	})
+}
+
+// TestIntegration_LongForm_BothInHome_Conflict: a pod in the home namespace
+// with both forms present and conflicting direction values surfaces as
+// ConflictingDirections.
+func TestIntegration_LongForm_BothInHome_Conflict(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "conflict")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{
+		"kube-vnet/net.v":          "both",
+		"kube-vnet/net." + ns + ".v": "ingress",
+	}))
+
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+			return fmt.Errorf("Degraded != True")
+		}
+		for _, c := range v.Status.Conditions {
+			if c.Type == "Degraded" && strings.Contains(c.Message, ns+"/p") {
+				return nil
+			}
+		}
+		return fmt.Errorf("Degraded does not surface %s/p: %+v", ns, v.Status.Conditions)
+	})
+}
+
 // ----- --default-deny-everywhere flag tests ---------------------------------
 
 // withDefaultDenyEverywhere flips the test's NamespaceReconciler flag for the

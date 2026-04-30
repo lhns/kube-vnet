@@ -39,6 +39,8 @@ const (
 	ReasonInvalidName           = "InvalidName"
 	ReasonNamespaceNotAllowed   = "NamespaceNotAllowed"
 	ReasonNamespaceExcluded     = "NamespaceExcluded"
+	ReasonUnknownDirection      = "UnknownDirection"
+	ReasonConflictingDirections = "ConflictingDirections"
 	ReasonNoIssues              = "NoIssues"
 )
 
@@ -211,8 +213,16 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 
 	totalMembers := 0
-	for _, pods := range members {
-		totalMembers += len(pods)
+	for _, byForm := range members {
+		seen := map[string]struct{}{}
+		for _, byDir := range byForm {
+			for _, pods := range byDir {
+				for _, p := range pods {
+					seen[p] = struct{}{}
+				}
+			}
+		}
+		totalMembers += len(seen)
 	}
 	setMembers(vnet.Namespace, vnet.Name, totalMembers)
 
@@ -280,15 +290,24 @@ func (r *VirtualNetworkReconciler) permits(ctx context.Context, vnet *vnetv1alph
 	return false, nil
 }
 
-// discoverMembers lists pods cluster-wide and partitions them by membership status.
-// A pod is a *member* if it carries the appropriate join key for its namespace AND
-// its namespace is permitted by spec.allowedNamespaces AND its namespace is operator-managed.
-// A pod that carries the namespace-prefixed join key but lives in a non-permitted namespace
-// is recorded as an InvalidJoiner (surfaced via the Degraded condition).
+// discoverMembers lists pods cluster-wide and partitions them into the
+// generator's MembersByNS shape (namespace → key form → direction → pods).
+//
+// A pod becomes a member when it carries a join label key recognized for its
+// namespace AND the value parses to a non-none Direction AND its namespace
+// is operator-managed AND (for foreign namespaces) the vnet's
+// allowedNamespaces permits it.
+//
+// The home namespace accepts both bare and prefixed forms; conflicting
+// directions across the two forms surface as InvalidJoiner with reason
+// ConflictingDirections. Unknown direction values surface as
+// UnknownDirection. Pods in excluded / disabled namespaces surface as
+// NamespaceExcluded; pods in non-permitted foreign namespaces as
+// NamespaceNotAllowed.
 func (r *VirtualNetworkReconciler) discoverMembers(
 	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork,
-) (members map[string][]string, invalid []InvalidJoiner, err error) {
-	members = map[string][]string{}
+) (members map[string]map[KeyForm]map[Direction][]string, invalid []InvalidJoiner, err error) {
+	members = map[string]map[KeyForm]map[Direction][]string{}
 	prefix := r.labelPrefix()
 	bareKey := prefix + "net." + vnet.Name
 	prefixedKey := prefix + "net." + vnet.Namespace + "." + vnet.Name
@@ -299,24 +318,78 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	}
 	for i := range pods.Items {
 		p := &pods.Items[i]
-		// Pick the right key for this pod's namespace.
-		key := prefixedKey
+
+		// Find which forms the pod carries (and parse their direction values).
+		// The home namespace recognizes both forms; foreign namespaces only the
+		// prefixed form.
+		bareVal, hasBare := "", false
+		prefVal, hasPref := "", false
 		if p.Namespace == vnet.Namespace {
-			key = bareKey
+			bareVal, hasBare = p.Labels[bareKey]
 		}
-		if _, hasLabel := p.Labels[key]; !hasLabel {
+		if v, ok := p.Labels[prefixedKey]; ok {
+			prefVal, hasPref = v, true
+		}
+		if !hasBare && !hasPref {
 			continue
 		}
-		// Drop pods in unmanaged namespaces (operator-level exclusion or
-		// per-namespace kube-vnet/disabled annotation).
+
+		// Parse each present form's direction.
+		bareDir, bareOK := DirectionNone, true
+		if hasBare {
+			bareDir, bareOK = ParseDirection(bareVal)
+		}
+		prefDir, prefOK := DirectionNone, true
+		if hasPref {
+			prefDir, prefOK = ParseDirection(prefVal)
+		}
+
+		// Unknown direction values surface but don't make the pod a member.
+		if !bareOK || !prefOK {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace,
+				PodName:      p.Name,
+				Reason:       ReasonUnknownDirection,
+			})
+			continue
+		}
+
+		// In the home namespace, both forms can be present. If they're both
+		// effective members and disagree, surface ConflictingDirections.
+		if hasBare && hasPref && bareDir != DirectionNone && prefDir != DirectionNone && bareDir != prefDir {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace,
+				PodName:      p.Name,
+				Reason:       ReasonConflictingDirections,
+			})
+			continue
+		}
+
+		// If both present but one of them is None, that's also conflicting
+		// (the user wrote "kube-vnet/net.X: false" and "kube-vnet/net.<homeNS>.X: both"
+		// — ambiguous intent).
+		if hasBare && hasPref && (bareDir == DirectionNone) != (prefDir == DirectionNone) {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace,
+				PodName:      p.Name,
+				Reason:       ReasonConflictingDirections,
+			})
+			continue
+		}
+
+		// At this point: any present form has a meaningful direction (or both
+		// are None — meaning the pod opted out via every form it set).
+		if (hasBare && bareDir == DirectionNone) || (hasPref && prefDir == DirectionNone) {
+			// "false"/"none" present — explicit non-membership.
+			continue
+		}
+
+		// Drop pods in unmanaged namespaces.
 		ns, err := r.getNamespace(ctx, p.Namespace)
 		if err != nil {
 			return nil, nil, err
 		}
 		if ns == nil || !r.NSFilter.IsManaged(ns) {
-			// Operator-excluded or per-namespace-disabled. Surface this as an
-			// InvalidJoiner so the user can see why their labeled pod isn't
-			// a member, instead of silently ignoring it.
 			invalid = append(invalid, InvalidJoiner{
 				PodNamespace: p.Namespace,
 				PodName:      p.Name,
@@ -324,28 +397,49 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 			})
 			continue
 		}
-		// Same-namespace pods always count.
-		if p.Namespace == vnet.Namespace {
-			members[p.Namespace] = append(members[p.Namespace], p.Name)
-			continue
-		}
+
 		// Foreign-namespace pod: must be permitted by spec.allowedNamespaces.
-		ok, err := r.permits(ctx, vnet, p.Namespace)
-		if err != nil {
-			return nil, nil, err
+		if p.Namespace != vnet.Namespace {
+			ok, err := r.permits(ctx, vnet, p.Namespace)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !ok {
+				invalid = append(invalid, InvalidJoiner{
+					PodNamespace: p.Namespace,
+					PodName:      p.Name,
+					Reason:       ReasonNamespaceNotAllowed,
+				})
+				continue
+			}
 		}
-		if ok {
-			members[p.Namespace] = append(members[p.Namespace], p.Name)
-		} else {
-			invalid = append(invalid, InvalidJoiner{
-				PodNamespace: p.Namespace,
-				PodName:      p.Name,
-				Reason:       ReasonNamespaceNotAllowed,
-			})
+
+		// Honored member. Record under each form actually present (so the
+		// generator knows which forms to materialize policies for).
+		if members[p.Namespace] == nil {
+			members[p.Namespace] = map[KeyForm]map[Direction][]string{}
+		}
+		if hasBare {
+			if members[p.Namespace][KeyBare] == nil {
+				members[p.Namespace][KeyBare] = map[Direction][]string{}
+			}
+			members[p.Namespace][KeyBare][bareDir] = append(members[p.Namespace][KeyBare][bareDir], p.Name)
+		}
+		if hasPref {
+			if members[p.Namespace][KeyPrefixed] == nil {
+				members[p.Namespace][KeyPrefixed] = map[Direction][]string{}
+			}
+			members[p.Namespace][KeyPrefixed][prefDir] = append(members[p.Namespace][KeyPrefixed][prefDir], p.Name)
 		}
 	}
+
+	// Sort pod lists for deterministic output (used by status.members display).
 	for ns := range members {
-		sort.Strings(members[ns])
+		for form := range members[ns] {
+			for dir := range members[ns][form] {
+				sort.Strings(members[ns][form][dir])
+			}
+		}
 	}
 	return members, invalid, nil
 }
@@ -482,14 +576,32 @@ func (r *VirtualNetworkReconciler) gcBaselineIfEmpty(ctx context.Context, ns str
 }
 
 // updateStatus writes status fields via the subresource.
+//
+// `members` is the generator's nested shape (namespace → form → direction →
+// pods). For status display we collapse it to a flat per-namespace pod list
+// (deduplicated; pods that appear under multiple forms / directions count
+// once).
 func (r *VirtualNetworkReconciler) updateStatus(
 	ctx context.Context,
 	vnet *vnetv1alpha1.VirtualNetwork,
-	members map[string][]string,
+	members map[string]map[KeyForm]map[Direction][]string,
 	policies []vnetv1alpha1.PolicyRef,
 ) error {
 	out := make([]vnetv1alpha1.NamespaceMembers, 0, len(members))
-	for ns, pods := range members {
+	for ns, byForm := range members {
+		seen := map[string]struct{}{}
+		for _, byDir := range byForm {
+			for _, pods := range byDir {
+				for _, p := range pods {
+					seen[p] = struct{}{}
+				}
+			}
+		}
+		pods := make([]string, 0, len(seen))
+		for p := range seen {
+			pods = append(pods, p)
+		}
+		sort.Strings(pods)
 		out = append(out, vnetv1alpha1.NamespaceMembers{Namespace: ns, Pods: pods})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Namespace < out[j].Namespace })
