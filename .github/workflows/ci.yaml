@@ -64,7 +64,7 @@ jobs:
           load: true
           tags: ghcr.io/lhns/kube-vnet:ci
       - name: trivy image scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/lhns/kube-vnet:ci
           format: table
@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: trivy filesystem scan (sources + go.sum)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
