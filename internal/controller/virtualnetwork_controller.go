@@ -63,26 +63,30 @@ type VirtualNetworkReconciler struct {
 	NSFilter    *NamespaceFilter
 }
 
-// +kubebuilder:rbac:groups=kube-vnet,resources=virtualnetworks,verbs=get;list;watch
-// +kubebuilder:rbac:groups=kube-vnet,resources=virtualnetworks/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=kube-vnet,resources=virtualnetworks/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/finalizers,verbs=update
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile implements the controller-runtime Reconciler interface.
-func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Request) (result ctrl.Result, err error) {
 	logger := log.FromContext(ctx).WithValues("vnet", req.NamespacedName)
+	start := time.Now()
+	defer func() { observeReconcile(start, err) }()
 
 	vnet := &vnetv1alpha1.VirtualNetwork{}
 	if err := r.Get(ctx, req.NamespacedName, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
+			clearMembers(req.Namespace, req.Name)
 			return ctrl.Result{}, r.cleanupForDeleted(ctx, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
 	if !vnet.DeletionTimestamp.IsZero() {
+		clearMembers(vnet.Namespace, vnet.Name)
 		return ctrl.Result{}, r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
 	}
 
@@ -101,14 +105,21 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil
 	}
 
-	// Reject home namespace if it is unmanaged.
-	if !r.NSFilter.IsManagedName(vnet.Namespace) {
+	// Reject home namespace if it is unmanaged (operator-level exclusion or
+	// per-namespace kube-vnet/disabled annotation).
+	homeNS, err := r.getNamespace(ctx, vnet.Namespace)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if homeNS == nil || !r.NSFilter.IsManaged(homeNS) {
 		setReady(vnet, metav1.ConditionFalse, ReasonHomeNamespaceExcluded,
 			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
 		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,
-			fmt.Sprintf("home namespace %q is in the operator excluded list", vnet.Namespace))
+			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
 		_ = r.updateStatus(ctx, vnet, nil, nil)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
+		// Clean up any policies that may exist from a previous reconcile.
+		_ = r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
 		return ctrl.Result{}, nil
 	}
 
@@ -130,6 +141,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		desiredKeys[p.Namespace+"/"+p.Name] = true
 		if err := r.applyPolicy(ctx, p); err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
+			applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Inc()
 			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
 				fmt.Sprintf("apply %s/%s: %v", p.Namespace, p.Name, err))
 			setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, err.Error())
@@ -142,21 +154,16 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Ensure baseline in every managed namespace that has members.
 	for ns := range members {
-		if !r.NSFilter.IsManagedName(ns) {
-			continue
-		}
-		nsObj := &corev1.Namespace{}
-		if err := r.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
+		nsObj, err := r.getNamespace(ctx, ns)
+		if err != nil {
 			return ctrl.Result{}, err
 		}
-		if !r.NSFilter.IsManaged(nsObj) {
+		if nsObj == nil || !r.NSFilter.IsManaged(nsObj) {
 			continue
 		}
 		if err := r.applyPolicy(ctx, DesiredBaseline(ns)); err != nil {
 			logger.Error(err, "apply baseline failed", "namespace", ns)
+			applyErrors.WithLabelValues(ApplyErrorBaseline).Inc()
 			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
 				fmt.Sprintf("apply baseline in %s: %v", ns, err))
 			return ctrl.Result{}, err
@@ -184,7 +191,26 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
+
+	totalMembers := 0
+	for _, pods := range members {
+		totalMembers += len(pods)
+	}
+	setMembers(vnet.Namespace, vnet.Name, totalMembers)
+
 	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
+}
+
+// getNamespace fetches a Namespace via the cached client. Returns (nil, nil) if not found.
+func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string) (*corev1.Namespace, error) {
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, client.ObjectKey{Name: name}, ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return ns, nil
 }
 
 // labelPrefix returns the configured label prefix or the default, normalized to end in "/".
@@ -263,8 +289,13 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if _, hasLabel := p.Labels[key]; !hasLabel {
 			continue
 		}
-		// Drop pods in operator-excluded namespaces.
-		if !r.NSFilter.IsManagedName(p.Namespace) {
+		// Drop pods in unmanaged namespaces (operator-level exclusion or
+		// per-namespace kube-vnet/disabled annotation).
+		ns, err := r.getNamespace(ctx, p.Namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ns == nil || !r.NSFilter.IsManaged(ns) {
 			continue
 		}
 		// Same-namespace pods always count.

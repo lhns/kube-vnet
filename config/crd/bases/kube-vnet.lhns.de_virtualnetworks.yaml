@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
-  name: virtualnetworks.kube-vnet
+  name: virtualnetworks.kube-vnet.lhns.de
 spec:
-  group: kube-vnet
+  group: kube-vnet.lhns.de
   names:
     kind: VirtualNetwork
     listKind: VirtualNetworkList

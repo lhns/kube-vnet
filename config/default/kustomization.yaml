@@ -3,7 +3,7 @@ kind: Kustomization
 
 resources:
   - ../manager/namespace.yaml
-  - ../crd/bases/kube-vnet_virtualnetworks.yaml
+  - ../crd/bases/kube-vnet.lhns.de_virtualnetworks.yaml
   - ../rbac/service_account.yaml
   - ../rbac/role.yaml
   - ../rbac/role_binding.yaml

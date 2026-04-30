@@ -24,7 +24,7 @@ This creates the `kube-vnet-system` namespace, the CRD, RBAC, and the controller
 ### 2. Define a VirtualNetwork
 
 ```yaml
-apiVersion: kube-vnet/v1alpha1
+apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
 metadata:
   name: payments
@@ -119,21 +119,41 @@ The implementation's significant decisions are recorded as ADRs in [`docs/adr/`]
 - [0006 — Single per-namespace opt-out via `kube-vnet/disabled`](docs/adr/0006-baseline-default-deny-and-single-opt-out.md)
 - [0009 — Server-side apply with field manager](docs/adr/0009-server-side-apply-with-field-manager.md)
 - [0013 — Pod watch with `handler.Funcs` for removals](docs/adr/0013-pod-watch-with-handler-funcs-for-removals.md)
-- [0014 — Deferred v1 items](docs/adr/0014-deferred-v1-items.md) (custom metrics, envtest, e2e)
+- [0018 — Test strategy: unit + envtest + kind+Calico](docs/adr/0018-test-strategy-envtest-and-kind-calico.md)
+- [0014 — Deferred v1 items](docs/adr/0014-deferred-v1-items.md) (only the label-cardinality stress test remains)
+
+## Observability
+
+The operator exposes the controller-runtime defaults plus six domain-specific metrics on `:8080/metrics`:
+
+| Metric | Type | Description |
+|---|---|---|
+| `kube_vnet_reconciliations_total{result}` | counter | Reconcile outcomes (`success`/`error`) |
+| `kube_vnet_reconcile_duration_seconds` | histogram | Reconcile latency |
+| `kube_vnet_networks_total` | gauge | VirtualNetwork resources observed |
+| `kube_vnet_managed_policies_total` | gauge | NetworkPolicies managed by the operator |
+| `kube_vnet_members_total{network}` | gauge | Members per VirtualNetwork |
+| `kube_vnet_apply_errors_total{kind}` | counter | Apply errors (`membership_policy`/`baseline`) |
+
+Status conditions (`Ready`, `Degraded`) and Kubernetes Events on transitions provide per-resource visibility. See [ADR 0012](docs/adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](docs/adr/0016-emit-events-on-condition-transitions.md).
 
 ## Development
 
 ```bash
-make manifests       # regenerate CRD + RBAC
-make generate        # regenerate deepcopy
-make test            # unit tests
-make build           # build the binary into bin/manager
-make docker-build IMG=...    # build the container image
+make manifests           # regenerate CRD + RBAC
+make generate            # regenerate deepcopy
+make test                # unit tests (sub-second)
+make integration-test    # envtest-backed integration suite (~10s; requires Go)
+make e2e                 # kind+Calico end-to-end (requires Docker; ~5–8 min)
+make build               # build the binary into bin/manager
+make docker-build IMG=…  # build the container image
 ```
+
+The three test rungs (unit, integration, e2e) and their CI lanes are documented in [ADR 0018](docs/adr/0018-test-strategy-envtest-and-kind-calico.md).
 
 ## Status
 
-`v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. See [ADR 0014](docs/adr/0014-deferred-v1-items.md) for the gap to a complete v1 (Prometheus custom metrics, envtest suite, kind+Calico e2e suite).
+`v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. See [ADR 0014](docs/adr/0014-deferred-v1-items.md) for the remaining gap to v1-complete (a label-cardinality stress test).
 
 ## License
 

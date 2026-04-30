@@ -81,6 +81,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := mgr.Add(&controller.MetricsCollector{Client: mgr.GetClient()}); err != nil {
+		setupLog.Error(err, "unable to register metrics collector")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to add healthz")
 		os.Exit(1)

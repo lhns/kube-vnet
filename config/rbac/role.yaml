@@ -21,7 +21,7 @@ rules:
   - list
   - watch
 - apiGroups:
-  - kube-vnet
+  - kube-vnet.lhns.de
   resources:
   - virtualnetworks
   verbs:
@@ -29,13 +29,13 @@ rules:
   - list
   - watch
 - apiGroups:
-  - kube-vnet
+  - kube-vnet.lhns.de
   resources:
   - virtualnetworks/finalizers
   verbs:
   - update
 - apiGroups:
-  - kube-vnet
+  - kube-vnet.lhns.de
   resources:
   - virtualnetworks/status
   verbs:

@@ -1,50 +1,36 @@
 # 0014 — Deferred v1 items
 
-Status: Accepted (deferred)
+Status: Accepted (most items resolved; see below)
 
 ## Context
 
-The design doc (`docs/kube-vnet-design.md`) lists items required for a "complete" v1 that are **not** yet implemented. This ADR records what's owed so future maintainers see the gap is known, not forgotten.
+The design doc (`docs/kube-vnet-design.md`) lists items required for a "complete" v1 that were not implemented in the initial pass. This ADR tracks them. Most have since landed; the remaining one is recorded explicitly so it isn't forgotten.
 
 ## Decision
 
-The following items are intentionally deferred. Each links back to the relevant design-doc section so the original requirement is auditable.
+### Resolved (post-initial-pass)
 
-### Prometheus custom metrics — design § Status / Metrics
+- **Prometheus custom metrics** — implemented. Six metrics registered with the controller-runtime metrics registry on the `:8080` endpoint:
+  - `kube_vnet_reconciliations_total{result}` (counter)
+  - `kube_vnet_reconcile_duration_seconds` (histogram)
+  - `kube_vnet_networks_total` (gauge)
+  - `kube_vnet_managed_policies_total` (gauge)
+  - `kube_vnet_members_total{network}` (gauge)
+  - `kube_vnet_apply_errors_total{kind}` (counter)
 
-Not yet emitted:
+  The first two are updated per-reconcile. `members_total` is updated at the end of a successful reconcile and cleared on vnet deletion. `networks_total` and `managed_policies_total` are updated by a periodic 30-second collector (`MetricsCollector`) that reads cluster-wide state, to avoid biasing toward whichever vnet most recently reconciled.
 
-- `kube_vnet_reconciliations_total{result="success|error"}` (counter)
-- `kube_vnet_reconcile_duration_seconds` (histogram)
-- `kube_vnet_networks_total` (gauge — note: the `extent` label dimension from the original design no longer applies, since `extent` was removed per ADR 0005)
-- `kube_vnet_managed_policies_total` (gauge)
-- `kube_vnet_members_total{network="ns/name"}` (gauge)
+- **envtest controller suite** — implemented in `internal/controller/integration_test.go` (build tag `integration`). Run via `make integration-test`. See [ADR 0018](0018-test-strategy-envtest-and-kind-calico.md).
 
-The controller-runtime default metrics endpoint (`workqueue_*`, `controller_runtime_*`) is exposed on `:8080`; that covers reconcile latency and queue depth. The custom counters above are domain-specific and remain to be added.
+- **kind+Calico end-to-end suite** — implemented in `test/e2e/` (build tag `e2e`). Bootstrapped by `hack/e2e-up.sh` or `.github/workflows/e2e.yaml`. See [ADR 0018](0018-test-strategy-envtest-and-kind-calico.md).
 
-### envtest controller suite — design § Testing / Integration tests
+### Still deferred
 
-Not yet written. Should cover, at minimum:
-
-- Create a VirtualNetwork → assert NetworkPolicies appear with the expected spec.
-- Update `allowedNamespaces` → assert policies are regenerated correctly.
-- Delete a VirtualNetwork → assert all owned policies are removed (including in foreign namespaces).
-- Cross-namespace join to a non-permitted namespace → assert the join is rejected and `Degraded=True, reason=InvalidJoiners` surfaces.
-
-### kind+Calico end-to-end suite — design § Testing / End-to-end tests
-
-Not yet written. Should exercise actual traffic flow on a kind cluster running a NetworkPolicy-enforcing CNI:
-
-- Two pods on the same VirtualNetwork → curl succeeds.
-- Two pods on different (or no) VirtualNetwork → curl times out.
-- Cluster-wide vnet (`allowedNamespaces.all=true`) across two namespaces → enforcement works in both directions.
-
-### Label cardinality stress test — design § Open Questions, Q5
-
-Verify that pods joining N vnets (large N) don't degrade the predicate or selector path in measurable ways. Should be exercised in the e2e suite once it exists.
+- **Label cardinality stress test** — design § Open Questions, Q5. Verify that pods joining N vnets (large N, e.g. 50+) don't degrade the watch predicate or selector path in measurable ways. Best added as one more case in the e2e suite (or a separate benchmark) once the e2e lane is proven stable in CI. Not blocking v1 for typical workloads (1–5 vnets per pod).
 
 ## Consequences
 
-- **Pro**: A single page documenting the gap to v1-complete. Anyone picking up the project knows where to start.
-- **Pro**: The implemented core (CRD, generator, reconciler, baseline, drift correction, cross-namespace cleanup, conditions, events) is functionally complete and tested at the unit level. The deferred items are observability and test depth, not correctness.
-- **Con**: The operator ships without custom metrics, which limits Prometheus-based alerting on operator-specific signals. Workaround: monitor the controller-runtime defaults plus the Kubernetes Events emitted on Degraded/ApplyFailed (per ADR 0016).
+- **Pro**: The original ADR-0014 list is now mostly closed; what remains is small and well-scoped.
+- **Pro**: Operators have domain-specific Prometheus signal (`kube_vnet_*`) for alerting beyond the controller-runtime defaults.
+- **Pro**: PRs gain three test rungs of feedback: unit (sub-second), integration (~10s), e2e (~5–8 min).
+- **Pro**: The cardinality stress test is the only remaining item; it's a benchmark, not a correctness gap.

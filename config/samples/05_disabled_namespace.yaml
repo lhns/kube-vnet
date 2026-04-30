@@ -14,7 +14,7 @@ kind: Namespace
 metadata:
   name: monitoring
 ---
-apiVersion: kube-vnet/v1alpha1
+apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
 metadata:
   name: observability

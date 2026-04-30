@@ -2,6 +2,9 @@
 IMG ?= ghcr.io/lhns/kube-vnet:latest
 CONTROLLER_GEN ?= $(shell go env GOPATH)/bin/controller-gen
 CONTROLLER_GEN_VERSION ?= v0.16.5
+ENVTEST ?= $(shell go env GOPATH)/bin/setup-envtest
+ENVTEST_VERSION ?= release-0.19
+ENVTEST_K8S_VERSION ?= 1.31.0
 
 .PHONY: all
 all: build
@@ -23,6 +26,31 @@ vet: ## go vet
 .PHONY: test
 test: ## Run unit tests
 	go test ./... -count=1
+
+.PHONY: envtest
+envtest: ## Install setup-envtest if missing
+	@command -v $(ENVTEST) >/dev/null 2>&1 || \
+		go install sigs.k8s.io/controller-runtime/tools/setup-envtest@$(ENVTEST_VERSION)
+
+.PHONY: integration-test
+integration-test: envtest manifests ## Run envtest-backed integration tests
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
+	go test -tags integration ./internal/controller/... -count=1 -timeout 300s -v
+
+.PHONY: e2e-up
+e2e-up: ## Bootstrap a kind cluster with Calico + the operator (local dev)
+	./hack/e2e-up.sh
+
+.PHONY: e2e-down
+e2e-down: ## Tear down the local e2e kind cluster
+	./hack/e2e-down.sh
+
+.PHONY: e2e-test
+e2e-test: ## Run the e2e suite against the running e2e cluster
+	go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
+
+.PHONY: e2e
+e2e: e2e-up e2e-test ## Bootstrap + run e2e (local). Use e2e-down to tear down.
 
 .PHONY: build
 build: ## Build the operator binary

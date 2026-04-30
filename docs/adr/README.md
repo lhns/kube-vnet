@@ -23,6 +23,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 15. [0015 — controller-runtime as the operator library](0015-controller-runtime-as-the-operator-library.md)
 16. [0016 — Emit events on condition transitions](0016-emit-events-on-condition-transitions.md)
 17. [0017 — Name validation via CEL and runtime check](0017-name-validation-via-cel-and-runtime-check.md)
+18. [0018 — Test strategy: unit + envtest + kind+Calico](0018-test-strategy-envtest-and-kind-calico.md)
 
 ## Format
 

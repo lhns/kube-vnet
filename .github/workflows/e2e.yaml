@@ -1,0 +1,75 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+
+      - name: create kind cluster (no default CNI)
+        uses: helm/kind-action@v1.10.0
+        with:
+          cluster_name: kube-vnet-e2e
+          config: hack/kind-config.yaml
+          wait: 60s
+
+      - name: install Calico
+        run: |
+          set -euxo pipefail
+          kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
+          kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
+          kubectl apply -f hack/calico-installation.yaml
+          # Calico-system pods take a moment to materialize after the Installation CR.
+          for i in $(seq 1 60); do
+            if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1; then
+              break
+            fi
+            echo "waiting for calico-system to materialize ($i)"
+            sleep 5
+          done
+          kubectl wait --for=condition=Ready pods --all -n calico-system --timeout=300s
+          kubectl wait --for=condition=Ready node --all --timeout=180s
+
+      - name: build operator image
+        run: docker build -t kube-vnet:e2e .
+
+      - name: load image into kind
+        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e
+
+      - name: deploy operator
+        run: |
+          set -euxo pipefail
+          # Patch image + pull policy for the in-cluster locally-loaded image.
+          sed -i 's|ghcr.io/lhns/kube-vnet:latest|kube-vnet:e2e|' config/manager/manager.yaml
+          sed -i 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|' config/manager/manager.yaml
+          kubectl apply -k config/default
+          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
+            -n kube-vnet-system --timeout=180s
+
+      - name: run e2e tests
+        run: go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
+
+      - name: dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "===== events ====="
+          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
+          echo "===== operator logs ====="
+          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
+          echo "===== virtualnetworks ====="
+          kubectl get vnet -A -o yaml || true
+          echo "===== networkpolicies ====="
+          kubectl get networkpolicy -A -o yaml || true
+          echo "===== pods (e2e namespaces) ====="
+          kubectl get pods -A | grep -E '^e2e-' || true

@@ -1,6 +1,6 @@
 // Package v1alpha1 contains API Schema definitions for the kube-vnet v1alpha1 API group.
 // +kubebuilder:object:generate=true
-// +groupName=kube-vnet
+// +groupName=kube-vnet.lhns.de
 package v1alpha1
 
 import (
@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	GroupVersion = schema.GroupVersion{Group: "kube-vnet", Version: "v1alpha1"}
+	GroupVersion = schema.GroupVersion{Group: "kube-vnet.lhns.de", Version: "v1alpha1"}
 
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
