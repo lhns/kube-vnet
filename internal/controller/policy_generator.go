@@ -69,8 +69,8 @@ type GenerateOutput struct {
 
 // JoinLabelKey returns the label key a pod sets to join the given VirtualNetwork
 // from inPodNS. For pods in the VirtualNetwork's home namespace the bare form
-// "<prefix>net.<vnet>" is used; for foreign namespaces (Cluster extent) the
-// namespace-prefixed form "<prefix>net.<homeNS>.<vnet>".
+// "<prefix>net.<vnet>" is used; for pods in any other namespace the namespace-
+// prefixed form "<prefix>net.<homeNS>.<vnet>" is required.
 func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
 	if inPodNS == homeNS {
 		return prefix + "net." + vnet

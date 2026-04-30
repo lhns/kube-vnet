@@ -1,0 +1,45 @@
+# Per-namespace opt-out: kube-vnet/disabled=true on a Namespace makes the operator
+# ignore that namespace entirely — no baseline policy is created, no membership
+# policies are generated, and pods there are not eligible joiners for any
+# VirtualNetwork (regardless of allowedNamespaces).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: legacy
+  annotations:
+    kube-vnet/disabled: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: kube-vnet/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: observability
+  namespace: monitoring
+spec:
+  allowedNamespaces:
+    all: true       # tries to allow every namespace …
+---
+# … but this pod, despite carrying the join label, is ignored because its
+# namespace is opted out via the kube-vnet/disabled annotation. No NetworkPolicy
+# will be generated for the legacy namespace and no baseline will be installed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-app
+  namespace: legacy
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: legacy-app } }
+  template:
+    metadata:
+      labels:
+        app: legacy-app
+        kube-vnet/net.monitoring.observability: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine

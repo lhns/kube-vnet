@@ -1,0 +1,71 @@
+# Allow any namespace whose labels match a selector. Idiomatic for "all prod namespaces".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod-webapp
+  labels:
+    tier: prod
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev-webapp
+  labels:
+    tier: dev
+---
+apiVersion: kube-vnet/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: payments
+  namespace: platform
+spec:
+  description: |
+    Payments services. Reachable from any prod namespace, identified by tier=prod.
+  allowedNamespaces:
+    selector:
+      matchLabels:
+        tier: prod
+---
+# Reachable: prod-webapp matches tier=prod.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: prod-webapp
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata:
+      labels:
+        app: frontend
+        kube-vnet/net.platform.payments: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine
+---
+# NOT reachable: dev-webapp's tier=dev does not match. The pod's join label is ignored,
+# and the VirtualNetwork's status will surface an InvalidJoiner entry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend-dev
+  namespace: dev-webapp
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: frontend-dev } }
+  template:
+    metadata:
+      labels:
+        app: frontend-dev
+        kube-vnet/net.platform.payments: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine

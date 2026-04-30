@@ -1,0 +1,66 @@
+# Two specific foreign namespaces are allowed to join, in addition to the home namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webapp
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: kube-vnet/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: payments
+  namespace: platform
+spec:
+  description: |
+    Payments services. Reachable from the webapp and monitoring namespaces.
+  allowedNamespaces:
+    names:
+      - webapp
+      - monitoring
+---
+# Home-namespace pod uses the bare label form.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: platform
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders } }
+  template:
+    metadata:
+      labels:
+        app: orders
+        kube-vnet/net.payments: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine
+---
+# Foreign-namespace pod uses the namespace-prefixed label form: kube-vnet/net.<homeNS>.<vnet>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: webapp
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: frontend } }
+  template:
+    metadata:
+      labels:
+        app: frontend
+        kube-vnet/net.platform.payments: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine

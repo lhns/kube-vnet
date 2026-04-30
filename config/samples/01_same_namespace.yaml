@@ -1,15 +1,19 @@
-# Namespace-extent VirtualNetwork: only pods in the same namespace can join.
+# Simplest case: only pods in the same namespace as the VirtualNetwork can join.
+# spec.allowedNamespaces is omitted, which is equivalent to "home namespace only".
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
 apiVersion: kube-vnet/v1alpha1
 kind: VirtualNetwork
 metadata:
   name: payments
   namespace: platform
 spec:
-  extent: Namespace
   description: |
-    Connects payments-related services within the platform namespace.
+    Payments services within the platform namespace. No foreign namespace access.
 ---
-# Sample workload joining the vnet.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -24,6 +28,7 @@ spec:
     metadata:
       labels:
         app: orders
+        # Bare join label for the home namespace.
         kube-vnet/net.payments: "true"
     spec:
       containers:

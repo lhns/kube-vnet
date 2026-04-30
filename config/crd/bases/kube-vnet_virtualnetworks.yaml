@@ -18,9 +18,6 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.extent
-      name: Extent
-      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -31,8 +28,11 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          VirtualNetwork is a named virtual network. Pods that share a VirtualNetwork can communicate;
-          pods on different (or no) VirtualNetworks are isolated by the operator-managed NetworkPolicy set.
+          VirtualNetwork is a named virtual network. Pods that share a VirtualNetwork
+          can communicate; pods on different (or no) VirtualNetworks are isolated by
+          the operator-managed NetworkPolicy set. A VirtualNetwork lives in one
+          "home" namespace and may permit pods from other namespaces to join via
+          spec.allowedNamespaces.
         properties:
           apiVersion:
             description: |-
@@ -52,21 +52,76 @@ spec:
           metadata:
             type: object
           spec:
-            description: VirtualNetworkSpec defines the desired state of a VirtualNetwork.
+            description: VirtualNetworkSpec is the desired state of a VirtualNetwork.
             properties:
-              description:
-                description: Description is free text surfaced for documentation.
-                  The operator does not interpret it.
-                type: string
-              extent:
-                default: Namespace
+              allowedNamespaces:
                 description: |-
-                  Extent describes the reach of the VirtualNetwork.
-                  Namespace (default): only pods in the same namespace may join.
-                  Cluster: pods in any namespace may join, via the namespace-prefixed label form.
-                enum:
-                - Namespace
-                - Cluster
+                  AllowedNamespaces controls which namespaces' pods may join this VirtualNetwork.
+                  The home namespace is always allowed; if this field is unset, only the home
+                  namespace is allowed.
+                properties:
+                  all:
+                    description: |-
+                      All allows pods from any namespace to join. This is the wildcard form.
+                      When true, Names and Selector are ignored.
+                    type: boolean
+                  names:
+                    description: |-
+                      Names is an explicit list of namespace names allowed to join.
+                      Names are matched exactly — no glob/wildcard patterns. Use Selector
+                      for label-based grouping; use All for "any namespace".
+                    items:
+                      type: string
+                    type: array
+                  selector:
+                    description: Selector matches namespaces by labels.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              description:
+                description: Description is free text. Not interpreted by the operator.
                 type: string
             type: object
           status:
@@ -75,7 +130,7 @@ spec:
               conditions:
                 description: |-
                   Conditions follow the standard Kubernetes condition pattern.
-                  Known types: Ready, Degraded, Reconciling.
+                  Known types: Ready, Degraded.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -171,6 +226,10 @@ spec:
                 type: integer
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: VirtualNetwork name must be a DNS-1123 label (lowercase alphanumeric
+            and hyphens; no dots)
+          rule: self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     served: true
     storage: true
     subresources:

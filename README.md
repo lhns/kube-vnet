@@ -2,11 +2,13 @@
 
 A Kubernetes operator that introduces a `VirtualNetwork` custom resource — a Docker-Swarm-style named-network primitive — and translates VirtualNetwork membership into standard `NetworkPolicy` resources.
 
-> See [`kube-vnet-design.md`](./kube-vnet-design.md) for the design rationale and full specification.
+> Background: [`docs/kube-vnet-design.md`](./docs/kube-vnet-design.md) — the original design doc.
+> Decisions: [`docs/adr/`](./docs/adr/README.md) — Architecture Decision Records, the source of truth for what's actually implemented (some details supersede the design doc).
 
 ## TL;DR
 
-- Define a `VirtualNetwork`. Pods join it with one label per network. Pods in the same VirtualNetwork can talk; pods in different (or no) VirtualNetworks are isolated by an automatic default-deny baseline.
+- Define a `VirtualNetwork`. Pods join it with one label per network. Pods on the same VirtualNetwork can talk; pods on different (or no) VirtualNetworks are isolated by an automatic default-deny baseline.
+- Reach is controlled by `spec.allowedNamespaces` — by default only the home namespace; can list namespaces, match by label, or use a wildcard.
 - The output is plain `networking.k8s.io/v1` `NetworkPolicy` — no CNI extensions required, no lock-in.
 
 ## Quickstart
@@ -28,24 +30,29 @@ metadata:
   name: payments
   namespace: platform
 spec:
-  extent: Namespace      # Namespace (default) or Cluster
+  # Default: only pods in the home namespace (platform) can join.
+  # Optional: open it up — see config/samples/*.yaml for every form.
+  allowedNamespaces:
+    names: [webapp, monitoring]
 ```
 
 ### 3. Have pods join it
 
-Add the join label to your Deployment's pod template:
+Add the join label to the Deployment's pod template:
 
 ```yaml
 metadata:
   labels:
+    # Bare form — for pods in the VirtualNetwork's home namespace.
     kube-vnet/net.payments: "true"
 ```
 
-For a pod in a *different* namespace joining a `Cluster`-extent VirtualNetwork, use the namespace-prefixed form:
+For a pod in a *different* namespace joining a VirtualNetwork that allows it, use the namespace-prefixed form:
 
 ```yaml
 metadata:
   labels:
+    # Prefixed form — for pods in any other namespace.
     kube-vnet/net.<vnet-namespace>.<vnet-name>: "true"
 ```
 
@@ -57,13 +64,26 @@ kubectl describe vnet payments -n platform
 kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
 ```
 
+## Samples
+
+End-to-end manifests demonstrating each configuration. Each is self-contained — `kubectl apply -f` works on a fresh cluster.
+
+| File | Demonstrates |
+|---|---|
+| [`config/samples/01_same_namespace.yaml`](config/samples/01_same_namespace.yaml) | Default: only pods in the home namespace can join. |
+| [`config/samples/02_two_namespaces.yaml`](config/samples/02_two_namespaces.yaml) | `allowedNamespaces.names: [webapp, monitoring]` — explicit list. |
+| [`config/samples/03_label_selector.yaml`](config/samples/03_label_selector.yaml) | `allowedNamespaces.selector: { matchLabels: { tier: prod } }` — label-based. |
+| [`config/samples/04_all_namespaces.yaml`](config/samples/04_all_namespaces.yaml) | `allowedNamespaces.all: true` — wildcard, any namespace. |
+| [`config/samples/05_disabled_namespace.yaml`](config/samples/05_disabled_namespace.yaml) | Per-namespace opt-out via `kube-vnet/disabled=true`. |
+
 ## Behavior
 
-- **Default-deny baseline.** In any managed namespace where at least one pod joins a VirtualNetwork, the operator ensures a `NetworkPolicy` named `kube-vnet-default-deny` exists. It allows egress to CoreDNS only; everything else is denied unless an additional policy permits it.
+- **Default-deny baseline.** In any managed namespace where at least one pod joins a VirtualNetwork, the operator ensures `kube-vnet-default-deny` exists. It allows egress to CoreDNS only; everything else is denied unless an additional policy permits it.
 - **Per-VirtualNetwork policies.** For each VirtualNetwork with members, one `NetworkPolicy` is generated per namespace that has members. The selector is a single `Exists` match on the join label key.
-- **Cluster extent.** If `spec.extent: Cluster`, pods in any namespace can join via the namespace-prefixed label. The operator generates policies in each namespace that has members and references peers cross-namespace via `namespaceSelector + podSelector`.
+- **Cross-namespace reach.** Controlled by `spec.allowedNamespaces`. Pods in non-permitted namespaces that nonetheless carry the join label are surfaced as `Degraded` reason `InvalidJoiners`.
 - **Drift correction.** Edits to operator-managed `NetworkPolicy` resources are reverted on the next reconcile.
 - **Cleanup.** Deleting a VirtualNetwork removes all generated policies, including those in other namespaces.
+- **Status & events.** `Ready`/`Degraded` conditions surface state; transitions emit Kubernetes Events visible in `kubectl describe`. See [ADR 0012](docs/adr/0012-status-conditions-ready-and-degraded.md) for the full reason taxonomy.
 
 ## Disabling the operator for a namespace
 
@@ -79,7 +99,7 @@ Two ways, both equivalent:
 
 - **Operator-wide** — pass `--excluded-namespaces=foo,bar` to the controller. Defaults: `kube-system,kube-public,kube-node-lease`. The operator's own namespace is always added.
 
-When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible peers for `Cluster`-extent VirtualNetworks defined elsewhere.
+When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible joiners for any VirtualNetwork (regardless of `allowedNamespaces`).
 
 ## Configuration
 
@@ -90,6 +110,16 @@ When a namespace is unmanaged: no baseline is created, no membership policies ar
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
 | `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
 | `--excluded-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces excluded from kube-vnet management |
+
+## Architecture decisions
+
+The implementation's significant decisions are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). Highlights:
+
+- [0005 — Namespaced CRD with `allowedNamespaces`](docs/adr/0005-namespaced-crd-with-allowed-namespaces.md) (supersedes the design doc's `spec.extent`)
+- [0006 — Single per-namespace opt-out via `kube-vnet/disabled`](docs/adr/0006-baseline-default-deny-and-single-opt-out.md)
+- [0009 — Server-side apply with field manager](docs/adr/0009-server-side-apply-with-field-manager.md)
+- [0013 — Pod watch with `handler.Funcs` for removals](docs/adr/0013-pod-watch-with-handler-funcs-for-removals.md)
+- [0014 — Deferred v1 items](docs/adr/0014-deferred-v1-items.md) (custom metrics, envtest, e2e)
 
 ## Development
 
@@ -103,7 +133,7 @@ make docker-build IMG=...    # build the container image
 
 ## Status
 
-v1alpha1. The CRD is named `VirtualNetwork` (`vnet`, `vnets`) under `kube-vnet/v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. See the design doc for what's deferred to future versions (Fleet extent, CNI-specific output, L7/DNS/identity policy, etc.).
+`v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. See [ADR 0014](docs/adr/0014-deferred-v1-items.md) for the gap to a complete v1 (Prometheus custom metrics, envtest suite, kind+Calico e2e suite).
 
 ## License
 

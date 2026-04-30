@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -11,12 +12,15 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -24,6 +28,31 @@ import (
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
+
+// Condition reasons surfaced on VirtualNetwork.status.conditions.
+const (
+	ReasonPoliciesGenerated     = "PoliciesGenerated"
+	ReasonNoMembers             = "NoMembers"
+	ReasonInvalidJoiners        = "InvalidJoiners"
+	ReasonHomeNamespaceExcluded = "HomeNamespaceExcluded"
+	ReasonApplyFailed           = "ApplyFailed"
+	ReasonInvalidName           = "InvalidName"
+	ReasonNamespaceNotAllowed   = "NamespaceNotAllowed"
+	ReasonNoIssues              = "NoIssues"
+)
+
+// Event reasons (Kubernetes Event.Reason — short, stable, machine-readable).
+const (
+	EventReady       = "Ready"
+	EventNotReady    = "NotReady"
+	EventDegraded    = "Degraded"
+	EventRecovered   = "Recovered"
+	EventApplyFailed = "ApplyFailed"
+)
+
+// nameRegex enforces DNS-1123 label format on VirtualNetwork names (no dots).
+// The CRD also enforces this via x-kubernetes-validations; this is defense in depth.
+var nameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // VirtualNetworkReconciler reconciles VirtualNetwork resources into NetworkPolicies.
 type VirtualNetworkReconciler struct {
@@ -49,30 +78,40 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	vnet := &vnetv1alpha1.VirtualNetwork{}
 	if err := r.Get(ctx, req.NamespacedName, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
-			// VirtualNetwork is gone — clean up any policies that still carry its label.
 			return ctrl.Result{}, r.cleanupForDeleted(ctx, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
-
-	// If the VirtualNetwork is being deleted, drop policies and return.
 	if !vnet.DeletionTimestamp.IsZero() {
-		if err := r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name); err != nil {
-			return ctrl.Result{}, err
-		}
+		return ctrl.Result{}, r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
+	}
+
+	// Snapshot prior condition states so we can emit events on transitions.
+	priorReady := conditionStatus(vnet, "Ready")
+	priorDegraded := conditionStatus(vnet, "Degraded")
+
+	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
+	if !nameRegex.MatchString(vnet.Name) {
+		setReady(vnet, metav1.ConditionFalse, ReasonInvalidName,
+			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name))
+		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidName,
+			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
+		_ = r.updateStatus(ctx, vnet, nil, nil)
+		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		return ctrl.Result{}, nil
 	}
 
-	// Reject home namespace if it is unmanaged — produce no policies and surface a Degraded condition.
+	// Reject home namespace if it is unmanaged.
 	if !r.NSFilter.IsManagedName(vnet.Namespace) {
-		setReady(vnet, metav1.ConditionFalse, "HomeNamespaceExcluded",
+		setReady(vnet, metav1.ConditionFalse, ReasonHomeNamespaceExcluded,
 			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
-		setDegraded(vnet, metav1.ConditionTrue, "HomeNamespaceExcluded",
+		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,
 			fmt.Sprintf("home namespace %q is in the operator excluded list", vnet.Namespace))
-		return ctrl.Result{}, r.updateStatus(ctx, vnet, nil, nil)
+		_ = r.updateStatus(ctx, vnet, nil, nil)
+		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
+		return ctrl.Result{}, nil
 	}
 
-	// Compute desired members from pods cluster-wide (Cluster extent) or in the home NS (Namespace extent).
 	members, invalid, err := r.discoverMembers(ctx, vnet)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -84,7 +123,6 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		MembersByNS: members,
 	})
 
-	// Server-side apply each desired policy.
 	desiredKeys := make(map[string]bool, len(out.Policies))
 	policyRefs := make([]vnetv1alpha1.PolicyRef, 0, len(out.Policies))
 	for i := range out.Policies {
@@ -92,14 +130,17 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		desiredKeys[p.Namespace+"/"+p.Name] = true
 		if err := r.applyPolicy(ctx, p); err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
-			setReady(vnet, metav1.ConditionFalse, "ApplyFailed", err.Error())
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
+				fmt.Sprintf("apply %s/%s: %v", p.Namespace, p.Name, err))
+			setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, err.Error())
 			_ = r.updateStatus(ctx, vnet, members, policyRefs)
+			r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 			return ctrl.Result{}, err
 		}
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
 
-	// Ensure baseline in every namespace that has members (and is managed).
+	// Ensure baseline in every managed namespace that has members.
 	for ns := range members {
 		if !r.NSFilter.IsManagedName(ns) {
 			continue
@@ -116,37 +157,37 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		if err := r.applyPolicy(ctx, DesiredBaseline(ns)); err != nil {
 			logger.Error(err, "apply baseline failed", "namespace", ns)
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
+				fmt.Sprintf("apply baseline in %s: %v", ns, err))
 			return ctrl.Result{}, err
 		}
 	}
 
-	// Delete stale policies owned by this VirtualNetwork.
 	if err := r.deleteStale(ctx, vnet, desiredKeys); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Status conditions.
 	if len(invalid) > 0 {
-		msg := fmt.Sprintf("%d invalid joiner(s): %s", len(invalid), summarizeInvalid(invalid))
-		setDegraded(vnet, metav1.ConditionTrue, "InvalidJoiners", msg)
+		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidJoiners,
+			fmt.Sprintf("%d invalid joiner(s): %s", len(invalid), summarizeInvalid(invalid)))
 	} else {
-		setDegraded(vnet, metav1.ConditionFalse, "NoIssues", "")
+		setDegraded(vnet, metav1.ConditionFalse, ReasonNoIssues, "")
 	}
-	switch {
-	case len(out.Policies) == 0:
-		setReady(vnet, metav1.ConditionTrue, "NoMembers", "no pods are joining this VirtualNetwork")
-	default:
-		setReady(vnet, metav1.ConditionTrue, "PoliciesGenerated",
+	if len(out.Policies) == 0 {
+		setReady(vnet, metav1.ConditionTrue, ReasonNoMembers, "no pods are joining this VirtualNetwork")
+	} else {
+		setReady(vnet, metav1.ConditionTrue, ReasonPoliciesGenerated,
 			fmt.Sprintf("%d NetworkPolic(y|ies) across %d namespace(s)", len(out.Policies), len(members)))
 	}
 
 	if err := r.updateStatus(ctx, vnet, members, policyRefs); err != nil {
 		return ctrl.Result{}, err
 	}
+	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
-// labelPrefix returns the configured label prefix or the default.
+// labelPrefix returns the configured label prefix or the default, normalized to end in "/".
 func (r *VirtualNetworkReconciler) labelPrefix() string {
 	if r.LabelPrefix == "" {
 		return DefaultLabelPrefix
@@ -157,69 +198,95 @@ func (r *VirtualNetworkReconciler) labelPrefix() string {
 	return r.LabelPrefix
 }
 
-// discoverMembers lists pods that join the given VirtualNetwork. For Namespace
-// extent it only looks in the home namespace; for Cluster extent it looks
-// cluster-wide for both bare and namespace-prefixed forms of the join label.
-// Pods in unmanaged namespaces are skipped.
-func (r *VirtualNetworkReconciler) discoverMembers(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork) (
-	members map[string][]string, invalid []InvalidJoiner, err error,
-) {
+// permits decides whether pods in `ns` are allowed to join `vnet` per spec.allowedNamespaces.
+// The home namespace is always permitted. The Selector path requires fetching the namespace
+// to read its labels; this is cached by the controller-runtime informer.
+func (r *VirtualNetworkReconciler) permits(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
+	if ns == vnet.Namespace {
+		return true, nil
+	}
+	sel := vnet.Spec.AllowedNamespaces
+	if sel == nil {
+		return false, nil
+	}
+	if sel.All {
+		return true, nil
+	}
+	for _, n := range sel.Names {
+		if n == ns {
+			return true, nil
+		}
+	}
+	if sel.Selector != nil {
+		nsObj := &corev1.Namespace{}
+		if err := r.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
+			if apierrors.IsNotFound(err) {
+				return false, nil
+			}
+			return false, err
+		}
+		s, err := metav1.LabelSelectorAsSelector(sel.Selector)
+		if err != nil {
+			return false, err
+		}
+		if s.Matches(labels.Set(nsObj.Labels)) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// discoverMembers lists pods cluster-wide and partitions them by membership status.
+// A pod is a *member* if it carries the appropriate join key for its namespace AND
+// its namespace is permitted by spec.allowedNamespaces AND its namespace is operator-managed.
+// A pod that carries the namespace-prefixed join key but lives in a non-permitted namespace
+// is recorded as an InvalidJoiner (surfaced via the Degraded condition).
+func (r *VirtualNetworkReconciler) discoverMembers(
+	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork,
+) (members map[string][]string, invalid []InvalidJoiner, err error) {
 	members = map[string][]string{}
 	prefix := r.labelPrefix()
 	bareKey := prefix + "net." + vnet.Name
 	prefixedKey := prefix + "net." + vnet.Namespace + "." + vnet.Name
 
-	if vnet.Spec.Extent == vnetv1alpha1.ExtentCluster {
-		// Cluster extent: look in every namespace.
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods); err != nil {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods); err != nil {
+		return nil, nil, err
+	}
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		// Pick the right key for this pod's namespace.
+		key := prefixedKey
+		if p.Namespace == vnet.Namespace {
+			key = bareKey
+		}
+		if _, hasLabel := p.Labels[key]; !hasLabel {
+			continue
+		}
+		// Drop pods in operator-excluded namespaces.
+		if !r.NSFilter.IsManagedName(p.Namespace) {
+			continue
+		}
+		// Same-namespace pods always count.
+		if p.Namespace == vnet.Namespace {
+			members[p.Namespace] = append(members[p.Namespace], p.Name)
+			continue
+		}
+		// Foreign-namespace pod: must be permitted by spec.allowedNamespaces.
+		ok, err := r.permits(ctx, vnet, p.Namespace)
+		if err != nil {
 			return nil, nil, err
 		}
-		for _, p := range pods.Items {
-			if !r.NSFilter.IsManagedName(p.Namespace) {
-				continue
-			}
-			joined := false
-			if p.Namespace == vnet.Namespace {
-				if _, ok := p.Labels[bareKey]; ok {
-					joined = true
-				}
-			} else if _, ok := p.Labels[prefixedKey]; ok {
-				joined = true
-			}
-			if joined {
-				members[p.Namespace] = append(members[p.Namespace], p.Name)
-			}
-		}
-	} else {
-		// Namespace extent: only home namespace, only the bare label.
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(vnet.Namespace)); err != nil {
-			return nil, nil, err
-		}
-		for _, p := range pods.Items {
-			if _, ok := p.Labels[bareKey]; ok {
-				members[p.Namespace] = append(members[p.Namespace], p.Name)
-			}
-		}
-		// Cross-namespace joiners on a Namespace-extent vnet are invalid; surface them in status.
-		var allPods corev1.PodList
-		if err := r.List(ctx, &allPods); err == nil {
-			for _, p := range allPods.Items {
-				if p.Namespace == vnet.Namespace {
-					continue
-				}
-				if _, ok := p.Labels[prefixedKey]; ok {
-					invalid = append(invalid, InvalidJoiner{
-						PodNamespace: p.Namespace,
-						PodName:      p.Name,
-						Reason:       "VirtualNetwork has Namespace extent",
-					})
-				}
-			}
+		if ok {
+			members[p.Namespace] = append(members[p.Namespace], p.Name)
+		} else {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace,
+				PodName:      p.Name,
+				Reason:       ReasonNamespaceNotAllowed,
+			})
 		}
 	}
-
 	for ns := range members {
 		sort.Strings(members[ns])
 	}
@@ -228,14 +295,14 @@ func (r *VirtualNetworkReconciler) discoverMembers(ctx context.Context, vnet *vn
 
 // applyPolicy server-side-applies a NetworkPolicy with the operator's field manager.
 func (r *VirtualNetworkReconciler) applyPolicy(ctx context.Context, p *networkingv1.NetworkPolicy) error {
-	// SSA requires the object's GVK and a clean ResourceVersion.
 	p.SetResourceVersion("")
 	return r.Patch(ctx, p, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
 }
 
-// deleteStale deletes any operator-managed NetworkPolicy carrying this vnet's
-// network label that is not in the desired set.
-func (r *VirtualNetworkReconciler) deleteStale(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, desired map[string]bool) error {
+// deleteStale removes operator-managed policies for this vnet that aren't in the desired set.
+func (r *VirtualNetworkReconciler) deleteStale(
+	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, desired map[string]bool,
+) error {
 	netID := vnet.Namespace + "." + vnet.Name
 	var existing networkingv1.NetworkPolicyList
 	if err := r.List(ctx, &existing, client.MatchingLabels{
@@ -246,8 +313,7 @@ func (r *VirtualNetworkReconciler) deleteStale(ctx context.Context, vnet *vnetv1
 	}
 	for i := range existing.Items {
 		p := &existing.Items[i]
-		key := p.Namespace + "/" + p.Name
-		if desired[key] {
+		if desired[p.Namespace+"/"+p.Name] {
 			continue
 		}
 		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
@@ -257,7 +323,7 @@ func (r *VirtualNetworkReconciler) deleteStale(ctx context.Context, vnet *vnetv1
 	return nil
 }
 
-// cleanupForDeleted removes all operator-managed policies for a VirtualNetwork that no longer exists.
+// cleanupForDeleted removes all operator-managed policies for a deleted VirtualNetwork.
 func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, name string) error {
 	netID := ns + "." + name
 	var policies networkingv1.NetworkPolicyList
@@ -276,7 +342,7 @@ func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, na
 	return nil
 }
 
-// updateStatus applies status fields to the vnet via subresource update.
+// updateStatus writes status fields via the subresource.
 func (r *VirtualNetworkReconciler) updateStatus(
 	ctx context.Context,
 	vnet *vnetv1alpha1.VirtualNetwork,
@@ -294,33 +360,51 @@ func (r *VirtualNetworkReconciler) updateStatus(
 	return r.Status().Update(ctx, vnet)
 }
 
+// emitTransitionEvents emits Kubernetes Events when Ready or Degraded change status.
+func (r *VirtualNetworkReconciler) emitTransitionEvents(
+	vnet *vnetv1alpha1.VirtualNetwork, priorReady, priorDegraded metav1.ConditionStatus,
+) {
+	if r.Recorder == nil {
+		return
+	}
+	curReady := conditionStatus(vnet, "Ready")
+	if curReady != priorReady {
+		c := findCondition(vnet, "Ready")
+		switch curReady {
+		case metav1.ConditionTrue:
+			r.Recorder.Event(vnet, corev1.EventTypeNormal, EventReady, conditionMessage(c))
+		case metav1.ConditionFalse:
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventNotReady, conditionMessage(c))
+		}
+	}
+	curDegraded := conditionStatus(vnet, "Degraded")
+	if curDegraded != priorDegraded {
+		c := findCondition(vnet, "Degraded")
+		switch curDegraded {
+		case metav1.ConditionTrue:
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventDegraded, conditionMessage(c))
+		case metav1.ConditionFalse:
+			r.Recorder.Event(vnet, corev1.EventTypeNormal, EventRecovered, conditionMessage(c))
+		}
+	}
+}
+
 // setReady upserts the Ready condition.
 func setReady(vnet *vnetv1alpha1.VirtualNetwork, status metav1.ConditionStatus, reason, msg string) {
-	upsertCondition(vnet, metav1.Condition{
-		Type:               "Ready",
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: metav1.Now(),
-	})
+	upsertCondition(vnet, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
 
 // setDegraded upserts the Degraded condition.
 func setDegraded(vnet *vnetv1alpha1.VirtualNetwork, status metav1.ConditionStatus, reason, msg string) {
-	upsertCondition(vnet, metav1.Condition{
-		Type:               "Degraded",
-		Status:             status,
-		Reason:             reason,
-		Message:            msg,
-		LastTransitionTime: metav1.Now(),
-	})
+	upsertCondition(vnet, metav1.Condition{Type: "Degraded", Status: status, Reason: reason, Message: msg})
 }
 
 func upsertCondition(vnet *vnetv1alpha1.VirtualNetwork, c metav1.Condition) {
+	now := metav1.Now()
 	for i, existing := range vnet.Status.Conditions {
 		if existing.Type == c.Type {
 			if existing.Status != c.Status {
-				c.LastTransitionTime = metav1.Now()
+				c.LastTransitionTime = now
 			} else {
 				c.LastTransitionTime = existing.LastTransitionTime
 			}
@@ -328,7 +412,34 @@ func upsertCondition(vnet *vnetv1alpha1.VirtualNetwork, c metav1.Condition) {
 			return
 		}
 	}
+	c.LastTransitionTime = now
 	vnet.Status.Conditions = append(vnet.Status.Conditions, c)
+}
+
+func conditionStatus(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.ConditionStatus {
+	if c := findCondition(vnet, t); c != nil {
+		return c.Status
+	}
+	return metav1.ConditionUnknown
+}
+
+func findCondition(vnet *vnetv1alpha1.VirtualNetwork, t string) *metav1.Condition {
+	for i := range vnet.Status.Conditions {
+		if vnet.Status.Conditions[i].Type == t {
+			return &vnet.Status.Conditions[i]
+		}
+	}
+	return nil
+}
+
+func conditionMessage(c *metav1.Condition) string {
+	if c == nil {
+		return ""
+	}
+	if c.Message != "" {
+		return c.Message
+	}
+	return c.Reason
 }
 
 func summarizeInvalid(in []InvalidJoiner) string {
@@ -336,7 +447,7 @@ func summarizeInvalid(in []InvalidJoiner) string {
 		return ""
 	}
 	const max = 3
-	parts := make([]string, 0, max)
+	parts := make([]string, 0, max+1)
 	for i, j := range in {
 		if i >= max {
 			parts = append(parts, fmt.Sprintf("(+%d more)", len(in)-max))
@@ -347,18 +458,33 @@ func summarizeInvalid(in []InvalidJoiner) string {
 	return strings.Join(parts, ", ")
 }
 
-// SetupWithManager wires the controller into the manager: primary VirtualNetwork
-// watch + Pod watch (filtered by label prefix) + NetworkPolicy watch (filtered by managed-by).
+// SetupWithManager wires watches: VirtualNetwork (primary), Pod (label-prefix predicate
+// + handler.Funcs to see old+new on Update), NetworkPolicy (managed-by predicate, drift).
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	prefix := r.labelPrefix()
-	podPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+	keyPrefix := prefix + "net."
+
+	// Predicate fires when *either* the old or new object has any join label.
+	hasJoinLabel := func(obj client.Object) bool {
+		if obj == nil {
+			return false
+		}
 		for k := range obj.GetLabels() {
-			if strings.HasPrefix(k, prefix+"net.") {
+			if strings.HasPrefix(k, keyPrefix) {
 				return true
 			}
 		}
 		return false
-	})
+	}
+	podPredicate := predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool { return hasJoinLabel(e.Object) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return hasJoinLabel(e.Object) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return hasJoinLabel(e.ObjectOld) || hasJoinLabel(e.ObjectNew)
+		},
+		GenericFunc: func(e event.GenericEvent) bool { return hasJoinLabel(e.Object) },
+	}
+
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue
 	})
@@ -367,7 +493,7 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&vnetv1alpha1.VirtualNetwork{}).
 		Watches(
 			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.podToVNets),
+			r.podEventHandler(keyPrefix),
 			builder.WithPredicates(podPredicate),
 		).
 		Watches(
@@ -378,36 +504,53 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// podToVNets maps a pod event to the VirtualNetworks the pod claims to join via its labels.
-// (Previously-observed memberships are caught by the periodic resync and the policy drift watch.)
-func (r *VirtualNetworkReconciler) podToVNets(ctx context.Context, obj client.Object) []reconcile.Request {
-	prefix := r.labelPrefix()
-	keyPrefix := prefix + "net."
-	var reqs []reconcile.Request
-	for k := range obj.GetLabels() {
-		if !strings.HasPrefix(k, keyPrefix) {
-			continue
-		}
-		rest := strings.TrimPrefix(k, keyPrefix)
-		// Bare form "net.<vnet>" → VirtualNetwork in pod's namespace.
-		// Prefixed form "net.<ns>.<vnet>" → VirtualNetwork in another namespace.
-		switch parts := strings.SplitN(rest, ".", 2); len(parts) {
-		case 1:
-			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: obj.GetNamespace(), Name: parts[0],
-			}})
-		case 2:
-			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: parts[0], Name: parts[1],
-			}})
+// podEventHandler returns a handler.Funcs that enqueues the union of vnets
+// referenced by a pod's old and new labels. This catches both adds and removes
+// of memberships without any in-memory cache.
+func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.EventHandler {
+	enqueue := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS string, lbls map[string]string) {
+		for k := range lbls {
+			if !strings.HasPrefix(k, keyPrefix) {
+				continue
+			}
+			rest := strings.TrimPrefix(k, keyPrefix)
+			parts := strings.SplitN(rest, ".", 2)
+			switch len(parts) {
+			case 1:
+				q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+					Namespace: podNS, Name: parts[0],
+				}})
+			case 2:
+				q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+					Namespace: parts[0], Name: parts[1],
+				}})
+			}
 		}
 	}
-	return reqs
+	return handler.Funcs{
+		CreateFunc: func(_ context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
+		},
+		UpdateFunc: func(_ context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			if e.ObjectOld != nil {
+				enqueue(q, e.ObjectOld.GetNamespace(), e.ObjectOld.GetLabels())
+			}
+			if e.ObjectNew != nil {
+				enqueue(q, e.ObjectNew.GetNamespace(), e.ObjectNew.GetLabels())
+			}
+		},
+		DeleteFunc: func(_ context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
+		},
+		GenericFunc: func(_ context.Context, e event.GenericEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
+		},
+	}
 }
 
-// policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork.
-// The kube-vnet/network label encodes "<ns>.<name>".
-func (r *VirtualNetworkReconciler) policyToVNet(ctx context.Context, obj client.Object) []reconcile.Request {
+// policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork
+// via the kube-vnet/network=<homeNS>.<vnet> label.
+func (r *VirtualNetworkReconciler) policyToVNet(_ context.Context, obj client.Object) []reconcile.Request {
 	v := obj.GetLabels()[LabelNetwork]
 	if v == "" {
 		return nil

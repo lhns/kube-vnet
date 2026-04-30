@@ -1,0 +1,42 @@
+# Wildcard: any namespace's pods may join. Useful for cross-cutting concerns
+# like observability or service mesh sidecars.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform
+---
+apiVersion: kube-vnet/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: observability
+  namespace: monitoring
+spec:
+  description: |
+    Cluster-wide observability network. Any pod in any namespace may join via
+    the namespace-prefixed label kube-vnet/net.monitoring.observability=true.
+  allowedNamespaces:
+    all: true
+---
+# Foreign namespace pod joining via the prefixed label.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: platform
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: orders } }
+  template:
+    metadata:
+      labels:
+        app: orders
+        kube-vnet/net.monitoring.observability: "true"
+    spec:
+      containers:
+        - name: app
+          image: nginx:alpine

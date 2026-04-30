@@ -4,27 +4,38 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Extent describes the maximum reach of a VirtualNetwork.
-// +kubebuilder:validation:Enum=Namespace;Cluster
-type Extent string
-
-const (
-	ExtentNamespace Extent = "Namespace"
-	ExtentCluster   Extent = "Cluster"
-)
-
-// VirtualNetworkSpec defines the desired state of a VirtualNetwork.
-type VirtualNetworkSpec struct {
-	// Extent describes the reach of the VirtualNetwork.
-	// Namespace (default): only pods in the same namespace may join.
-	// Cluster: pods in any namespace may join, via the namespace-prefixed label form.
-	// +kubebuilder:default=Namespace
+// NamespaceSelector matches namespaces by name, by label, or all.
+// The home namespace (the namespace the VirtualNetwork lives in) is always
+// implicitly included. If multiple fields are set, the union applies — a
+// namespace matches if any one of (All, Names, Selector) matches.
+type NamespaceSelector struct {
+	// All allows pods from any namespace to join. This is the wildcard form.
+	// When true, Names and Selector are ignored.
 	// +optional
-	Extent Extent `json:"extent,omitempty"`
+	All bool `json:"all,omitempty"`
 
-	// Description is free text surfaced for documentation. The operator does not interpret it.
+	// Names is an explicit list of namespace names allowed to join.
+	// Names are matched exactly — no glob/wildcard patterns. Use Selector
+	// for label-based grouping; use All for "any namespace".
+	// +optional
+	Names []string `json:"names,omitempty"`
+
+	// Selector matches namespaces by labels.
+	// +optional
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+}
+
+// VirtualNetworkSpec is the desired state of a VirtualNetwork.
+type VirtualNetworkSpec struct {
+	// Description is free text. Not interpreted by the operator.
 	// +optional
 	Description string `json:"description,omitempty"`
+
+	// AllowedNamespaces controls which namespaces' pods may join this VirtualNetwork.
+	// The home namespace is always allowed; if this field is unset, only the home
+	// namespace is allowed.
+	// +optional
+	AllowedNamespaces *NamespaceSelector `json:"allowedNamespaces,omitempty"`
 }
 
 // NamespaceMembers groups observed pod members by namespace.
@@ -42,7 +53,7 @@ type PolicyRef struct {
 // VirtualNetworkStatus is the observed state of a VirtualNetwork.
 type VirtualNetworkStatus struct {
 	// Conditions follow the standard Kubernetes condition pattern.
-	// Known types: Ready, Degraded, Reconciling.
+	// Known types: Ready, Degraded.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -66,12 +77,15 @@ type VirtualNetworkStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=vnet;vnets,scope=Namespaced
-// +kubebuilder:printcolumn:name="Extent",type=string,JSONPath=`.spec.extent`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="VirtualNetwork name must be a DNS-1123 label (lowercase alphanumeric and hyphens; no dots)"
 
-// VirtualNetwork is a named virtual network. Pods that share a VirtualNetwork can communicate;
-// pods on different (or no) VirtualNetworks are isolated by the operator-managed NetworkPolicy set.
+// VirtualNetwork is a named virtual network. Pods that share a VirtualNetwork
+// can communicate; pods on different (or no) VirtualNetworks are isolated by
+// the operator-managed NetworkPolicy set. A VirtualNetwork lives in one
+// "home" namespace and may permit pods from other namespaces to join via
+// spec.allowedNamespaces.
 type VirtualNetwork struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

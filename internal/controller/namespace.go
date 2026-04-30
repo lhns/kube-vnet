@@ -6,8 +6,8 @@ import (
 
 // AnnotationDisabled, when set to "true" on a Namespace, opts that namespace out
 // of kube-vnet entirely: no baseline policy is created, no membership policies
-// are generated for pods in this namespace, and pods here are not eligible peers
-// for Cluster-extent VirtualNetworks defined elsewhere.
+// are generated for pods in this namespace, and pods here are not eligible
+// joiners for VirtualNetworks defined elsewhere (regardless of allowedNamespaces).
 const AnnotationDisabled = "kube-vnet/disabled"
 
 // NamespaceFilter decides whether kube-vnet manages a given namespace.
