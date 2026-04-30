@@ -1,4 +1,4 @@
-# 0018 — Test strategy: unit + envtest + kind+Calico
+# 0018 — Test strategy: unit + envtest + kind (kube-router + Calico)
 
 Status: Accepted
 
@@ -37,16 +37,27 @@ Build tag `integration` keeps these out of the default `go test ./...` run becau
 
 **No CNI here** — these tests verify what the operator *does*, not what the network *enforces*.
 
-### Rung 3 — End-to-end tests (kind + Calico, build tag `e2e`)
+### Rung 3 — End-to-end tests (kind, build tag `e2e`)
 
-`test/e2e/e2e_test.go` — run against a real `kind` cluster with Calico installed (so NetworkPolicy is actually enforced) and the operator already deployed. Tests use `kubectl exec ... wget` to assert traffic actually flows or doesn't:
+`test/e2e/e2e_test.go` — run against a real `kind` cluster with a NetworkPolicy-enforcing CNI installed and the operator already deployed. Tests use `kubectl exec ... wget` to assert traffic actually flows or doesn't:
 
 - Same vnet → connectivity works
 - Different vnets → blocked
 - No vnet (in a namespace with a vnet) → blocked by the baseline default-deny
 - `allowedNamespaces.all=true` → cross-namespace traffic flows
 
-Build tag `e2e`. Bootstrap is `hack/e2e-up.sh` locally or the `.github/workflows/e2e.yaml` in CI.
+Build tag `e2e`. Bootstrap is `hack/e2e-up.sh [kube-router|calico]` locally or `.github/workflows/e2e.yaml` in CI.
+
+#### Two CNI lanes: kube-router and Calico
+
+The same e2e suite runs against **two CNIs sequentially**:
+
+1. **kube-router** (first). Single DaemonSet, iptables-based NetworkPolicy enforcement, ~30s boot. Cheap, fast feedback. Catches the common case.
+2. **Calico** (second, only on success). Tigera-operator-managed install, ~2 min boot. The most widely-deployed NetworkPolicy enforcer in production; runs only after kube-router has already validated correctness so we don't pay its bootstrap cost on broken changes.
+
+Sequential rather than parallel: a single failure in either CNI blocks merge, so running them in series saves CI minutes when kube-router catches a regression. We accept ~5 minutes additional wall-time for the Calico lane in exchange for confidence that the operator's output works on both classes of enforcer.
+
+Why two CNIs at all (we generate stock `NetworkPolicy` regardless): different enforcers have subtly different edge-case behavior (e.g. how they treat policies during pod startup, ordering of allow vs deny when multiple policies match, behavior on Pod IP reuse). Two enforcers caught more than one would; expanding the matrix to Antrea/Cilium has diminishing returns.
 
 ## Why these specific choices
 
@@ -54,11 +65,13 @@ Build tag `e2e`. Bootstrap is `hack/e2e-up.sh` locally or the `.github/workflows
 
 Kubebuilder's default scaffolding uses ginkgo. We don't, for two reasons: the existing tests use stdlib (consistency matters), and the BDD shape adds learning cost without adding signal for our test sizes. `envtest.Environment` works equally well with `TestMain`.
 
-### Why Calico (not Cilium) for the e2e CNI
+### Why kube-router + Calico (not Cilium / Antrea / kindnetd)
 
-- Calico is the most widely-used `NetworkPolicy` enforcer; what works on Calico works on most clusters.
-- We don't need any feature beyond standard `NetworkPolicy` (per ADR 0002), so Cilium's L7/eBPF advantages don't apply to v1.
-- Calico bootstrap on kind is well-documented and stable in CI.
+- **kube-router** is the cheapest enforcer that exercises real NetworkPolicy semantics (single DaemonSet, iptables, no operator). Fast PR feedback.
+- **Calico** is the most widely-used enforcer in production, and the most thorough NetworkPolicy implementation. Different enforcement engine (felix vs iptables), so it catches subtly different bugs.
+- **kindnetd** added NetworkPolicy support recently but it's still maturing; chose not to depend on it for v1 confidence.
+- **Cilium** offers L7 features we don't use (per ADR 0002) and adds boot time; no v1 benefit.
+- **Antrea** is reasonable but adds a third lane for marginal new signal vs kube-router+Calico.
 
 ### Why a separate `e2e.yaml` workflow
 

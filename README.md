@@ -144,7 +144,8 @@ make manifests           # regenerate CRD + RBAC
 make generate            # regenerate deepcopy
 make test                # unit tests (sub-second)
 make integration-test    # envtest-backed integration suite (~10s; requires Go)
-make e2e                 # kind+Calico end-to-end (requires Docker; ~5–8 min)
+make e2e                 # kind end-to-end (requires Docker). Default CNI: kube-router.
+                         #   override with: ./hack/e2e-up.sh calico
 make build               # build the binary into bin/manager
 make docker-build IMG=…  # build the container image
 ```
