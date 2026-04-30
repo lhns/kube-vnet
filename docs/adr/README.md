@@ -31,6 +31,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 23. [0023 — Decoupled `disabled` and `ingress-isolation` annotations](0023-decoupled-disabled-and-ingress-isolation.md)
 24. [0024 — Operator ingress-isolation default + per-mode override lists](0024-ingress-isolation-mode-and-overrides.md)
 25. [0025 — `ingress-isolation` rename + egress unrestricted](0025-ingress-isolation-rename-egress-unrestricted.md)
+26. [0026 — `VirtualNetworkBinding` CRD as the no-label alternative](0026-virtualnetworkbinding-crd.md)
 
 ## Format
 

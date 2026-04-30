@@ -1,0 +1,21 @@
+# A VirtualNetworkBinding is the no-label alternative for attaching pods to
+# a VirtualNetwork — useful when the pod template is owned by an upstream
+# Helm chart, third-party manifests, or another operator and you can't add
+# the join label directly. The binding lives in the same namespace as the
+# pods it selects (selector is implicitly scoped to metadata.namespace).
+#
+# Direction has the same enum semantics as the join label value:
+# both | ingress | egress | none. Defaults to "both".
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBinding
+metadata:
+  name: payments-thirdparty
+  namespace: webapp
+spec:
+  virtualNetworkRef:
+    name: payments
+    namespace: platform
+  direction: both
+  podSelector:
+    matchLabels:
+      app: thirdparty-billing-agent

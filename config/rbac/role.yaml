@@ -2,7 +2,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: kube-vnet-manager
+  name: manager-role
 rules:
 - apiGroups:
   - ""
@@ -23,6 +23,7 @@ rules:
 - apiGroups:
   - kube-vnet.lhns.de
   resources:
+  - virtualnetworkbindings
   - virtualnetworks
   verbs:
   - get
@@ -31,12 +32,14 @@ rules:
 - apiGroups:
   - kube-vnet.lhns.de
   resources:
+  - virtualnetworkbindings/finalizers
   - virtualnetworks/finalizers
   verbs:
   - update
 - apiGroups:
   - kube-vnet.lhns.de
   resources:
+  - virtualnetworkbindings/status
   - virtualnetworks/status
   verbs:
   - get

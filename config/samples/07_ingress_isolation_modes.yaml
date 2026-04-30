@@ -1,0 +1,31 @@
+# Three Namespace examples showing how the kube-vnet/ingress-isolation
+# annotation drives the per-namespace baseline policy. The annotation always
+# wins over the operator-level default and override flags.
+#
+#   none      — no baseline. Pods reachable from anywhere unless another
+#               policy says otherwise.
+#   namespace — baseline allows ingress from same-namespace pods only.
+#   pod       — baseline denies all ingress; only vnet membership policies
+#               grant ingress allows.
+#
+# Egress is never restricted by the operator (since ADR 0025).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-iso-none
+  annotations:
+    kube-vnet/ingress-isolation: none
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-iso-namespace
+  annotations:
+    kube-vnet/ingress-isolation: namespace
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-iso-pod
+  annotations:
+    kube-vnet/ingress-isolation: pod

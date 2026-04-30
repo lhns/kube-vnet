@@ -272,6 +272,77 @@ func TestGenerate_LongFormInHome_OnlyPrefixed(t *testing.T) {
 	}
 }
 
+func TestGenerate_Binding_EmitsPerBindingPolicy(t *testing.T) {
+	out := Generate(GenerateInput{
+		VNet: newVNet("payments", "platform"),
+		BindingsByNS: map[string][]BindingSpec{
+			"webapp": {{
+				Name:        "thirdparty",
+				Direction:   DirectionBoth,
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "vendor-x"}},
+			}},
+		},
+	})
+	if len(out.Policies) != 1 {
+		t.Fatalf("expected 1 policy, got %d", len(out.Policies))
+	}
+	p := out.Policies[0]
+	if p.Namespace != "webapp" || p.Name != "kube-vnet-payments-b-thirdparty" {
+		t.Errorf("policy ns/name = %s/%s", p.Namespace, p.Name)
+	}
+	if v := p.Labels[LabelBinding]; v != "thirdparty" {
+		t.Errorf("LabelBinding=%q", v)
+	}
+	if got := p.Spec.PodSelector.MatchLabels["app"]; got != "vendor-x" {
+		t.Errorf("podSelector did not match binding selector verbatim: %v", p.Spec.PodSelector)
+	}
+	if len(p.Spec.PolicyTypes) != 2 {
+		t.Errorf("PolicyTypes=%v want both", p.Spec.PolicyTypes)
+	}
+}
+
+func TestGenerate_Binding_AddsPeerEntryToLabelDrivenPolicy(t *testing.T) {
+	// Label-driven member in the home namespace + a binding in webapp.
+	// The label-driven policy's peer rules must include both a label
+	// selector and the binding's verbatim selector.
+	out := Generate(GenerateInput{
+		VNet:        newVNet("payments", "platform"),
+		MembersByNS: bidiMembers("platform", map[string][]string{"platform": {"a-1"}}),
+		BindingsByNS: map[string][]BindingSpec{
+			"webapp": {{
+				Name:        "thirdparty",
+				Direction:   DirectionBoth,
+				PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "vendor-x"}},
+			}},
+		},
+	})
+	if len(out.Policies) != 2 {
+		t.Fatalf("expected 2 policies (label + binding), got %d", len(out.Policies))
+	}
+	var labelPolicy *networkingv1.NetworkPolicy
+	for i := range out.Policies {
+		if out.Policies[i].Name == "kube-vnet-payments-platform" {
+			labelPolicy = &out.Policies[i]
+		}
+	}
+	if labelPolicy == nil {
+		t.Fatalf("did not find the label-driven policy")
+	}
+	if len(labelPolicy.Spec.Ingress) != 1 || len(labelPolicy.Spec.Ingress[0].From) != 2 {
+		t.Fatalf("expected 2 ingress.from entries (label + binding), got %#v", labelPolicy.Spec.Ingress)
+	}
+	// One of the entries should match the binding's verbatim selector.
+	found := false
+	for _, peer := range labelPolicy.Spec.Ingress[0].From {
+		if peer.PodSelector != nil && peer.PodSelector.MatchLabels["app"] == "vendor-x" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no peer entry referenced the binding's selector: %#v", labelPolicy.Spec.Ingress[0].From)
+	}
+}
+
 func TestPolicyName_TruncatesWithHash(t *testing.T) {
 	long := strings.Repeat("x", 250)
 	got := PolicyName(long, long)

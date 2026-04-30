@@ -104,10 +104,29 @@ type InvalidJoiner struct {
 // label the pod uses — only the home namespace ever has KeyBare entries),
 // then by Direction. The leaf is the list of pod names (informational —
 // generated selectors match by label, not by name).
+//
+// BindingsByNS is keyed by namespace, with the list of label-free
+// VirtualNetworkBinding-driven members in that namespace. Each binding
+// contributes one membership policy (with the binding's podSelector
+// verbatim) AND one peer entry in every other policy's peer rules.
 type GenerateInput struct {
-	VNet        *vnetv1alpha1.VirtualNetwork
-	LabelPrefix string
-	MembersByNS map[string]map[KeyForm]map[Direction][]string
+	VNet         *vnetv1alpha1.VirtualNetwork
+	LabelPrefix  string
+	MembersByNS  map[string]map[KeyForm]map[Direction][]string
+	BindingsByNS map[string][]BindingSpec
+}
+
+// BindingSpec is the generator's view of one VirtualNetworkBinding (already
+// scoped to bindings that target the current VirtualNetwork and live in a
+// namespace permitted by spec.allowedNamespaces).
+type BindingSpec struct {
+	// Name is the binding's metadata.name. Used to build the per-binding
+	// policy name.
+	Name string
+	// Direction is the parsed direction the binding establishes.
+	Direction Direction
+	// PodSelector is the binding's spec.podSelector (verbatim).
+	PodSelector metav1.LabelSelector
 }
 
 // GenerateOutput holds the desired NetworkPolicies.
@@ -248,25 +267,30 @@ func Generate(in GenerateInput) GenerateOutput {
 	homeNS := vnet.Namespace
 	netID := homeNS + "." + vnet.Name
 
-	// Sort namespaces for deterministic output.
-	memberNamespaces := make([]string, 0, len(in.MembersByNS))
+	// Sort namespaces for deterministic output. The union of label-driven
+	// and binding-driven membership defines the namespaces that participate.
+	nsSet := map[string]struct{}{}
 	for ns, byForm := range in.MembersByNS {
-		// Skip namespaces with no actual members across any (form, direction).
-		any := false
 		for _, byDir := range byForm {
 			for _, pods := range byDir {
 				if len(pods) > 0 {
-					any = true
+					nsSet[ns] = struct{}{}
 					break
 				}
 			}
-			if any {
+		}
+	}
+	for ns, bs := range in.BindingsByNS {
+		for _, b := range bs {
+			if b.Direction != DirectionNone {
+				nsSet[ns] = struct{}{}
 				break
 			}
 		}
-		if any {
-			memberNamespaces = append(memberNamespaces, ns)
-		}
+	}
+	memberNamespaces := make([]string, 0, len(nsSet))
+	for ns := range nsSet {
+		memberNamespaces = append(memberNamespaces, ns)
 	}
 	sort.Strings(memberNamespaces)
 
@@ -327,6 +351,54 @@ func Generate(in GenerateInput) GenerateOutput {
 	peerTos := make([]networkingv1.NetworkPolicyPeer, 0, len(receivers))
 	for _, pk := range receivers {
 		peerTos = append(peerTos, makePeer(pk, peerReceiverValues))
+	}
+
+	// Bindings contribute additional peer entries: one per binding, using
+	// the binding's verbatim podSelector + the binding's own namespace.
+	// Bindings with DirectionNone are skipped.
+	type bindingPeer struct {
+		ns       string
+		selector metav1.LabelSelector
+	}
+	bindingInitiators := []bindingPeer{}
+	bindingReceivers := []bindingPeer{}
+	bindingNSes := make([]string, 0, len(in.BindingsByNS))
+	for ns := range in.BindingsByNS {
+		bindingNSes = append(bindingNSes, ns)
+	}
+	sort.Strings(bindingNSes)
+	for _, ns := range bindingNSes {
+		bs := in.BindingsByNS[ns]
+		// Stable order by binding name within a namespace.
+		sortedBs := make([]BindingSpec, len(bs))
+		copy(sortedBs, bs)
+		sort.Slice(sortedBs, func(i, j int) bool { return sortedBs[i].Name < sortedBs[j].Name })
+		for _, b := range sortedBs {
+			if b.Direction == DirectionNone {
+				continue
+			}
+			if b.Direction == DirectionBoth || b.Direction == DirectionEgress {
+				bindingInitiators = append(bindingInitiators, bindingPeer{ns, b.PodSelector})
+			}
+			if b.Direction == DirectionBoth || b.Direction == DirectionIngress {
+				bindingReceivers = append(bindingReceivers, bindingPeer{ns, b.PodSelector})
+			}
+		}
+	}
+	makeBindingPeer := func(bp bindingPeer) networkingv1.NetworkPolicyPeer {
+		sel := bp.selector
+		return networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{NamespaceMetadataNameLabel: bp.ns},
+			},
+			PodSelector: &sel,
+		}
+	}
+	for _, bp := range bindingInitiators {
+		peerFroms = append(peerFroms, makeBindingPeer(bp))
+	}
+	for _, bp := range bindingReceivers {
+		peerTos = append(peerTos, makeBindingPeer(bp))
 	}
 
 	// Note: no DNS allow rule is emitted by membership policies anymore.
@@ -398,8 +470,66 @@ func Generate(in GenerateInput) GenerateOutput {
 			}
 		}
 	}
+
+	// Per-binding policies. One policy per binding (in the binding's own
+	// namespace). The policy's podSelector is the binding's verbatim
+	// podSelector; ingress/egress shape follows the binding's direction.
+	for _, ns := range bindingNSes {
+		bs := in.BindingsByNS[ns]
+		sortedBs := make([]BindingSpec, len(bs))
+		copy(sortedBs, bs)
+		sort.Slice(sortedBs, func(i, j int) bool { return sortedBs[i].Name < sortedBs[j].Name })
+		for _, b := range sortedBs {
+			if b.Direction == DirectionNone {
+				continue
+			}
+			policy := networkingv1.NetworkPolicy{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: networkingv1.SchemeGroupVersion.String(),
+					Kind:       "NetworkPolicy",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: ns,
+					Name:      BindingPolicyName(vnet.Name, b.Name),
+					Labels: map[string]string{
+						LabelManagedBy: LabelManagedByValue,
+						LabelNetwork:   netID,
+						LabelRole:      LabelRoleMembership,
+						LabelBinding:   b.Name,
+					},
+				},
+				Spec: networkingv1.NetworkPolicySpec{
+					PodSelector: b.PodSelector,
+				},
+			}
+			if dirHasIngress(b.Direction) {
+				policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
+				if len(peerFroms) > 0 {
+					policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
+				}
+			}
+			if dirHasEgress(b.Direction) {
+				policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
+				if len(peerTos) > 0 {
+					policy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{To: peerTos}}
+				}
+			}
+			policies = append(policies, policy)
+		}
+	}
 	out.Policies = policies
 	return out
+}
+
+// LabelBinding marks per-VirtualNetworkBinding membership policies with the
+// binding's name (for traceability and easy GC of policies whose binding
+// vanished).
+const LabelBinding = "kube-vnet/binding"
+
+// BindingPolicyName returns the deterministic policy name for a
+// VirtualNetworkBinding-driven membership policy.
+func BindingPolicyName(vnet, binding string) string {
+	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-b-%s", vnet, binding))
 }
 
 func ptrTrue() *bool { b := true; return &b }

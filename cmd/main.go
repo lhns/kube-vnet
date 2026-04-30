@@ -175,6 +175,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	bindingReconciler := &controller.VirtualNetworkBindingReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("kube-vnet-binding"),
+		NSFilter: nsFilter,
+	}
+	if err := bindingReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up binding reconciler")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to add healthz")
 		os.Exit(1)

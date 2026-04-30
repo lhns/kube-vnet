@@ -75,6 +75,8 @@ type VirtualNetworkReconciler struct {
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -137,10 +139,17 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	bindings, bindingInvalid, err := r.discoverBindings(ctx, vnet)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	invalid = append(invalid, bindingInvalid...)
+
 	out := Generate(GenerateInput{
-		VNet:        vnet,
-		LabelPrefix: r.labelPrefix(),
-		MembersByNS: members,
+		VNet:         vnet,
+		LabelPrefix:  r.labelPrefix(),
+		MembersByNS:  members,
+		BindingsByNS: bindings,
 	})
 
 	desiredKeys := make(map[string]bool, len(out.Policies))
@@ -424,6 +433,64 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	return members, invalid, nil
 }
 
+// discoverBindings lists VirtualNetworkBindings cluster-wide and returns the
+// generator's BindingsByNS shape for those that target this vnet AND live in
+// a managed namespace permitted by spec.allowedNamespaces. Bindings with
+// unknown direction values surface as InvalidJoiner.
+func (r *VirtualNetworkReconciler) discoverBindings(
+	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork,
+) (map[string][]BindingSpec, []InvalidJoiner, error) {
+	out := map[string][]BindingSpec{}
+	var invalid []InvalidJoiner
+	var bindings vnetv1alpha1.VirtualNetworkBindingList
+	if err := r.List(ctx, &bindings); err != nil {
+		return nil, nil, err
+	}
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		if b.Spec.VirtualNetworkRef.Name != vnet.Name ||
+			b.Spec.VirtualNetworkRef.Namespace != vnet.Namespace {
+			continue
+		}
+		ns, err := r.getNamespace(ctx, b.Namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ns == nil || !r.NSFilter.IsManaged(ns) {
+			continue
+		}
+		ok, err := r.permits(ctx, vnet, b.Namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			continue
+		}
+		dirVal := b.Spec.Direction
+		if dirVal == "" {
+			dirVal = string(DirectionBoth)
+		}
+		dir, parseOK := ParseDirection(dirVal)
+		if !parseOK {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: b.Namespace,
+				PodName:      "binding/" + b.Name,
+				Reason:       ReasonUnknownDirection,
+			})
+			continue
+		}
+		if dir == DirectionNone {
+			continue
+		}
+		out[b.Namespace] = append(out[b.Namespace], BindingSpec{
+			Name:        b.Name,
+			Direction:   dir,
+			PodSelector: b.Spec.PodSelector,
+		})
+	}
+	return out, invalid, nil
+}
+
 // applyPolicy server-side-applies a NetworkPolicy with the operator's field manager.
 func (r *VirtualNetworkReconciler) applyPolicy(ctx context.Context, p *networkingv1.NetworkPolicy) error {
 	p.SetResourceVersion("")
@@ -682,6 +749,10 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.policyToVNet),
 			builder.WithPredicates(policyPredicate),
 		).
+		Watches(
+			&vnetv1alpha1.VirtualNetworkBinding{},
+			handler.EnqueueRequestsFromMapFunc(r.bindingToVNet),
+		).
 		Complete(r)
 }
 
@@ -727,6 +798,19 @@ func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.Eve
 			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
 		},
 	}
+}
+
+// bindingToVNet maps a VirtualNetworkBinding event back to its referenced
+// VirtualNetwork.
+func (r *VirtualNetworkReconciler) bindingToVNet(_ context.Context, obj client.Object) []reconcile.Request {
+	b, ok := obj.(*vnetv1alpha1.VirtualNetworkBinding)
+	if !ok || b.Spec.VirtualNetworkRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Namespace: b.Spec.VirtualNetworkRef.Namespace,
+		Name:      b.Spec.VirtualNetworkRef.Name,
+	}}}
 }
 
 // policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork
