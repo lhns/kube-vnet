@@ -110,12 +110,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Translate the legacy --default-deny-everywhere into the new
+	// IsolationMode default until the operator-config rename ships in
+	// commit 3.
+	if defaultDenyEverywhere {
+		nsFilter.DefaultIsolation = controller.IsolationPod
+	}
 	nsReconciler := &controller.NamespaceReconciler{
-		Client:                mgr.GetClient(),
-		APIReader:             mgr.GetAPIReader(),
-		Scheme:                mgr.GetScheme(),
-		NSFilter:              nsFilter,
-		DefaultDenyEverywhere: defaultDenyEverywhere,
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		NSFilter:  nsFilter,
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")

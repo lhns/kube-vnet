@@ -42,34 +42,60 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.payments" {
 			return fmt.Errorf("podSelector key=%s", got)
 		}
-		// DNS allowance.
-		if len(p.Spec.Egress) < 2 {
-			return fmt.Errorf("egress rules=%d, expected at least 2", len(p.Spec.Egress))
+		// One ingress allow + one egress allow (peers); no DNS rule under
+		// the new ingress-only baseline (ADR 0025).
+		if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 1 {
+			return fmt.Errorf("expected 1 ingress and 1 egress rule, got ingress=%d egress=%d",
+				len(p.Spec.Ingress), len(p.Spec.Egress))
 		}
 		return nil
 	})
 }
 
-func TestIntegration_Baseline_CreatedOnFirstMember(t *testing.T) {
+// TestIntegration_Baseline_NoLongerImplicitOnMember verifies the
+// behavior change introduced in ADR 0023: adding a vnet member to a
+// namespace no longer implicitly creates the baseline. The baseline is
+// now decided by the resolved ingress-isolation mode (default: none).
+func TestIntegration_Baseline_NoLongerImplicitOnMember(t *testing.T) {
 	ctx := context.Background()
-	ns := uniqueNS(t, "baseline")
+	ns := uniqueNS(t, "no-implicit")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-
-	// Before any member: baseline should not exist.
-	time.Sleep(500 * time.Millisecond)
-	bp := &networkingv1.NetworkPolicy{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); !apierrors.IsNotFound(err) {
-		t.Fatalf("baseline should not exist yet, got err=%v", err)
-	}
-
-	// Adding a member triggers baseline creation.
 	mustCreate(t, makePod(ns, "p1", map[string]string{"kube-vnet/net.v": "true"}))
+
+	// Wait long enough for the membership policy to be applied …
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		return err
+	})
+	// … and verify the baseline was NOT installed (default isolation mode is none).
+	bp := &networkingv1.NetworkPolicy{}
+	err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("baseline should NOT exist with default isolation mode (none), got err=%v", err)
+	}
+}
+
+// TestIntegration_Baseline_AnnotationCreates verifies that setting the
+// per-namespace ingress-isolation annotation brings the baseline into
+// existence regardless of vnet membership presence.
+func TestIntegration_Baseline_AnnotationCreates(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "ann-iso")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+
+	bp := &networkingv1.NetworkPolicy{}
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
+	// IsolationPod baseline: Ingress only, no allow rules.
+	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Errorf("policyTypes should be [Ingress], got %v", bp.Spec.PolicyTypes)
+	}
 }
 
 func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
@@ -396,22 +422,54 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 	})
 }
 
-// TestIntegration_BaselineGC_OnVNetDelete: deleting the vnet must remove the
-// baseline default-deny in the namespace too, since the baseline only exists
-// to backstop the operator's membership policies. Leaving it behind would
-// silently keep the namespace in a deny-by-default state with no operator
-// resource left to explain it.
-func TestIntegration_BaselineGC_OnVNetDelete(t *testing.T) {
+// TestIntegration_Baseline_AnnotationRemovalRemovesBaseline: removing the
+// per-namespace ingress-isolation annotation reverts to the operator default
+// (`none` in tests) and the baseline is removed.
+func TestIntegration_Baseline_AnnotationRemovalRemovesBaseline(t *testing.T) {
 	ctx := context.Background()
-	ns := uniqueNS(t, "bgc")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	v := &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	ns := uniqueNS(t, "ann-revert")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Strip the annotation.
+	current := &corev1.Namespace{}
+	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, current); err != nil {
+		t.Fatalf("get namespace: %v", err)
 	}
+	delete(current.Annotations, "kube-vnet/ingress-isolation")
+	if err := testClient.Update(ctx, current); err != nil {
+		t.Fatalf("update namespace: %v", err)
+	}
+
+	eventually(t, 10*time.Second, func() error {
+		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("baseline still exists after annotation removed: err=%v", err)
+	})
+}
+
+// TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline: under the new
+// decoupled model (ADR 0023), deleting a vnet does not affect the baseline
+// — the baseline is owned by NamespaceReconciler and reacts only to the
+// resolved IsolationMode, not to membership presence.
+func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "vdel-keep")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+	v := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns}}
 	mustCreate(t, v)
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
 
-	// Wait for the baseline to appear.
 	bp := &networkingv1.NetworkPolicy{}
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
@@ -421,104 +479,18 @@ func TestIntegration_BaselineGC_OnVNetDelete(t *testing.T) {
 	if err := testClient.Delete(ctx, v); err != nil {
 		t.Fatalf("delete vnet: %v", err)
 	}
-
-	// Baseline should be GC'd.
 	eventually(t, 10*time.Second, func() error {
-		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("baseline still exists after vnet delete (err=%v)", err)
-	})
-}
-
-// TestIntegration_BaselineGC_TwoVNetsKeepBaseline: deleting one vnet must NOT
-// remove the baseline if another vnet in the same namespace still has members.
-// Guards against over-eager GC.
-func TestIntegration_BaselineGC_TwoVNetsKeepBaseline(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "twovnet")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	a := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: ns}}
-	b := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns}}
-	mustCreate(t, a)
-	mustCreate(t, b)
-	mustCreate(t, makePod(ns, "pa", map[string]string{"kube-vnet/net.a": "true"}))
-	mustCreate(t, makePod(ns, "pb", map[string]string{"kube-vnet/net.b": "true"}))
-
-	// Wait for the baseline.
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+		return fmt.Errorf("membership policy still exists: %v", err)
 	})
 
-	// Delete vnet a only. b's pod is still a member, so the baseline must stay.
-	if err := testClient.Delete(ctx, a); err != nil {
-		t.Fatalf("delete vnet a: %v", err)
-	}
-
-	// Wait for a's policy to be gone.
-	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-a-"+ns)
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("a's policy still exists: %v", err)
-	})
-
-	// Baseline must still be present.
+	// Baseline should still be there — the annotation hasn't changed.
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-		t.Fatalf("baseline disappeared while vnet b still has members: %v", err)
+		t.Fatalf("baseline disappeared after vnet delete (annotation still says ingress-isolation=pod): %v", err)
 	}
-}
-
-// TestIntegration_BaselineGC_ForeignNamespaceEmpties: shrinking
-// allowedNamespaces so that a foreign namespace no longer has any membership
-// policy must GC the baseline in that foreign namespace. Exercises the
-// deleteStale path (different from cleanupForDeleted).
-func TestIntegration_BaselineGC_ForeignNamespaceEmpties(t *testing.T) {
-	ctx := context.Background()
-	home := uniqueNS(t, "fhome")
-	foreign := uniqueNS(t, "fforeign")
-	mustCreate(t, makeNamespace(home, nil, nil))
-	mustCreate(t, makeNamespace(foreign, nil, nil))
-
-	v := &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: home},
-		Spec: vnetv1alpha1.VirtualNetworkSpec{
-			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
-		},
-	}
-	mustCreate(t, v)
-	// Pod in foreign joins via the namespace-prefixed label.
-	mustCreate(t, makePod(foreign, "p", map[string]string{
-		"kube-vnet/net." + home + ".v": "true",
-	}))
-
-	// Wait for the foreign baseline to appear (member triggers it).
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: BaselinePolicyName}, bp)
-	})
-
-	// Now shrink the spec: remove `foreign` from allowedNamespaces.
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "v"}, v); err != nil {
-		t.Fatalf("get vnet: %v", err)
-	}
-	v.Spec.AllowedNamespaces = nil
-	if err := testClient.Update(ctx, v); err != nil {
-		t.Fatalf("update vnet: %v", err)
-	}
-
-	// Foreign membership policy should be deleted (deleteStale path), and
-	// then the baseline in `foreign` should be GC'd.
-	eventually(t, 15*time.Second, func() error {
-		err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: BaselinePolicyName}, bp)
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("foreign baseline still exists after allowedNamespaces shrank (err=%v)", err)
-	})
 }
 
 // TestIntegration_PolicyRestoredEvent: deleting an operator-managed
@@ -673,6 +645,57 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
+// ----- ingress-isolation mode tests ---------------------------------------
+
+// TestIntegration_IngressIsolation_Namespace_BaselineAllowsSameNS:
+// kube-vnet/ingress-isolation=namespace puts a baseline that allows ingress
+// only from same-namespace pods.
+func TestIntegration_IngressIsolation_Namespace_BaselineAllowsSameNS(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "ns-iso")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "namespace",
+	}, nil))
+
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Errorf("policyTypes should be [Ingress] only, got %v", bp.Spec.PolicyTypes)
+	}
+	if len(bp.Spec.Ingress) != 1 {
+		t.Fatalf("expected one ingress rule, got %d", len(bp.Spec.Ingress))
+	}
+	from := bp.Spec.Ingress[0].From[0]
+	if from.NamespaceSelector == nil ||
+		from.NamespaceSelector.MatchLabels[NamespaceMetadataNameLabel] != ns {
+		t.Errorf("ingress peer should select same namespace, got %+v", from)
+	}
+}
+
+// TestIntegration_IngressIsolation_NoEgressInBaseline: regardless of mode,
+// the baseline never restricts egress (ADR 0025).
+func TestIntegration_IngressIsolation_NoEgressInBaseline(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "no-egress")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+	for _, t2 := range bp.Spec.PolicyTypes {
+		if t2 == networkingv1.PolicyTypeEgress {
+			t.Errorf("baseline must not have Egress in policyTypes (ADR 0025)")
+		}
+	}
+	if len(bp.Spec.Egress) != 0 {
+		t.Errorf("baseline egress should be empty, got %+v", bp.Spec.Egress)
+	}
+}
+
 // ----- direction modes + long-form-in-home tests ---------------------------
 
 // TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
@@ -823,13 +846,19 @@ func TestIntegration_LongForm_BothInHome_Conflict(t *testing.T) {
 
 // ----- --default-deny-everywhere flag tests ---------------------------------
 
-// withDefaultDenyEverywhere flips the test's NamespaceReconciler flag for the
-// duration of the test, then restores it. Tests serialized by t.
+// withDefaultDenyEverywhere flips the test reconciler's default isolation
+// mode for the duration of the test, then restores it. Implemented via the
+// new NamespaceFilter.DefaultIsolation field (the legacy boolean flag is
+// gone — see ADRs 0023 + 0025).
 func withDefaultDenyEverywhere(t *testing.T, on bool) {
 	t.Helper()
-	prior := testNSReconciler.DefaultDenyEverywhere
-	testNSReconciler.DefaultDenyEverywhere = on
-	t.Cleanup(func() { testNSReconciler.DefaultDenyEverywhere = prior })
+	prior := testNSReconciler.NSFilter.DefaultIsolation
+	if on {
+		testNSReconciler.NSFilter.DefaultIsolation = IsolationPod
+	} else {
+		testNSReconciler.NSFilter.DefaultIsolation = IsolationNone
+	}
+	t.Cleanup(func() { testNSReconciler.NSFilter.DefaultIsolation = prior })
 }
 
 // touchNamespace forces a reconcile of the namespace by issuing a no-op label

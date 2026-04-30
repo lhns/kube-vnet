@@ -1,6 +1,6 @@
 # 0006 — Default-deny baseline and single per-namespace opt-out
 
-Status: Accepted (supersedes the design doc's `kube-vnet/baseline: disabled` annotation)
+Status: Superseded by ADR 0023 (decoupled `disabled` and `ingress-isolation` annotations) and ADR 0025 (ingress-isolation rename + egress unrestricted)
 
 ## Context
 

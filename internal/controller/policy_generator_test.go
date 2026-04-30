@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -73,24 +72,10 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !equalStringSlice(got, wantValues) {
 		t.Errorf("podSelector values=%v want %v", got, wantValues)
 	}
-	// Bidi policy: ingress + egress + DNS rule.
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 2 {
-		t.Errorf("ingress=%d egress=%d", len(p.Spec.Ingress), len(p.Spec.Egress))
-	}
-	dns := p.Spec.Egress[1]
-	foundUDP, foundTCP := false, false
-	for _, port := range dns.Ports {
-		if port.Protocol != nil {
-			if *port.Protocol == corev1.ProtocolUDP {
-				foundUDP = true
-			}
-			if *port.Protocol == corev1.ProtocolTCP {
-				foundTCP = true
-			}
-		}
-	}
-	if !foundUDP || !foundTCP {
-		t.Errorf("DNS allowance must include UDP and TCP")
+	// Bidi policy: one ingress allow + one egress allow (peers only, no DNS
+	// — egress is unrestricted under the new baseline; ADR 0025).
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 1 {
+		t.Errorf("ingress=%d egress=%d (expected 1 each)", len(p.Spec.Ingress), len(p.Spec.Egress))
 	}
 }
 

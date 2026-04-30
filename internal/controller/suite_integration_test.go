@@ -95,11 +95,10 @@ func TestMain(m *testing.M) {
 	}
 
 	testNSReconciler = &NamespaceReconciler{
-		Client:                mgr.GetClient(),
-		APIReader:             mgr.GetAPIReader(),
-		Scheme:                mgr.GetScheme(),
-		NSFilter:              NewNamespaceFilter(nil),
-		DefaultDenyEverywhere: false, // tests opt in via the helper below
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		NSFilter:  NewNamespaceFilter(nil),
 	}
 	if err := testNSReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)

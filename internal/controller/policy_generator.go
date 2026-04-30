@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"sort"
 
-	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
@@ -331,29 +329,9 @@ func Generate(in GenerateInput) GenerateOutput {
 		peerTos = append(peerTos, makePeer(pk, peerReceiverValues))
 	}
 
-	// DNS egress rule. Included in every membership policy that has
-	// PolicyTypes: Egress (i.e. bidi + egress-only). Until commit 2 reshapes
-	// the baseline this stays redundant with the baseline's DNS allow, but
-	// matters for pods that aren't reached by the baseline (e.g. the
-	// ingress-isolation: namespace mode in commit 2 doesn't restrict egress
-	// at all, but we still emit it harmlessly).
-	dnsPort53UDP := corev1.ProtocolUDP
-	dnsPort53TCP := corev1.ProtocolTCP
-	port53 := intstr.FromInt(53)
-	dnsEgress := networkingv1.NetworkPolicyEgressRule{
-		To: []networkingv1.NetworkPolicyPeer{{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{NamespaceMetadataNameLabel: KubeSystemNamespace},
-			},
-			PodSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{DNSAppLabelKey: DNSAppLabelValue},
-			},
-		}},
-		Ports: []networkingv1.NetworkPolicyPort{
-			{Protocol: &dnsPort53UDP, Port: &port53},
-			{Protocol: &dnsPort53TCP, Port: &port53},
-		},
-	}
+	// Note: no DNS allow rule is emitted by membership policies anymore.
+	// Under the new ingress-isolation baseline (ADR 0025) egress is never
+	// restricted by kube-vnet, so DNS works without an explicit allow.
 
 	policies := []networkingv1.NetworkPolicy{}
 	for _, ns := range memberNamespaces {
@@ -401,12 +379,9 @@ func Generate(in GenerateInput) GenerateOutput {
 				}
 				if dirHasEgress(dir) {
 					policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
-					egressRules := []networkingv1.NetworkPolicyEgressRule{}
 					if len(peerTos) > 0 {
-						egressRules = append(egressRules, networkingv1.NetworkPolicyEgressRule{To: peerTos})
+						policy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{To: peerTos}}
 					}
-					egressRules = append(egressRules, dnsEgress)
-					policy.Spec.Egress = egressRules
 				}
 
 				if ns == homeNS {

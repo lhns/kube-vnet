@@ -28,6 +28,8 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 20. [0020 — `--default-deny-everywhere` flag for cluster-wide default-deny](0020-default-deny-unmanaged-namespaces.md)
 21. [0021 — Direction modes on join labels (`both` / `ingress` / `egress` / `none`)](0021-direction-modes-on-join-labels.md)
 22. [0022 — Long-form join label accepted in the home namespace](0022-long-form-join-label-in-home-namespace.md)
+23. [0023 — Decoupled `disabled` and `ingress-isolation` annotations](0023-decoupled-disabled-and-ingress-isolation.md)
+25. [0025 — `ingress-isolation` rename + egress unrestricted](0025-ingress-isolation-rename-egress-unrestricted.md)
 
 ## Format
 
