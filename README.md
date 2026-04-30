@@ -80,6 +80,17 @@ The picture:
 
 That's the whole core idea. Everything else in this README is variations on it (cross-namespace reach, opt-outs, etc.) or operational details.
 
+## Documentation
+
+Full docs live under [`docs/`](docs/README.md):
+
+- **New here** → [`docs/concepts.md`](docs/concepts.md) (the model in depth) and [`docs/faq.md`](docs/faq.md).
+- **Installing** → [`docs/install.md`](docs/install.md) (Helm, kubectl, signature verification).
+- **Day-to-day usage** → [`docs/recipes.md`](docs/recipes.md) (worked examples) and [`docs/reference/`](docs/reference/) (look-up tables).
+- **Running it in production** → [`docs/operations.md`](docs/operations.md) and [`docs/security.md`](docs/security.md).
+- **Something is broken** → [`docs/troubleshooting.md`](docs/troubleshooting.md).
+- **Contributing** → [`docs/development.md`](docs/development.md), [`docs/architecture.md`](docs/architecture.md), and the [ADRs](docs/adr/README.md).
+
 ## Prerequisites
 
 - A Kubernetes cluster (1.25+ for the CRD's CEL validation).
