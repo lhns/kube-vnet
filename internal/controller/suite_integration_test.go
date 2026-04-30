@@ -30,10 +30,11 @@ import (
 
 // Shared envtest fixture set up by TestMain. All integration tests share one apiserver.
 var (
-	testEnv    *envtest.Environment
-	testCfg    *rest.Config
-	testClient client.Client
-	testScheme = runtime.NewScheme()
+	testEnv         *envtest.Environment
+	testCfg         *rest.Config
+	testClient      client.Client
+	testScheme      = runtime.NewScheme()
+	testNSReconciler *NamespaceReconciler // exposed so tests can flip DefaultDenyEverywhere
 )
 
 func TestMain(m *testing.M) {
@@ -85,6 +86,19 @@ func TestMain(m *testing.M) {
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup controller: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
+	testNSReconciler = &NamespaceReconciler{
+		Client:                mgr.GetClient(),
+		APIReader:             mgr.GetAPIReader(),
+		Scheme:                mgr.GetScheme(),
+		NSFilter:              NewNamespaceFilter(nil),
+		DefaultDenyEverywhere: false, // tests opt in via the helper below
+	}
+	if err := testNSReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}

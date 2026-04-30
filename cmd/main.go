@@ -30,11 +30,12 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr        string
-		probeAddr          string
-		enableLeaderElect  bool
-		labelPrefix        string
-		excludedNamespaces string
+		metricsAddr           string
+		probeAddr             string
+		enableLeaderElect     bool
+		labelPrefix           string
+		excludedNamespaces    string
+		defaultDenyEverywhere bool
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
@@ -43,6 +44,12 @@ func main() {
 	flag.StringVar(&excludedNamespaces, "excluded-namespaces",
 		"kube-system,kube-public,kube-node-lease",
 		"comma-separated namespaces excluded from kube-vnet management",
+	)
+	flag.BoolVar(&defaultDenyEverywhere, "default-deny-everywhere", false,
+		"install the kube-vnet-default-deny baseline in every non-excluded, non-disabled namespace, "+
+			"even those with no VirtualNetwork members. Cluster-wide default-deny posture. "+
+			"Default false — opt in deliberately; flipping this on an existing cluster can break workloads "+
+			"that previously relied on default-allow.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -84,6 +91,18 @@ func main() {
 
 	if err := mgr.Add(&controller.MetricsCollector{Client: mgr.GetClient()}); err != nil {
 		setupLog.Error(err, "unable to register metrics collector")
+		os.Exit(1)
+	}
+
+	nsReconciler := &controller.NamespaceReconciler{
+		Client:                mgr.GetClient(),
+		APIReader:             mgr.GetAPIReader(),
+		Scheme:                mgr.GetScheme(),
+		NSFilter:              nsFilter,
+		DefaultDenyEverywhere: defaultDenyEverywhere,
+	}
+	if err := nsReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up namespace reconciler")
 		os.Exit(1)
 	}
 

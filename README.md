@@ -196,6 +196,27 @@ Two equivalent ways:
 
 When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible joiners for any VirtualNetwork (regardless of `allowedNamespaces`).
 
+## Default-deny everywhere (cluster-wide posture)
+
+By default the operator is **opt-in per namespace**: a namespace gets the `kube-vnet-default-deny` baseline only when at least one pod there joins a VirtualNetwork. Namespaces with no membership stay default-allow, just like a vanilla Kubernetes cluster.
+
+If you want kube-vnet to be the cluster's network-policy story — every namespace deny-by-default unless members opt in — turn on `--default-deny-everywhere`:
+
+```yaml
+args:
+  - --default-deny-everywhere
+```
+
+When enabled, the operator ensures `kube-vnet-default-deny` exists in **every namespace** that is not on the operator-level exclusion list and does not carry `kube-vnet/disabled=true`. Adding `kube-vnet/disabled=true` to a namespace removes its baseline; turning the flag off removes baselines that no membership policy still needs.
+
+**Migration warning.** Flipping this on against an existing cluster will instantly impose default-deny on every workload that's not yet using kube-vnet. To roll out safely:
+
+1. Annotate every namespace that hasn't been migrated with `kube-vnet/disabled=true`.
+2. Turn the flag on.
+3. Remove the `kube-vnet/disabled` annotation namespace-by-namespace as workloads are migrated to use VirtualNetworks.
+
+See [ADR 0020](docs/adr/0020-default-deny-unmanaged-namespaces.md).
+
 ## Configuration
 
 | Flag | Default | Description |
@@ -205,6 +226,7 @@ When a namespace is unmanaged: no baseline is created, no membership policies ar
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
 | `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
 | `--excluded-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces excluded from kube-vnet management |
+| `--default-deny-everywhere` | `false` | install the baseline in every non-excluded, non-disabled namespace (cluster-wide default-deny posture) |
 
 ## Observability
 

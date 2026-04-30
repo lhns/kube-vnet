@@ -673,5 +673,122 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
+// ----- --default-deny-everywhere flag tests ---------------------------------
+
+// withDefaultDenyEverywhere flips the test's NamespaceReconciler flag for the
+// duration of the test, then restores it. Tests serialized by t.
+func withDefaultDenyEverywhere(t *testing.T, on bool) {
+	t.Helper()
+	prior := testNSReconciler.DefaultDenyEverywhere
+	testNSReconciler.DefaultDenyEverywhere = on
+	t.Cleanup(func() { testNSReconciler.DefaultDenyEverywhere = prior })
+}
+
+// touchNamespace forces a reconcile of the namespace by issuing a no-op label
+// update. Needed because in tests we may flip the flag *after* a namespace was
+// created and the watch already fired without our flag being on.
+func touchNamespace(t *testing.T, name string) {
+	t.Helper()
+	ns := &corev1.Namespace{}
+	if err := testClient.Get(context.Background(), client.ObjectKey{Name: name}, ns); err != nil {
+		t.Fatalf("get namespace %s: %v", name, err)
+	}
+	if ns.Labels == nil {
+		ns.Labels = map[string]string{}
+	}
+	ns.Labels["kube-vnet-test/touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
+	if err := testClient.Update(context.Background(), ns); err != nil {
+		t.Fatalf("touch namespace %s: %v", name, err)
+	}
+}
+
+// TestIntegration_DefaultDenyAll_FlagOff_NoBaselineInEmptyNS: regression guard
+// for the existing default — flag off, fresh namespace with no vnet, no
+// baseline appears.
+func TestIntegration_DefaultDenyAll_FlagOff_NoBaselineInEmptyNS(t *testing.T) {
+	ctx := context.Background()
+	withDefaultDenyEverywhere(t, false)
+	ns := uniqueNS(t, "ddaoff")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	// Wait long enough for any reconcile to happen, then verify nothing.
+	time.Sleep(2 * time.Second)
+	bp := &networkingv1.NetworkPolicy{}
+	err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("baseline should not exist with flag off: err=%v", err)
+	}
+}
+
+// TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere: flag on, fresh
+// namespace with no vnet → baseline appears.
+func TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere(t *testing.T) {
+	ctx := context.Background()
+	withDefaultDenyEverywhere(t, true)
+	ns := uniqueNS(t, "ddaon")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	touchNamespace(t, ns)
+
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+}
+
+// TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped: flag on,
+// namespace annotated kube-vnet/disabled=true → no baseline.
+func TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped(t *testing.T) {
+	ctx := context.Background()
+	withDefaultDenyEverywhere(t, true)
+	ns := uniqueNS(t, "ddadis")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+	touchNamespace(t, ns)
+
+	time.Sleep(2 * time.Second)
+	bp := &networkingv1.NetworkPolicy{}
+	err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("baseline should not exist in disabled ns even with flag on: err=%v", err)
+	}
+}
+
+// TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff: flag on,
+// baseline present, then the disabled annotation gets added → baseline removed.
+func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing.T) {
+	ctx := context.Background()
+	withDefaultDenyEverywhere(t, true)
+	ns := uniqueNS(t, "ddaflip")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	touchNamespace(t, ns)
+
+	// Baseline appears.
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Add the disabled annotation.
+	current := &corev1.Namespace{}
+	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, current); err != nil {
+		t.Fatalf("get namespace: %v", err)
+	}
+	if current.Annotations == nil {
+		current.Annotations = map[string]string{}
+	}
+	current.Annotations["kube-vnet/disabled"] = "true"
+	if err := testClient.Update(ctx, current); err != nil {
+		t.Fatalf("annotate namespace: %v", err)
+	}
+
+	// Baseline goes away.
+	eventually(t, 10*time.Second, func() error {
+		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("baseline still present after disabling: err=%v", err)
+	})
+}
+
 // ensure imports stay used when individual tests are commented out
 var _ = corev1.Namespace{}
