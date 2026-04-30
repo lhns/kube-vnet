@@ -258,9 +258,9 @@ The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and l
 
 CRD changes are not applied by `helm upgrade` — see [`install.md`](install.md) for how to apply CRD updates explicitly.
 
-### "I want to enable cluster-wide default-deny"
+### "I want to enable cluster-wide ingress-isolation"
 
-The flag `--default-deny-everywhere` is opt-in. Flipping it on against an existing cluster will install the deny baseline in every non-excluded, non-disabled namespace immediately, which can break workloads that previously relied on default-allow.
+`--ingress-isolation` defaults to `none`. Setting it to `pod` against an existing cluster will install the strict-ingress baseline in every non-excluded, non-disabled namespace immediately, which can break workloads that previously relied on default-allow ingress.
 
 Recommended rollout:
 
@@ -268,13 +268,26 @@ Recommended rollout:
    ```bash
    kubectl annotate namespace <name> kube-vnet/disabled=true
    ```
-2. Turn the flag on:
+2. Set the cluster-wide default (or use the override lists to ramp up gradually):
    ```bash
-   helm upgrade kube-vnet ... --set operator.defaultDenyEverywhere=true
+   helm upgrade kube-vnet ... --set operator.ingressIsolation.mode=pod
+   # Or migrate per-namespace via the override list:
+   helm upgrade kube-vnet ... \
+     --set 'operator.ingressIsolation.mode=none' \
+     --set 'operator.ingressIsolation.forcePod={ns-a,ns-b}'
    ```
 3. Remove the `kube-vnet/disabled` annotation namespace by namespace as workloads are migrated.
 
-See [ADR 0020](adr/0020-default-deny-unmanaged-namespaces.md).
+Per-namespace overrides via the `kube-vnet/ingress-isolation` annotation always win over the operator-level config. See [ADR 0023](adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+
+### "I'm upgrading from a release that had `--default-deny-everywhere`"
+
+Two behavior changes since the rename and the egress-unrestricted reshape:
+
+- **Egress is no longer restricted** by the operator's baseline. Existing installs that relied on the previous "deny everything except DNS + vnet members" egress will see their egress posture loosen on upgrade. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
+- **The implicit "first vnet member triggers the baseline" coupling is gone.** Set `kube-vnet/ingress-isolation: pod` on the namespace explicitly (or use the operator-level config) if you want the previous behavior.
+
+`--default-deny-everywhere=true` and `operator.defaultDenyEverywhere=true` continue to work as aliases for `--ingress-isolation=pod` (with a deprecation warning at startup). The deprecated names will be removed in a future release.
 
 ### "Pods I expect to be isolated can talk to each other"
 
@@ -293,8 +306,9 @@ See [`security.md`](security.md) for the full RBAC inventory.
 Per `VirtualNetwork`:
 
 - 1 CRD object.
-- 1 `NetworkPolicy` per namespace with members. Empty member sets generate nothing.
-- 0 baselines if no member; 1 baseline per namespace with at least one member (or every managed namespace if `--default-deny-everywhere=true`).
+- Up to 1 `NetworkPolicy` per (namespace, direction class) with members. In the home namespace, when both bare and prefixed label forms are in use for a given direction class, two policies appear (one suffixed `-prefixed`). Empty member sets generate nothing.
+- 1 extra `NetworkPolicy` per `VirtualNetworkBinding` attached to the vnet.
+- Baselines are owned by the `NamespaceReconciler` (not by per-vnet reconciliation): 1 baseline per namespace whose resolved `ingress-isolation` mode is `namespace` or `pod`. Namespaces with mode `none` get no baseline.
 
 Per labeled pod: 0 (the label is on a pod the user owns; the operator doesn't add anything to the pod itself).
 

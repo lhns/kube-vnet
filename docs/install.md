@@ -54,8 +54,14 @@ Replace `0.1.0` with the version you want — see the [GitHub releases page](htt
 # Pin a specific image tag (default: chart appVersion)
 helm install ... --set image.tag=v0.1.0
 
-# Cluster-wide default-deny posture (see concepts.md and ADR 0020)
-helm install ... --set operator.defaultDenyEverywhere=true
+# Cluster-wide ingress-isolation default (none|namespace|pod). See concepts.md and ADRs 0023-0025.
+helm install ... --set operator.ingressIsolation.mode=pod
+
+# Per-mode override lists carve out exceptions to the cluster-wide default.
+helm install ... \
+  --set 'operator.ingressIsolation.mode=pod' \
+  --set 'operator.ingressIsolation.forceNone={legacy,sandbox}' \
+  --set 'operator.ingressIsolation.forceNamespace={team-a,team-b}'
 
 # Customize the operator-level exclusion list (the operator's own ns is auto-added)
 helm install ... --set 'operator.excludedNamespaces={kube-system,kube-public,kube-node-lease,my-legacy-ns}'

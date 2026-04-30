@@ -4,7 +4,7 @@ Where to start, by what you're trying to do.
 
 ## I want to evaluate kube-vnet
 
-- [**Concepts**](concepts.md) — the model in depth: VirtualNetworks, the join-eligibility rule for `allowedNamespaces`, the default-deny baseline, how it all maps onto stock NetworkPolicy.
+- [**Concepts**](concepts.md) — the model in depth: VirtualNetworks, direction modes, the join-eligibility rule for `allowedNamespaces`, the ingress-isolation baseline, `VirtualNetworkBinding` as the no-label alternative, how it all maps onto stock NetworkPolicy.
 - [**FAQ**](faq.md) — common upfront questions: production-ready?, CNI compatibility, comparison to AdminNetworkPolicy, etc.
 - [`../README.md`](../README.md) — short pitch + worked example on the project front page.
 
@@ -16,8 +16,8 @@ Where to start, by what you're trying to do.
 ## I'm using it day-to-day
 
 - [**Concepts**](concepts.md) — the mental model that makes the API obvious.
-- [**Recipes**](recipes.md) — worked examples beyond the minimal samples in `config/samples/`: three-tier app, observability network, bridge pods, migration patterns, coexisting with user-managed NetworkPolicy.
-- [**Reference / API**](reference/api.md) — full `VirtualNetwork` CRD spec + the status condition taxonomy.
+- [**Recipes**](recipes.md) — worked examples beyond the minimal samples in `config/samples/`: three-tier app, observability network, bridge pods, direction-mode patterns, `VirtualNetworkBinding`, migration, coexisting with user-managed NetworkPolicy, per-workload egress allowlists.
+- [**Reference / API**](reference/api.md) — full `VirtualNetwork` and `VirtualNetworkBinding` CRD specs + the status condition taxonomy.
 - [**Reference / Labels & annotations**](reference/labels-and-annotations.md) — every label and annotation kube-vnet writes or honors.
 
 ## I'm running it in production
@@ -38,7 +38,7 @@ Where to start, by what you're trying to do.
 
 ## Reference material (look-ups, not narrative)
 
-- [`reference/api.md`](reference/api.md) — `VirtualNetwork` CRD: every field, every status condition reason.
+- [`reference/api.md`](reference/api.md) — `VirtualNetwork` and `VirtualNetworkBinding` CRDs: every field, every status condition reason.
 - [`reference/configuration.md`](reference/configuration.md) — every flag, every Helm value, every env var.
 - [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md) — the kube-vnet label/annotation contract.
 - [`reference/metrics-and-events.md`](reference/metrics-and-events.md) — observability surface.

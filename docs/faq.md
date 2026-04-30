@@ -61,15 +61,23 @@ A VirtualNetwork always belongs to one application namespace that owns it. Reach
 
 ### Can pods join multiple VirtualNetworks?
 
-Yes, additively. A pod with labels for vnets A and B can reach members of A *or* B. Set the labels independently:
+Yes, additively. A pod with labels for vnets A and B can reach members of A *or* B (in the directions each label declares). Set the labels independently:
 
 ```yaml
 labels:
-  kube-vnet/net.payments: "true"
-  kube-vnet/net.monitoring: "true"
+  kube-vnet/net.payments: both
+  kube-vnet/net.monitoring: egress
 ```
 
 See [the bridge-pod recipe](recipes.md#bridge-pod-joining-two-vnets-sidecar--proxy-pattern).
+
+### What are direction modes?
+
+The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). Legacy `"true"` maps to `both` and `"false"` maps to `none`. Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
+
+### Can I attach pods to a vnet without modifying their template?
+
+Yes — use a `VirtualNetworkBinding` (short names `vnb`, `vnbs`). It selects pods *in its own namespace* via a `podSelector` and attaches them to a target vnet. Useful for third-party Helm charts or pods owned by another operator. Bindings live next to the pods they select; there's no cross-namespace binding. See [the binding recipe](recipes.md#enrolling-third-party-pods-via-virtualnetworkbinding) and [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
 
 ### Why one label per vnet, not a comma-separated list?
 
@@ -131,7 +139,11 @@ No. It only owns objects labeled `kube-vnet/managed-by=kube-vnet`. Your policies
 
 ### What about egress to the public internet?
 
-kube-vnet's baseline only allows DNS egress. Anything else (internet, external databases) needs an explicit user-managed `NetworkPolicy`. The design doc lists external egress as a possible future first-class concept.
+kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+
+### Why did egress just start working after the upgrade?
+
+Behavior change with the `ingress-isolation` rename. The previous baseline blocked egress to anything that wasn't DNS or a vnet peer; the new baseline is `policyTypes: [Ingress]` only. Existing installs see their egress posture loosen on upgrade. If you relied on the previous egress restriction, write a user-managed `NetworkPolicy` per workload (the per-workload allowlist is also strictly more useful — the previous baseline's egress restriction was too coarse to actually contain the destinations that mattered). See [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
 ---
 

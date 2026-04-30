@@ -10,8 +10,57 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Behavior changes (upgrade-impacting)
+
+- **The operator no longer restricts egress.** The baseline now carries
+  `policyTypes: [Ingress]` only. Membership policies still allow egress to
+  vnet peers, but generic egress (DNS, the apiserver, the public internet,
+  other namespaces) is unrestricted by kube-vnet. **Existing installs will
+  see their egress posture loosen on upgrade.** If you need per-workload
+  egress restriction, write a user-managed `NetworkPolicy` with
+  `policyTypes: [Egress]`. See ADR 0025 and `docs/security.md`.
+- **The implicit "first vnet member triggers the baseline" coupling is
+  gone.** Baseline existence is now decided purely by the resolved
+  `ingress-isolation` mode for the namespace. To preserve the previous
+  behavior, set `kube-vnet/ingress-isolation: pod` on each namespace
+  explicitly (or use `--ingress-isolation=pod` cluster-wide). See ADR 0023.
+
 ### Added
 
+- **Direction modes on join labels.** The label value declares the pod's
+  participation: `both` (default), `ingress`, `egress`, `none`. Legacy
+  aliases: `"true"` → `both`, `"false"` → `none`. Per-direction policies
+  are emitted (`-ingress` / `-egress` suffixes); the unsuffixed name keeps
+  the legacy form for the bidirectional case. Unknown values surface as
+  `Degraded`/`UnknownDirection`. See ADR 0021.
+- **Long-form join label accepted in the home namespace.** Both
+  `kube-vnet/net.<vnet>` and `kube-vnet/net.<homeNS>.<vnet>` work in the
+  home namespace, useful for templated workloads. Conflicting directions
+  across the two forms surface as `Degraded`/`ConflictingDirections`.
+  See ADR 0022.
+- **`kube-vnet/ingress-isolation` namespace annotation.** Three values:
+  `none` (no baseline), `namespace` (baseline allows ingress from
+  same-namespace pods), `pod` (strict ingress deny). Independent of
+  `kube-vnet/disabled` (which still turns the operator off entirely for
+  that namespace). See ADR 0023.
+- **`--ingress-isolation` flag family.** Cluster-wide default mode plus
+  three per-mode override CSV lists (`--ingress-isolation-none`,
+  `--ingress-isolation-namespace`, `--ingress-isolation-pod`). Helm:
+  `operator.ingressIsolation.{mode,forceNone,forceNamespace,forcePod}`.
+  Per-namespace annotation > override list > cluster-wide default. See
+  ADR 0024.
+- **`VirtualNetworkBinding` CRD** (short names `vnb`, `vnbs`). Namespaced.
+  Selects pods *in its own namespace* via `spec.podSelector` and attaches
+  them to a target vnet (`spec.virtualNetworkRef.{name,namespace}`) for a
+  chosen `direction` (default `both`). The escape hatch for enrolling
+  pods whose template you can't modify (third-party Helm charts, pods
+  owned by another operator). The target vnet's `spec.allowedNamespaces`
+  is enforced. Status: `Ready` condition with reasons `PodsAttached`,
+  `NoPodsMatch`, `VirtualNetworkNotFound`, `NamespaceNotAllowed`,
+  `NamespaceExcluded`, `UnknownDirection`, `InvalidSelector`; plus
+  `attachedPods` and `observedGeneration`. Per-binding policies are
+  named `kube-vnet-<vnet>-b-<binding>` and labeled
+  `kube-vnet/binding=<binding>`. See ADR 0026.
 - Helm chart at `charts/kube-vnet`, published as an OCI artifact to
   `ghcr.io/lhns/charts/kube-vnet` on every release tag. Install via
   `helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet --version 0.1.0`.
@@ -25,8 +74,28 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- Baseline ownership moved to the `NamespaceReconciler`. The
+  `VirtualNetworkReconciler` no longer touches the baseline. The two
+  reconcilers now have clear, narrow ownership: per-vnet membership
+  policies vs. per-namespace baseline lifecycle.
 - The release workflow now publishes signed artifacts and SBOMs in addition
   to the existing multi-arch container image and `release.yaml`.
+
+### Deprecated
+
+- `--default-deny-everywhere` operator flag and
+  `operator.defaultDenyEverywhere` Helm value. Aliased to
+  `--ingress-isolation=pod` (with a startup deprecation warning) when
+  `--ingress-isolation` is at its default. **Will be removed in a future
+  release.** Migrate to `--ingress-isolation` and the
+  `operator.ingressIsolation.*` Helm values.
+
+### Superseded ADRs
+
+- ADR 0006 — single per-namespace opt-out. Superseded by ADR 0023
+  (decoupled `disabled` and `ingress-isolation`).
+- ADR 0020 — `--default-deny-everywhere`. Superseded by ADR 0024 (the
+  flag family) and ADR 0025 (the rename + ingress-only scope).
 
 ## [0.0.0] — initial publication
 

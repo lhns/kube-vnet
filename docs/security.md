@@ -8,9 +8,13 @@ For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](adr/001
 
 ## Threat model
 
+### Scope: kube-vnet only restricts ingress
+
+The kube-vnet baseline carries `policyTypes: [Ingress]` only. Egress is unrestricted by kube-vnet (membership policies grant egress allows to vnet peers, but generic egress — DNS, the apiserver, the public internet, other namespaces — is not blocked by the operator). This is deliberate — see [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md) — but it means you must size the threat model accordingly.
+
 ### What kube-vnet defends against
 
-- **Accidentally-too-open service-to-service connectivity.** The default-allow Kubernetes posture is the bug; kube-vnet flips it to membership-based allow with a default-deny baseline.
+- **Accidentally-too-open ingress.** The default-allow Kubernetes posture for ingress is the bug; kube-vnet flips it to membership-based ingress allow with an ingress-deny baseline (when `ingress-isolation` is `namespace` or `pod`).
 - **Drift on operator-managed `NetworkPolicy` resources** (deletion, hand-edit). The watch + reconcile loop restores the desired state within seconds and emits a `PolicyRestored` Event for visibility.
 - **Misconfiguration via wrong namespace.** Pods that try to join a vnet from a non-permitted namespace appear as `InvalidJoiners` on the vnet's `Degraded` condition rather than silently failing.
 - **Cross-namespace surprise.** `allowedNamespaces` is explicit; foreign namespaces don't get to join unless the vnet says so.
@@ -19,13 +23,17 @@ For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](adr/001
 
 Be clear-eyed about these. None of them are bugs in kube-vnet; they're either out of scope or limitations of stock `NetworkPolicy`.
 
+- **Egress exfiltration / lateral probing from a compromised pod.** Setting `kube-vnet/ingress-isolation: pod` does **not** prevent a pod from initiating outbound traffic to anywhere it can route to — other namespaces, the cluster control plane, the public internet. The vnet abstraction defends against unauthorized inbound; protecting against outbound exfiltration / lateral probing is a separate concern that needs separate tooling (a per-workload user-managed `NetworkPolicy` with `policyTypes: [Egress]`, a CNI egress firewall like Calico GlobalNetworkPolicy or Cilium FQDN policy, a NAT-gateway egress allowlist, or a service-mesh egress proxy).
 - **Cluster admin compromise.** Anyone with cluster-admin (or with permissions to delete VirtualNetworks, edit the operator's RBAC, or stop the operator Deployment) can defeat kube-vnet entirely.
 - **Namespace owner deleting the deny baseline.** A user with `delete networkpolicy` RBAC in their namespace can `kubectl delete networkpolicy kube-vnet-default-deny`. The operator restores it within seconds (drift correction; see [`architecture.md`](architecture.md#drift-correction-loop)) and emits a `PolicyRestored` Warning Event, but during the window between deletion and restore, traffic that the policy would have denied is allowed. For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` — see [ADR 0019](adr/0019-baseline-durability.md).
 - **CNI bypass.** kube-vnet generates `NetworkPolicy` resources; the CNI is what enforces them. If your CNI doesn't enforce `NetworkPolicy` (or if a pod manages to bypass the CNI — e.g. host-network pods), kube-vnet's policies have no effect.
 - **Layer 7 / DNS / mTLS-identity policy.** kube-vnet emits L3/L4 `NetworkPolicy`. Anything HTTP-method-aware, hostname-aware, or identity-aware is out of scope; that's a service-mesh or CNI-extension responsibility.
 - **In-pod traffic.** Containers within a single pod share a network namespace and are not policy-able by Kubernetes.
 - **Kernel-level escapes.** A container that escapes the kernel's network namespace boundary is a kernel CVE, not a kube-vnet concern.
-- **Egress to the public internet.** kube-vnet's baseline doesn't add an "allow internet" rule; it only allows DNS to CoreDNS. If your workloads need internet egress they need an explicit `NetworkPolicy` for it (kube-vnet doesn't manage egress to non-cluster destinations as a first-class concept). See the design doc's Future Improvements section.
+
+### Recommended companion: per-workload egress allowlists
+
+For workloads where outbound restriction matters, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting the workload's pods and listing the destinations they're permitted to reach. NetworkPolicies compose additively; nothing in kube-vnet conflicts with this. See the [per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
 
 ---
 
@@ -42,7 +50,9 @@ The operator runs as `ServiceAccount/kube-vnet-controller` in the operator's nam
 | `kube-vnet.lhns.de` | `virtualnetworks/finalizers` | update | Standard kubebuilder pattern; not currently used at runtime but kept for forward compatibility. |
 | `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete | The operator's primary output. Cluster-wide because `Cluster`-extent vnets generate policies in foreign namespaces. |
 | `""` (core) | `pods` | get, list, watch | Membership discovery: which pods carry a join label. |
-| `""` (core) | `namespaces` | get, list, watch | Honoring `kube-vnet/disabled` annotation, `allowedNamespaces.selector` matching, `--default-deny-everywhere` flag. |
+| `""` (core) | `namespaces` | get, list, watch | Honoring `kube-vnet/disabled` and `kube-vnet/ingress-isolation` annotations, `allowedNamespaces.selector` matching, the `--ingress-isolation*` flag family. |
+| `kube-vnet.lhns.de` | `virtualnetworkbindings` | get, list, watch | Watch for the `VirtualNetworkBinding` reconciler; bindings produce additional membership policies. |
+| `kube-vnet.lhns.de` | `virtualnetworkbindings/status` | get, update, patch | Writes the binding's `Ready` condition, `attachedPods`, `observedGeneration`. |
 | `""` (core) | `events` | create, patch | Emitting Events on condition transitions and on errors (Recorder). |
 
 ### Namespace-scoped: `Role/kube-vnet-leader-election` + `RoleBinding` (in the operator's namespace only)

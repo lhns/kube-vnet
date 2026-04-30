@@ -10,8 +10,12 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
+- [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
+- [My VirtualNetworkBinding doesn't attach any pods](#my-virtualnetworkbinding-doesnt-attach-any-pods)
+- [Binding shows Ready=False, NamespaceNotAllowed](#binding-shows-readyfalse-namespacenotallowed)
+- [Degraded with UnknownDirection or ConflictingDirections](#degraded-with-unknowndirection-or-conflictingdirections)
 - ["kubectl get vnet" shows READY=False](#kubectl-get-vnet-shows-readyfalse)
 - ["Degraded" condition is True — what does each reason mean?](#degraded-condition-is-true--what-does-each-reason-mean)
 - [Operator logs are noisy with conflict / "object has been modified" errors](#operator-logs-are-noisy-with-conflict--object-has-been-modified-errors)
@@ -28,10 +32,12 @@ For the full list of status-condition reasons and what each one means, see [`ref
 Most common case. Walk through these in order:
 
 1. **Did you use the right label form?**
-   - Pod in the VirtualNetwork's home namespace → bare: `kube-vnet/net.<vnet-name>=true`
-   - Pod in *any other* namespace → prefixed: `kube-vnet/net.<home-ns>.<vnet-name>=true`
+   - Pod in the VirtualNetwork's home namespace → either form works: `kube-vnet/net.<vnet-name>=both` or `kube-vnet/net.<home-ns>.<vnet-name>=both`.
+   - Pod in *any other* namespace → prefixed only: `kube-vnet/net.<home-ns>.<vnet-name>=both`.
 
-   Mixing them up is the most common cause. The pod's namespace decides which form to use, not the vnet's.
+   The pod's namespace decides which forms are valid, not the vnet's.
+
+   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. Legacy `"true"` maps to `both` and `"false"` maps to `none`. An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
 
 2. **Is the pod's namespace operator-excluded?**
 
@@ -83,17 +89,17 @@ Most common case. Walk through these in order:
 
    See [`install.md`](install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check: install Calico/Cilium/kube-router and re-test. If isolation now works, the previous CNI didn't enforce NetworkPolicy.
 
-2. **Is the baseline present in both namespaces?**
+2. **Is the ingress-isolation baseline present in the receiving namespace?**
 
-   Cross-namespace isolation requires the deny baseline on *both* ends. If `kube-vnet-default-deny` is missing in either namespace, that side is in default-allow mode.
+   Ingress isolation requires the baseline on the *receiving* end. If `kube-vnet-default-deny` is missing or the namespace's `ingress-isolation` mode is `none`, ingress is unrestricted on that side (except for whatever membership policies are present, which still default-deny ingress on selected pods).
 
    ```bash
    kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet,kube-vnet/role=baseline
    ```
 
-   If a namespace lacks a baseline, either no member there has joined any vnet (so the baseline isn't installed yet — that's by design) or the namespace is opted out via annotation/exclusion.
+   Check the resolved mode for a namespace: `kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'`. If empty, the operator-level default applies — inspect the operator args.
 
-3. **If you want every namespace deny-by-default**, turn on `--default-deny-everywhere`. See [ADR 0020](adr/0020-default-deny-unmanaged-namespaces.md) and the migration pattern in [`operations.md`](operations.md).
+3. **If you want every namespace ingress-deny-by-default**, set `--ingress-isolation=pod` (or use the `--ingress-isolation-pod` override list to ramp up gradually). See [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md) and the migration pattern in [`operations.md`](operations.md).
 
 4. **Are the membership policies installed in both namespaces?**
 
@@ -109,24 +115,36 @@ Most common case. Walk through these in order:
    kubectl get pod -n <ns> <pod> -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep kube-vnet/
    ```
 
-   Pod-A in home namespace `platform`, vnet `payments`: should have `kube-vnet/net.payments=true`.
-   Pod-B in foreign namespace `webapp`, joining same vnet: should have `kube-vnet/net.platform.payments=true`.
+   Pod-A in home namespace `platform`, vnet `payments`: `kube-vnet/net.payments=both` (or the prefixed form, also accepted in the home namespace).
+   Pod-B in foreign namespace `webapp`, joining same vnet: must use the prefixed form, `kube-vnet/net.platform.payments=both`.
 
-   If pod-B has the bare form (`kube-vnet/net.payments=true`), the operator does not see it as a member of the `platform/payments` vnet.
+   If pod-B has only the bare form, the operator does not see it as a member of the `platform/payments` vnet.
+
+---
+
+## Egress to the public internet just started working after upgrade
+
+Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](security.md).
+
+If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting your pods and listing the allowed destinations. NetworkPolicies compose additively. See the [per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
 
 ---
 
 ## The default-deny baseline didn't appear
 
-It's installed when the *first* pod in a managed namespace becomes a member of any vnet. Check, in order:
+The baseline lifecycle is owned by the `NamespaceReconciler` and is decided purely by the resolved `ingress-isolation` mode for the namespace. There is no implicit "first vnet member triggers the baseline" coupling. Check, in order:
 
-1. Is there a member?
+1. What's the resolved mode for the namespace?
 
    ```bash
-   kubectl get vnet -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}: {.status.members}{"\n"}{end}'
+   kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'
    ```
 
-   If `members` is empty for your vnet, no one has joined yet. Without a member there's no need for a baseline (nothing to defend). See [`concepts.md`](concepts.md#the-default-deny-baseline).
+   If unset, the operator-level config applies — check the operator args for `--ingress-isolation`, `--ingress-isolation-pod`, `--ingress-isolation-namespace`, and `--ingress-isolation-none`.
+
+   - Mode `none` → no baseline. By design.
+   - Mode `namespace` → baseline allowing same-namespace ingress.
+   - Mode `pod` → strict-ingress baseline.
 
 2. Is the namespace operator-managed?
 
@@ -145,19 +163,79 @@ It's installed when the *first* pod in a managed namespace becomes a member of a
 
    If your namespace appears (or `kube-system`/`kube-public`/`kube-node-lease`/the operator's own namespace), it's excluded.
 
-4. Want a baseline in every managed namespace, including ones with no members? Turn on `--default-deny-everywhere`. See [ADR 0020](adr/0020-default-deny-unmanaged-namespaces.md).
+4. Want a baseline in every managed namespace? Set `--ingress-isolation=pod` (or `namespace`). See [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md).
 
 ---
 
 ## The baseline disappeared after I deleted my vnet — bug?
 
-No, that's correct behavior. The baseline is GC'd when the last vnet member leaves a namespace (and the `--default-deny-everywhere` flag isn't on). See [`concepts.md`](concepts.md#the-default-deny-baseline) and the GC integration tests:
+No, but the cause is different from earlier releases. The baseline is now owned by the `NamespaceReconciler` and tied to the namespace's `ingress-isolation` mode — not to vnet membership. If the namespace's mode resolves to `none`, no baseline is installed, regardless of how many vnets have members there. If the namespace's mode is `namespace` or `pod`, the baseline persists across vnet deletions.
 
-- `TestIntegration_BaselineGC_OnVNetDelete`
-- `TestIntegration_BaselineGC_TwoVNetsKeepBaseline` (baseline stays if another vnet still has members)
-- `TestIntegration_BaselineGC_ForeignNamespaceEmpties` (foreign namespace's baseline is GC'd when the foreign-side membership policy is dropped via shrunk `allowedNamespaces`)
+If your baseline disappeared, check the resolved mode (annotation or operator-level config). Setting `kube-vnet/ingress-isolation: pod` on the namespace pins the strict baseline.
 
-If you don't want the GC, use `--default-deny-everywhere` so the namespace baseline is owned by the flag-driven path and survives vnet deletion.
+---
+
+## My VirtualNetworkBinding doesn't attach any pods
+
+Inspect the binding's status:
+
+```bash
+kubectl get vnb -A
+kubectl describe vnb -n <ns> <name>
+```
+
+Check the `Ready` condition's reason:
+
+| Reason | Meaning | Fix |
+|---|---|---|
+| `PodsAttached` | Working — `attachedPods` lists the pod names. | — |
+| `NoPodsMatch` | Selector matched no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
+| `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
+| `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |
+| `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--excluded-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |
+| `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
+| `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
+
+Once the binding is `Ready=True`, look for its generated policy:
+
+```bash
+kubectl get networkpolicy -A -l kube-vnet/binding=<binding-name>
+```
+
+The policy is named `kube-vnet-<vnet>-b-<binding>` and lives in the binding's own namespace.
+
+---
+
+## Binding shows Ready=False, NamespaceNotAllowed
+
+The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. Two fixes:
+
+```bash
+# Option 1: extend the vnet's allowedNamespaces.
+kubectl patch vnet -n <vnet-ns> <vnet-name> --type=merge -p '
+spec:
+  allowedNamespaces:
+    names: [<binding-ns>]
+'
+
+# Option 2: move the binding to a permitted namespace.
+```
+
+The binding is honored only when the target vnet permits its namespace — same rule as label-driven membership.
+
+---
+
+## Degraded with UnknownDirection or ConflictingDirections
+
+`UnknownDirection`: at least one pod has a join label whose value isn't `both`/`ingress`/`egress`/`none` (or the legacy `"true"`/`"false"`). The pod is excluded from membership; fix the typo.
+
+```bash
+kubectl describe vnet -n <ns> <name>   # the message names the offending pods
+```
+
+`ConflictingDirections`: a pod in the home namespace carries both the bare and the prefixed form of the join label, with different direction values (or one explicitly `none` and the other a member direction). The operator can't decide what the pod intends, so it excludes the pod and surfaces the conflict.
+
+Pick one form per pod (or set both forms to the same value). See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
 
 ---
 
@@ -182,6 +260,8 @@ The reason explains what to fix.
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
 | `InvalidJoiners` | At least one pod carries the appropriate join label but is in a non-permitted or excluded namespace. The vnet's status message names the offending pods. | Either (a) extend `allowedNamespaces` to include the pod's namespace, (b) move the pod, or (c) remove the join label from the pod if it shouldn't be a member. The Degraded message also distinguishes whether the underlying reason was `NamespaceNotAllowed` (not in `allowedNamespaces`) or `NamespaceExcluded` (in `--excluded-namespaces` or annotated `kube-vnet/disabled=true`). |
+| `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none` (or the legacy `"true"`/`"false"`). The pod is excluded from membership. | Fix the value on the offending pod (named in the Degraded message). |
+| `ConflictingDirections` | A home-namespace pod carries both the bare and the prefixed form of the join label with conflicting direction values. The pod is excluded from membership. | Pick one form, or set both forms to the same value. See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md). |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 | `NameCollision` | Same as Ready. | Same fix. |

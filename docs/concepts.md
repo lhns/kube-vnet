@@ -18,7 +18,7 @@ In Kubernetes, by default, every pod can reach every other pod. There is no impl
 
 Most teams reason about connectivity differently: *"the payments service joins the payments network, so do orders, so does its monitoring sidecar. Nothing else can reach those pods."* That's **membership-based** ("services join named networks") and **allowlist-by-construction** ("only same-network pods communicate"). This is exactly Docker Swarm's named-network primitive.
 
-kube-vnet introduces that mental model on top of stock Kubernetes, without requiring CNI extensions. You declare a `VirtualNetwork`, services join it via labels, and the operator emits the underlying `NetworkPolicy` set.
+kube-vnet introduces that mental model on top of stock Kubernetes, without requiring CNI extensions. You declare a `VirtualNetwork`, services join it via labels (or via a `VirtualNetworkBinding`), and the operator emits the underlying `NetworkPolicy` set.
 
 For the longer "why a CRD at all" treatment, see [ADR 0001](adr/0001-virtualnetwork-as-named-network-abstraction.md).
 
@@ -38,22 +38,72 @@ A `VirtualNetwork` is a Kubernetes resource. It lives in a "home" namespace. It 
 
 ## Joining: the label contract
 
-Pods declare membership via **one label per joined VirtualNetwork**. The operator only inspects label *keys*; values are conventional `"true"` but the operator only checks for key presence.
+Pods declare membership via **one label per joined VirtualNetwork**. The operator inspects both label *keys* and label *values* — the value carries a [direction mode](#direction-modes-on-the-join-label) (`both`, `ingress`, `egress`, `none`).
 
 Two label-key forms are recognized:
 
 | Form | Used by | Example |
 |---|---|---|
-| **Bare** `kube-vnet/net.<vnet>` | Pods in the VirtualNetwork's home namespace | `kube-vnet/net.payments=true` |
-| **Prefixed** `kube-vnet/net.<homeNS>.<vnet>` | Pods in any other namespace | `kube-vnet/net.platform.payments=true` |
+| **Bare** `kube-vnet/net.<vnet>` | Pods in the VirtualNetwork's home namespace | `kube-vnet/net.payments=both` |
+| **Prefixed** `kube-vnet/net.<homeNS>.<vnet>` | Pods in any namespace (including the home namespace; required for foreign namespaces) | `kube-vnet/net.platform.payments=both` |
 
 The dot separator distinguishes the two forms. A single dot after `net.` means "in this pod's namespace"; two dots means "namespace-prefixed reference."
+
+**Long-form in the home namespace.** A pod in the vnet's home namespace can use *either* the bare or the prefixed form (or both). This makes templated workloads — e.g., a Helm chart deployed into multiple namespaces — usable with a single label key. See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
 
 VirtualNetwork names cannot contain dots. The CRD enforces this at admission via a CEL rule (see [ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md)). The encoding is therefore unambiguous.
 
 Why one label per network rather than a comma-separated list? See [ADR 0003](adr/0003-one-label-per-virtualnetwork.md) — three concrete reasons (selector simplicity; 63-character label-value limit; matches the "one label per category" Kubernetes convention).
 
 The full label form for cross-namespace references is documented in [ADR 0004](adr/0004-bare-vs-namespace-prefixed-join-label.md).
+
+---
+
+## Direction modes on the join label
+
+The join label *value* declares which directions a pod participates in. Recognized values:
+
+| Value | Meaning |
+|---|---|
+| `both` (default) | Bidirectional. Accept ingress from peers; initiate egress to peers. |
+| `ingress` | Accept-only. Accept ingress from peers; do not initiate to them. |
+| `egress` | Initiate-only. Send egress to peers; do not accept from them. |
+| `none` | Not a member. Equivalent to label absent. |
+
+For backward compatibility with older manifests, two legacy values are accepted:
+
+| Legacy | Maps to |
+|---|---|
+| `"true"` | `both` |
+| `"false"` | `none` |
+
+Unknown values (typos like `"bothh"`) surface on the vnet's `Degraded` condition with reason `UnknownDirection`, naming the offending pods. The pod is excluded from membership; nothing is silently allowed.
+
+### Traffic-flow algebra
+
+For two members `X` and `Y` of the same vnet, traffic flows `X → Y` iff:
+
+- `X` is initiator-capable (`both` or `egress`) **and**
+- `Y` is receiver-capable (`both` or `ingress`).
+
+| X mode | Y mode | X→Y | Y→X |
+|---|---|---|---|
+| both | both | yes | yes |
+| both | ingress | yes | no |
+| both | egress | no | yes |
+| ingress | ingress | no | no |
+| ingress | egress | no | yes |
+| egress | egress | no | no |
+
+### Per-direction policies
+
+The operator emits **up to one policy per direction class with at least one member** in each member-bearing namespace:
+
+- `kube-vnet-<vnet>-<ns>` — bidirectional members. Selects `value In [true, both]`. `policyTypes: [Ingress, Egress]`. The unsuffixed name preserves the legacy v1alpha1 naming for the common case.
+- `kube-vnet-<vnet>-<ns>-ingress` — ingress-only members. Selects `value In [ingress]`. `policyTypes: [Ingress]`.
+- `kube-vnet-<vnet>-<ns>-egress` — egress-only members. Selects `value In [egress]`. `policyTypes: [Egress]`.
+
+In the home namespace, each direction class can produce two policies — one for the bare form and one (suffixed `-prefixed`) for the prefixed form — when both forms are in use. See [ADR 0021](adr/0021-direction-modes-on-join-labels.md) and [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
 
 ---
 
@@ -81,12 +131,12 @@ The home namespace is always implicitly included. If `allowedNamespaces` is unse
 
 This is the easiest thing to get wrong. `allowedNamespaces` controls **which namespaces' pods are *allowed to join* this network**, not "which pods are blanket-granted access to this network's members."
 
-A pod in an `allowedNamespaces`-permitted namespace **must still add the join label** to become a member. Pods in those namespaces that don't carry the label get nothing.
+A pod in an `allowedNamespaces`-permitted namespace **must still add the join label** (or be selected by a `VirtualNetworkBinding` in that namespace) to become a member. Pods that don't carry the label and aren't bound get nothing.
 
 The operator enforces this on both sides:
 
-- **Discovery side** (`internal/controller/virtualnetwork_controller.go:discoverMembers`): the pod loop only considers a pod a member if it carries the appropriate join-label key. The `permits()` check on `allowedNamespaces` only runs for pods that already have the label.
-- **NetworkPolicy side** (`internal/controller/policy_generator.go:Generate`): the generated `from` and `to` peer rules use `podSelector: { matchExpressions: [{ key: <join-key>, operator: Exists }] }`. Even at the policy layer, the only pods granted access are those carrying the join key.
+- **Discovery side**: the pod loop only considers a pod a member if it carries the appropriate join-label key (or matches a binding's selector). The `permits()` check on `allowedNamespaces` only runs for pods that already qualify.
+- **NetworkPolicy side**: the generated `from` and `to` peer rules use `podSelector: { matchExpressions: [{ key: <join-key>, operator: In, values: [...] }] }`. Even at the policy layer, the only pods granted access are those that match the per-direction selector.
 
 For the full treatment, see [ADR 0005 § Join eligibility, not blanket access](adr/0005-namespaced-crd-with-allowed-namespaces.md).
 
@@ -102,11 +152,52 @@ If you want prefix-style matching, label your namespaces and use `selector`.
 
 ---
 
-## The default-deny baseline
+## `VirtualNetworkBinding`: the no-label alternative
 
-Without baseline isolation, `allowedNamespaces` and the membership rules above would be decorative. Kubernetes' default is allow-all: a pod with no `NetworkPolicy` selecting it can reach any other pod, regardless of vnet membership.
+Some pods cannot have labels added to them: their template comes from an upstream Helm chart you don't want to fork, or from another operator that re-templates them on every reconcile. For those, kube-vnet provides a `VirtualNetworkBinding` (short names `vnb`, `vnbs`) — a namespaced CRD that selects pods *in its own namespace* and attaches them to a target vnet without writing to the pods.
 
-When at least one pod in a managed namespace joins a VirtualNetwork, the operator installs a `NetworkPolicy` named **`kube-vnet-default-deny`** in that namespace:
+```yaml
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBinding
+metadata:
+  name: payments-thirdparty
+  namespace: webapp
+spec:
+  virtualNetworkRef:
+    name: payments
+    namespace: platform
+  direction: both        # both | ingress | egress | none
+  podSelector:
+    matchLabels:
+      app: thirdparty-billing-agent
+```
+
+Behavior:
+
+- The selector is **scoped to the binding's own namespace**. There are no cross-namespace bindings.
+- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
+- A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert. The binding's status is `Ready=False, Reason=NamespaceExcluded`.
+- The generator emits one membership policy per binding, named `kube-vnet-<vnet>-b-<binding>`, labeled `kube-vnet/binding=<binding>` for traceability.
+
+Bindings are an escape hatch — the join label is the recommended primary mechanism. See [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
+
+---
+
+## The ingress-isolation baseline
+
+Without baseline isolation, `allowedNamespaces` and the membership rules above would be decorative. Kubernetes' default is allow-all: a pod with no `NetworkPolicy` selecting it can reach any other pod.
+
+kube-vnet's baseline behavior is controlled by the **ingress-isolation mode** of the namespace. Three values, set per namespace via the `kube-vnet/ingress-isolation` annotation, with cluster-wide defaults from operator flags:
+
+| Mode | Baseline shape | Effect |
+|---|---|---|
+| `none` (default) | no baseline | The operator does not install a baseline. Ingress is unrestricted unless other policies (yours or the membership policies) restrict it. |
+| `namespace` | ingress allowed from same-namespace pods | Pods in this namespace are reachable from other pods in the same namespace, but not from pods in other namespaces unless an explicit policy permits. |
+| `pod` | strict ingress deny | No ingress allow rules in the baseline. Pods are reachable only via membership policies (vnet peers) or explicit user-managed policies. |
+
+The baseline carries `policyTypes: [Ingress]` only. **Egress is unrestricted by the baseline.** Membership policies still grant egress allows to vnet peers; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
+
+The baseline `NetworkPolicy` is named `kube-vnet-default-deny` and labeled `kube-vnet/managed-by=kube-vnet, kube-vnet/role=baseline`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -118,42 +209,36 @@ metadata:
     kube-vnet/managed-by: kube-vnet
     kube-vnet/role: baseline
 spec:
-  podSelector: {}            # selects every pod in the namespace
-  policyTypes: [Ingress, Egress]
-  ingress: []                # no allow rules → deny all ingress
-  egress:                    # only DNS to kube-system CoreDNS
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - { protocol: UDP, port: 53 }
-        - { protocol: TCP, port: 53 }
+  podSelector: {}
+  policyTypes: [Ingress]
+  ingress: <varies by mode>
 ```
 
-The empty `podSelector` selects every pod in the namespace. The `policyTypes: [Ingress, Egress]` flips every selected pod from "default-allow for both directions" to "default-deny." The single egress rule ensures CoreDNS still works — without it, every kube-vnet-managed namespace would lose name resolution.
+See [ADR 0023](adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
-The baseline is **garbage-collected** when the last vnet member leaves the namespace. See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) for the rationale and [`docs/architecture.md`](architecture.md) for the lifecycle.
+### Resolving the mode for a namespace
 
-### Two ways to opt a namespace out
+Highest precedence wins:
 
-Both equivalent in effect:
+1. The namespace's `kube-vnet/ingress-isolation` annotation, if set to a recognized value.
+2. The operator-level override list the namespace appears in: `--ingress-isolation-none`, `--ingress-isolation-namespace`, or `--ingress-isolation-pod`.
+3. Otherwise, the cluster-wide default `--ingress-isolation` (default `none`).
 
-- **Per-namespace annotation** `kube-vnet/disabled: "true"` on the `Namespace`. The operator does nothing in that namespace: no baseline, no membership policies, no eligibility as a peer.
-- **Operator-level flag** `--excluded-namespaces=foo,bar`. Defaults: `kube-system,kube-public,kube-node-lease`. The operator's own namespace is always added implicitly. Same semantics as the per-namespace annotation.
+A namespace listed in two override lists is a startup configuration error; the operator refuses to start.
 
-Why both — see [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (per-namespace) and [ADR 0007](adr/0007-operator-level-excluded-namespaces.md) (operator-wide).
+### Baseline ownership
 
-### `--default-deny-everywhere` (cluster-wide posture)
+The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches namespaces and applies or removes the baseline based on the resolved isolation mode. The `VirtualNetworkReconciler` only writes membership policies; it never touches the baseline. There is no implicit "first vnet member triggers the baseline" coupling — baseline existence is decided purely by the ingress-isolation mode resolved for the namespace.
 
-By default the operator is **opt-in per namespace**: a namespace gets the baseline only when at least one pod joins a vnet. Namespaces with no membership stay default-allow.
+### Disabling the operator for a namespace
 
-The flag `--default-deny-everywhere` flips this: when on, the baseline is installed in every non-excluded, non-disabled namespace, even those with no members. Use it when you want kube-vnet to be the cluster's network-policy story end-to-end.
+The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline regardless of ingress-isolation, no membership policies, no eligibility as a peer, no honoring bindings. The operator-level flag `--excluded-namespaces` (defaults: `kube-system,kube-public,kube-node-lease`; the operator's own namespace is always added implicitly) has the same effect at the cluster level.
 
-See [ADR 0020](adr/0020-default-deny-unmanaged-namespaces.md) for the rationale and the migration pattern.
+See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (now superseded by ADR 0023 for the baseline-control half) and [ADR 0007](adr/0007-operator-level-excluded-namespaces.md).
+
+### Backward compatibility
+
+The previous `--default-deny-everywhere` flag and `operator.defaultDenyEverywhere` Helm value are aliased to `--ingress-isolation=pod` (with a startup deprecation warning) and will be removed in a future release.
 
 ---
 
@@ -161,35 +246,28 @@ See [ADR 0020](adr/0020-default-deny-unmanaged-namespaces.md) for the rationale 
 
 NetworkPolicy in Kubernetes is **additive**. A pod's allowed traffic is the union of allow-rules from every policy that selects that pod. With kube-vnet's baseline + per-vnet membership policies in a namespace:
 
-- **Pod with the join label**: both the baseline (default-deny + DNS) and the membership policy (allow same-vnet peers) select it. Net effect: isolated except for same-vnet peers and DNS.
-- **Pod without the join label**: only the baseline selects it. Net effect: isolated except DNS.
+- **Pod with the join label, ingress-isolation `pod`**: both the baseline (deny-all-ingress) and the membership policy (allow same-vnet peers) select it. Net effect: ingress is restricted to same-vnet peers; egress is unrestricted.
+- **Pod without the join label, ingress-isolation `pod`**: only the baseline selects it. Net effect: no ingress; egress is unrestricted.
+- **Any pod, ingress-isolation `none`**: no baseline. Membership policies, if they select the pod, still restrict ingress to same-vnet peers (NetworkPolicy goes default-deny on a pod the moment any policy selects it for a given direction).
 
-For cross-namespace isolation, both ends need baselines. A pod in A reaches a pod in B only if *both* sides' policies allow it — which they do, symmetrically, when both pods carry the right join labels for the same vnet.
-
-If a namespace has *no* baseline (no pod there has joined any vnet *and* `--default-deny-everywhere` is off), it stays in default-allow mode. Its pods can still talk to anything that doesn't itself have a deny rule.
+For cross-namespace ingress isolation, both ends need baselines (or the receiving side needs `ingress-isolation: pod`). A pod in A reaches a pod in B only if the receiving side allows it.
 
 ---
 
-## The generated NetworkPolicy: one per (vnet, namespace-with-members)
+## The generated NetworkPolicy: per (vnet, namespace, direction class, label form)
 
-For each VirtualNetwork with members, the operator generates **one `NetworkPolicy` per namespace that has members**.
+For each VirtualNetwork with members, the operator generates **one membership `NetworkPolicy` per (namespace, direction class) with members**. In the home namespace, each direction class can additionally split into two policies — one matching the bare key, one matching the prefixed key — when both label forms are in use. Bindings produce one extra policy per binding.
 
-Naming: `kube-vnet-<vnet>-<namespace>` (e.g. `kube-vnet-payments-platform`). If the deterministic name exceeds Kubernetes' 253-character resource-name limit, the front is truncated and a 4-byte SHA-256 suffix is appended. See [ADR 0011](adr/0011-policy-naming-and-truncation.md).
+Naming: `kube-vnet-<vnet>-<namespace>` for the bidirectional, bare-form, label-driven policy. Direction-suffixed (`-ingress` / `-egress`), form-suffixed (`-prefixed`), and binding-suffixed (`-b-<binding>`) variants apply otherwise. If the deterministic name exceeds Kubernetes' 253-character resource-name limit, the front is truncated and a 4-byte SHA-256 suffix is appended. See [ADR 0011](adr/0011-policy-naming-and-truncation.md).
 
 Labels on every operator-managed `NetworkPolicy`:
 
 - `kube-vnet/managed-by=kube-vnet` — claims operator ownership. Used by drift correction and cleanup.
 - `kube-vnet/network=<homeNS>.<vnet>` — identifies which VirtualNetwork owns the policy. Used for cleanup, including cross-namespace.
 - `kube-vnet/role=membership` (membership policies) or `=baseline` (baseline policies).
+- `kube-vnet/binding=<binding>` — only on per-binding membership policies.
 
 Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet/network` label — see [ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md).
-
-Spec shape, for a vnet `payments` in `platform` with one foreign member in `webapp`:
-
-- **`kube-vnet-payments-platform`** (in platform): selects pods carrying `kube-vnet/net.payments`. Allows ingress from / egress to: pods in `platform` carrying `kube-vnet/net.payments`, and pods in `webapp` carrying `kube-vnet/net.platform.payments`. Plus DNS egress to kube-system.
-- **`kube-vnet-payments-webapp`** (in webapp): selects pods carrying `kube-vnet/net.platform.payments`. Allows ingress from / egress to: pods in `platform` carrying `kube-vnet/net.payments`, and pods in `webapp` carrying `kube-vnet/net.platform.payments`. Plus DNS egress.
-
-Two policies, two namespaces, symmetric. Each policy lives in and controls its own namespace. Cross-namespace coordination is done via the peer entries' `namespaceSelector + podSelector`. (The `namespaceSelector` uses the well-known `kubernetes.io/metadata.name` label, which Kubernetes 1.22+ guarantees on every Namespace.)
 
 This is why the operator can't do its job from a single cluster-scoped policy: stock `NetworkPolicy` is namespace-local. Each side needs its own policy. (For the future where this changes, see [ADR 0019](adr/0019-baseline-durability.md) on `AdminNetworkPolicy`.)
 
@@ -214,11 +292,13 @@ Server-side apply is used with `client.ForceOwnership`, so the operator reliably
 Each VirtualNetwork carries two conditions in `status.conditions`:
 
 - **`Ready`** — true when the desired NetworkPolicy set has been applied. False when something is preventing reconciliation (apply error, invalid name, home namespace excluded).
-- **`Degraded`** — true when some subset of the desired state can't be honored (a labeled pod is in a non-permitted namespace, or in an excluded namespace, or there's a name collision with a user-managed NetworkPolicy).
+- **`Degraded`** — true when some subset of the desired state can't be honored (a labeled pod is in a non-permitted namespace, an unknown direction value, conflicting directions across the bare and prefixed label forms, or a name collision with a user-managed NetworkPolicy).
+
+Each `VirtualNetworkBinding` similarly carries a `Ready` condition with reasons `PodsAttached`, `NoPodsMatch`, `VirtualNetworkNotFound`, `NamespaceNotAllowed`, `NamespaceExcluded`, `UnknownDirection`, or `InvalidSelector`.
 
 Both conditions follow the standard `metav1.Condition` shape: `type`, `status`, `reason`, `message`, `lastTransitionTime`. Tools that consume this pattern (`kubectl wait --for=condition=Ready`, dashboards, event aggregators) work out of the box.
 
-Transitions also emit Kubernetes Events on the VirtualNetwork. See [ADR 0012](adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](adr/0016-emit-events-on-condition-transitions.md), and the full reason taxonomy in [`reference/api.md`](reference/api.md).
+Transitions also emit Kubernetes Events. See [ADR 0012](adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](adr/0016-emit-events-on-condition-transitions.md), and the full reason taxonomy in [`reference/api.md`](reference/api.md).
 
 ---
 

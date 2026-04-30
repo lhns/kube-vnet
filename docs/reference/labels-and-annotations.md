@@ -13,16 +13,17 @@ These are how pods declare membership in `VirtualNetwork` resources.
 | | |
 |---|---|
 | **On** | `Pod` (typically via `Deployment.spec.template.metadata.labels`) |
-| **Value** | Conventional `"true"`. The operator checks key presence only — any non-empty value works. |
+| **Value** | One of `both` (default), `ingress`, `egress`, `none`. Legacy aliases: `"true"` → `both`, `"false"` → `none`. Unknown values surface on the vnet's `Degraded` condition with reason `UnknownDirection`. |
 | **Set by** | The user / workload owner. |
-| **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in the same namespace as this pod." |
+| **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in the same namespace as this pod, with the given direction." |
 | **Used by** | The operator's pod-watch + `discoverMembers` + the generated NetworkPolicy's `podSelector` and peer rules. |
+| **Accepted in** | The vnet's home namespace only. Foreign-namespace pods must use the prefixed form. |
 
 Example: a pod in `platform` joining the `payments` vnet (which lives in `platform`):
 
 ```yaml
 labels:
-  kube-vnet/net.payments: "true"
+  kube-vnet/net.payments: both
 ```
 
 ### `kube-vnet/net.<homeNS>.<vnet-name>` (prefixed form)
@@ -30,22 +31,36 @@ labels:
 | | |
 |---|---|
 | **On** | `Pod` |
-| **Value** | Conventional `"true"`. Key-presence check only. |
+| **Value** | Same direction enum as the bare form: `both`, `ingress`, `egress`, `none` (or legacy `"true"`/`"false"`). |
 | **Set by** | The user / workload owner. |
-| **Meaning** | "This pod (in some other namespace) is a member of the VirtualNetwork named `<vnet-name>` in namespace `<homeNS>`." |
-| **Used by** | Same as bare form, but for cross-namespace membership. |
+| **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in namespace `<homeNS>`, with the given direction." |
+| **Used by** | Same as bare form, but works across namespaces. |
+| **Accepted in** | Any namespace, including the vnet's home namespace. (Required for foreign namespaces; in the home namespace the bare form is also accepted.) |
 | **Honored only if** | The target VirtualNetwork's `spec.allowedNamespaces` permits this pod's namespace. |
 
 Example: a pod in `webapp` joining `payments` (which lives in `platform`):
 
 ```yaml
 labels:
-  kube-vnet/net.platform.payments: "true"
+  kube-vnet/net.platform.payments: both
 ```
 
 The dot separator distinguishes the two forms. Three or more dots in the part after `net.` would be ambiguous; VirtualNetwork names cannot contain dots (CRD CEL rule), so the encoding stays unambiguous.
 
-For the rationale, see [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) (one label per network) and [ADR 0004](../adr/0004-bare-vs-namespace-prefixed-join-label.md) (bare vs prefixed).
+**Long form in the home namespace.** A pod in the vnet's home namespace can use the prefixed form (or both forms simultaneously), which lets a templated workload reuse a single label key across namespaces. If a home-namespace pod carries both forms with conflicting direction values, the operator surfaces `Degraded`/`ConflictingDirections` and excludes the pod from membership. See [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).
+
+For the rationale, see [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) (one label per network), [ADR 0004](../adr/0004-bare-vs-namespace-prefixed-join-label.md) (bare vs prefixed), and [ADR 0021](../adr/0021-direction-modes-on-join-labels.md) (direction values).
+
+### Direction values: traffic-flow algebra
+
+| Value | Meaning |
+|---|---|
+| `both` | Bidirectional. Accept ingress from peers; initiate egress to peers. |
+| `ingress` | Accept-only. |
+| `egress` | Initiate-only. |
+| `none` | Not a member (equivalent to label absent). |
+
+X→Y flows iff X is initiator-capable (`both`/`egress`) **and** Y is receiver-capable (`both`/`ingress`).
 
 ---
 
@@ -72,7 +87,55 @@ metadata:
     kube-vnet/disabled: "true"
 ```
 
-See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md).
+See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md) (now superseded by ADR 0023 for the baseline-control half).
+
+### `kube-vnet/ingress-isolation`
+
+| | |
+|---|---|
+| **On** | `Namespace` |
+| **Value** | `none` \| `namespace` \| `pod`. Any other value (including absent) means "fall back to operator-level config." |
+| **Set by** | The cluster admin / namespace owner. |
+| **Meaning** | The baseline mode for this namespace. `none` → no baseline. `namespace` → baseline allows ingress from same-namespace pods. `pod` → strict-ingress baseline (no allow rules). |
+| **Used by** | `NamespaceReconciler.ResolveIsolation()` — the per-namespace annotation has the highest precedence; below it are the operator-level override lists, then the cluster-wide `--ingress-isolation` default. |
+| **Independent of** | `kube-vnet/disabled` (the disabled annotation overrides everything regardless), and from vnet membership presence (no implicit "first member triggers baseline"). |
+
+Example:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payments
+  annotations:
+    kube-vnet/ingress-isolation: pod
+```
+
+See [ADR 0023](../adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+
+---
+
+## VirtualNetworkBinding: the no-label alternative
+
+When a pod template can't be modified (third-party Helm chart, pod owned by another operator), use a `VirtualNetworkBinding` to enroll pods without writing to them. The binding selects pods *in its own namespace* via `spec.podSelector`.
+
+```yaml
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBinding
+metadata:
+  name: payments-thirdparty
+  namespace: webapp
+spec:
+  virtualNetworkRef:
+    name: payments
+    namespace: platform
+  direction: both
+  podSelector:
+    matchLabels:
+      app: thirdparty-billing-agent
+```
+
+The target vnet's `spec.allowedNamespaces` is still enforced; bindings in non-permitted (or `kube-vnet/disabled`) namespaces report `Ready=False` with the appropriate reason. See [ADR 0026](../adr/0026-virtualnetworkbinding-crd.md) and [`api.md`](api.md#virtualnetworkbinding).
 
 ---
 
@@ -99,6 +162,18 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **Set by** | The operator. |
 | **Meaning** | "This NetworkPolicy belongs to `<homeNS>/<vnet-name>`." |
 | **Used by** | `cleanupForDeleted` (selects all this vnet's policies cluster-wide) and `deleteStale`. The operator's solution to Kubernetes' lack of cross-namespace owner references. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md). |
+
+### `kube-vnet/binding=<binding-name>`
+
+| | |
+|---|---|
+| **On** | Per-binding membership policies only — i.e. policies generated for a `VirtualNetworkBinding`. |
+| **Value** | The binding's `metadata.name`. |
+| **Set by** | The operator. |
+| **Meaning** | "This NetworkPolicy is the binding-driven membership policy for the named binding." |
+| **Used by** | Traceability and cleanup. `kubectl get networkpolicy -A -l kube-vnet/binding=<name>` returns exactly the policy a binding produced. |
+
+Per-binding policies are named `kube-vnet-<vnet>-b-<binding>` and live in the binding's own namespace.
 
 ### `kube-vnet/role=membership` and `kube-vnet/role=baseline`
 
@@ -155,29 +230,31 @@ If you're on a Kubernetes version older than 1.22 (you shouldn't be; we require 
 
 ### `k8s-app=kube-dns`
 
-| | |
-|---|---|
-| **On** | CoreDNS pods in `kube-system`. Standard for nearly every Kubernetes distribution. |
-| **Used by** | The baseline's egress allowance: `egress.to: [{ namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: kube-system } }, podSelector: { matchLabels: { k8s-app: kube-dns } } }]`. |
-
-Without this label on CoreDNS, the baseline doesn't allow DNS to it and pods in vnet-managed namespaces lose name resolution. In practice every distribution sets it; if your cluster doesn't, set it manually or kube-vnet won't work.
+The operator no longer relies on this label. Earlier releases used it in the baseline's egress allow rule for CoreDNS; with the ingress-isolation rename ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)) the baseline is `policyTypes: [Ingress]` only and egress is unrestricted, so DNS resolution works without an explicit allow.
 
 ---
 
 ## Selector keys the operator generates dynamically
 
-Per `(vnet, namespace)`, the operator generates a `NetworkPolicy` whose `podSelector` and peer rules use an `Exists` operator on the appropriate join label key:
+Per `(vnet, namespace, direction class, label form)`, the operator generates a `NetworkPolicy` whose `podSelector` uses an `In` operator over the join label *value* to match the right direction class:
 
 ```yaml
 podSelector:
   matchExpressions:
-    - key: kube-vnet/net.<vnet>          # if this is the home namespace
+    - key: kube-vnet/net.<vnet>          # bare form (home namespace)
       # OR
-      key: kube-vnet/net.<homeNS>.<vnet> # if this is a foreign namespace
-      operator: Exists
+      key: kube-vnet/net.<homeNS>.<vnet> # prefixed form
+      operator: In
+      values: [true, both]               # bidirectional policy
+      # OR
+      values: [ingress]                  # ingress-only policy
+      # OR
+      values: [egress]                   # egress-only policy
 ```
 
-Same pattern in each peer's `podSelector`. This is what enforces "join eligibility, not blanket access" at the policy level: a pod in the namespace without the join label doesn't match the selector and gets nothing from the membership policy.
+Peer rules apply the same value-narrowing on the *other* side: an `ingress` allow on Y selects peers that can initiate egress (`In [true, both, egress]`); an `egress` allow on Y selects peers that can accept ingress (`In [true, both, ingress]`).
+
+This is what enforces "join eligibility, not blanket access" at the policy level: a pod in the namespace without the join label, or with `value=none`, doesn't match the selector and gets nothing from the membership policy.
 
 ---
 

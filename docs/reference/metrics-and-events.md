@@ -159,7 +159,7 @@ groups:
 
 The operator emits Events on every VirtualNetwork it reconciles. Events have a default TTL of 1 hour (apiserver-managed); they're a notification mechanism, not a durable audit log. The VirtualNetwork's status conditions are the source of truth for current state.
 
-### Event reasons
+### VirtualNetwork event reasons
 
 | Reason | Type | When it fires |
 |---|---|---|
@@ -170,7 +170,23 @@ The operator emits Events on every VirtualNetwork it reconciles. Events have a d
 | `ApplyFailed` | Warning | A `NetworkPolicy` apply call returned an error. Fires immediately at the failure site, regardless of subsequent condition state. The event message includes the policy ref and the apiserver error. |
 | `PolicyRestored` | Warning | The operator just re-created a `NetworkPolicy` that was absent immediately before its apply call. Indicates an out-of-band deletion was detected and reverted. The message includes the policy ref. See [ADR 0019](../adr/0019-baseline-durability.md) and [`../security.md`](../security.md). |
 
+The condition reasons that drive these events include `PoliciesGenerated`, `NoMembers`, `InvalidJoiners`, `UnknownDirection`, `ConflictingDirections`, `InvalidName`, `HomeNamespaceExcluded`, `NamespaceNotAllowed`, `NamespaceExcluded`, `ApplyFailed`, `NoIssues`. The Go-level constants are in `internal/controller/virtualnetwork_controller.go` (`Reason*`).
+
 (A `NameCollision` event reason is planned alongside the same-named `Degraded` reason for the case where a user-managed `NetworkPolicy` blocks an operator name.)
+
+### VirtualNetworkBinding event reasons
+
+A `VirtualNetworkBinding`'s `Ready` condition uses these reasons (constants in `internal/controller/virtualnetworkbinding_controller.go`):
+
+| Reason | Status | Meaning |
+|---|---|---|
+| `PodsAttached` | True | Selector matched at least one pod; binding-driven policy is in place. |
+| `NoPodsMatch` | False | Selector valid but matched zero pods in the binding's namespace. |
+| `VirtualNetworkNotFound` | False | `spec.virtualNetworkRef` does not resolve. |
+| `NamespaceNotAllowed` | False | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
+| `NamespaceExcluded` | False | The binding's namespace has `kube-vnet/disabled=true` or is in `--excluded-namespaces`. |
+| `UnknownDirection` | False | `spec.direction` is not one of the recognized values. |
+| `InvalidSelector` | False | `spec.podSelector` cannot be parsed. |
 
 ### Inspect events
 
@@ -212,6 +228,6 @@ Each `VirtualNetwork.status.conditions` carries `Ready` and `Degraded`. Full rea
 | `Ready` | True | `PoliciesGenerated`, `NoMembers` |
 | `Ready` | False | `ApplyFailed`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
 | `Degraded` | False | `NoIssues` |
-| `Degraded` | True | `InvalidJoiners`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
+| `Degraded` | True | `InvalidJoiners`, `UnknownDirection`, `ConflictingDirections`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
 
 `kubectl wait --for=condition=Ready vnet/<name> -n <ns>` works because of this standard pattern.
