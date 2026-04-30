@@ -1,0 +1,19 @@
+kube-vnet is installed.
+
+The VirtualNetwork CRD is registered. Define a network and label pods to join it:
+
+  kubectl get vnet -A
+  kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+
+Sample manifests are in the project repo at
+https://github.com/lhns/kube-vnet/tree/main/config/samples
+
+{{- if .Values.operator.defaultDenyEverywhere }}
+
+WARNING: --default-deny-everywhere is enabled. Every namespace not in the
+operator's excluded list and not annotated kube-vnet/disabled=true will get
+the default-deny baseline applied. Workloads that previously relied on
+default-allow will be isolated until they join a VirtualNetwork or carry
+the kube-vnet/disabled=true annotation on their namespace.
+
+{{- end }}

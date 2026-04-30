@@ -18,6 +18,15 @@ import (
 	"github.com/lhns/kube-vnet/internal/controller"
 )
 
+// version, commit, date are set at build time via -ldflags. See the Dockerfile
+// and Makefile build targets. They show up in `kube-vnet --version` and in the
+// "starting kube-vnet operator" log line.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -36,7 +45,9 @@ func main() {
 		labelPrefix           string
 		excludedNamespaces    string
 		defaultDenyEverywhere bool
+		showVersion           bool
 	)
+	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
@@ -54,6 +65,11 @@ func main() {
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("kube-vnet %s (commit %s, built %s)\n", version, commit, date)
+		os.Exit(0)
+	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
 	excluded := splitAndTrim(excludedNamespaces)
@@ -115,7 +131,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	setupLog.Info("starting kube-vnet operator", "labelPrefix", labelPrefix, "excluded", fmt.Sprintf("%v", excluded))
+	setupLog.Info("starting kube-vnet operator",
+		"version", version, "commit", commit, "buildDate", date,
+		"labelPrefix", labelPrefix, "excluded", fmt.Sprintf("%v", excluded))
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)

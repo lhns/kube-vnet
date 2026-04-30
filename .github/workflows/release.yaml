@@ -4,9 +4,13 @@ on:
   push:
     tags: ['v*']
 
+# id-token: write — required for cosign keyless signing via the GitHub OIDC token.
+# packages:  write — push images and the OCI Helm chart to ghcr.io.
+# contents:  write — create the GitHub Release with assets.
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   release:
@@ -16,29 +20,138 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+
+      - name: install syft
+        uses: anchore/sbom-action/download-syft@v0
+        with:
+          syft-version: v1.14.0
+
+      - name: install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      # ------ container image -----------------------------------------------
+
+      - name: capture build metadata
+        id: meta
+        run: |
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: build & push image
+        id: build_image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
           tags: |
             ghcr.io/lhns/kube-vnet:${{ github.ref_name }}
             ghcr.io/lhns/kube-vnet:latest
+
+      - name: cosign sign image (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign \
+            "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}"
+
+      - name: generate image SBOM
+        run: |
+          syft "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}" \
+            -o spdx-json=kube-vnet-image.sbom.spdx.json
+
+      - name: cosign attach SBOM as attestation
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign attest \
+            --predicate kube-vnet-image.sbom.spdx.json \
+            --type spdx \
+            "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}"
+
+      # ------ Helm chart ----------------------------------------------------
+
       - name: render release.yaml
         run: |
           kubectl_version=v1.31.0
           curl -sLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
           chmod +x kubectl
           ./kubectl kustomize config/default > release.yaml
+
+      - name: package & push Helm chart
+        id: helm_push
+        run: |
+          # Strip the leading "v" from the tag for chart versioning (Helm prefers SemVer without it).
+          TAG="${{ github.ref_name }}"
+          CHART_VERSION="${TAG#v}"
+          helm package charts/kube-vnet \
+            --version "$CHART_VERSION" \
+            --app-version "$TAG" \
+            --destination .
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          # `helm push` prints lines including "Digest: sha256:..." which we
+          # parse to feed cosign.
+          helm push "kube-vnet-${CHART_VERSION}.tgz" oci://ghcr.io/lhns/charts \
+            2>&1 | tee helm-push.log
+          DIGEST=$(grep -E '^Digest: ' helm-push.log | awk '{print $2}')
+          echo "chart_digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: cosign sign Helm chart (keyless)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign sign \
+            "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
+
+      - name: generate chart SBOM
+        run: |
+          syft "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}" \
+            -o spdx-json=kube-vnet-chart.sbom.spdx.json
+
+      - name: cosign attach chart SBOM as attestation
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cosign attest \
+            --predicate kube-vnet-chart.sbom.spdx.json \
+            --type spdx \
+            "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
+
+      # ------ GitHub Release ------------------------------------------------
+
+      - name: checksums for release assets
+        run: |
+          sha256sum release.yaml kube-vnet-*.tgz \
+            kube-vnet-image.sbom.spdx.json kube-vnet-chart.sbom.spdx.json \
+            > checksums.txt
+          cat checksums.txt
+
       - name: create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: release.yaml
+          files: |
+            release.yaml
+            kube-vnet-*.tgz
+            kube-vnet-image.sbom.spdx.json
+            kube-vnet-chart.sbom.spdx.json
+            checksums.txt
           generate_release_notes: true

@@ -89,11 +89,27 @@ That's the whole core idea. Everything else in this README is variations on it (
 
 ### 1. Install the operator
 
+Helm (recommended):
+
+```bash
+helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
+  --version 0.1.0 \
+  --namespace kube-vnet-system --create-namespace
+```
+
+Or install the rendered manifests directly:
+
+```bash
+kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml
+```
+
+Or, against the working tree:
+
 ```bash
 kubectl apply -k config/default
 ```
 
-This creates the `kube-vnet-system` namespace, the `VirtualNetwork` CRD, RBAC, and the controller Deployment.
+Either way you get the `kube-vnet-system` namespace, the `VirtualNetwork` CRD, RBAC, and the controller Deployment.
 
 ### 2. Define a VirtualNetwork
 

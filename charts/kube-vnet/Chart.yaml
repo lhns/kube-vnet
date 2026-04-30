@@ -1,0 +1,26 @@
+apiVersion: v2
+name: kube-vnet
+description: |
+  Kubernetes operator that translates VirtualNetwork membership into standard
+  NetworkPolicy resources. Pods join named networks via labels; only same-network
+  pods can communicate.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - networkpolicy
+  - network
+  - security
+  - operator
+home: https://github.com/lhns/kube-vnet
+sources:
+  - https://github.com/lhns/kube-vnet
+maintainers:
+  - name: Pierre Kisters
+    url: https://github.com/lhns
+icon: ""
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/operatorCapabilities: "Basic Install"

@@ -61,4 +61,49 @@ jobs:
         with:
           context: .
           push: false
+          load: true
           tags: ghcr.io/lhns/kube-vnet:ci
+      - name: trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ghcr.io/lhns/kube-vnet:ci
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+
+  trivy-fs:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - name: trivy filesystem scan (sources + go.sum)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
+          skip-dirs: 'docs,test'
+
+  helm:
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: helm lint
+        run: helm lint charts/kube-vnet
+      - name: helm template (default values)
+        run: helm template testrelease charts/kube-vnet --kube-version 1.31.0 > /dev/null
+      - name: helm template (defaultDenyEverywhere on)
+        run: |
+          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+            --set operator.defaultDenyEverywhere=true \
+            --set podMonitor.enabled=true \
+            --set metricsService.enabled=true > /dev/null

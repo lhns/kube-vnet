@@ -1,0 +1,93 @@
+# Default values for kube-vnet.
+
+image:
+  repository: ghcr.io/lhns/kube-vnet
+  # tag overrides Chart.appVersion when set.
+  tag: ""
+  pullPolicy: IfNotPresent
+  # imagePullSecrets is a list of references to secrets in the same namespace.
+  pullSecrets: []
+
+# Number of operator replicas. Leader election is on by default — one replica
+# is normal; scale to 2 for HA across nodes.
+replicaCount: 1
+
+# Operator flags. See README "Configuration" for the full description of each.
+operator:
+  # Label-key prefix for join labels. Must end with "/".
+  labelPrefix: "kube-vnet/"
+  # Namespaces the operator never touches. The Helm release namespace is
+  # always added implicitly via POD_NAMESPACE.
+  excludedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+  # When true, install the kube-vnet-default-deny baseline in every non-
+  # excluded, non-disabled namespace, even those with no VirtualNetwork
+  # members. See README "Default-deny everywhere".
+  defaultDenyEverywhere: false
+  # Enable leader election. Recommended on; harmless overhead with one replica
+  # and required for safe multi-replica HA.
+  leaderElect: true
+  metricsBindAddress: ":8080"
+  healthProbeBindAddress: ":8081"
+
+# Pod-level scheduling.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""
+
+# Pod & container security context. Defaults match the upstream manifests:
+# non-root, read-only root FS, all caps dropped, RuntimeDefault seccomp.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Resource requests / limits.
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Probes; tuned for a fast-start Go binary.
+livenessProbe:
+  initialDelaySeconds: 15
+  periodSeconds: 20
+readinessProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# Set to true to expose the metrics endpoint via a Service. Off by default —
+# Prometheus operator users typically discover via PodMonitor instead.
+metricsService:
+  enabled: false
+  port: 8080
+  type: ClusterIP
+
+# PodMonitor for Prometheus operator. Off unless explicitly enabled.
+podMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Extra labels applied to every templated resource.
+commonLabels: {}
+
+# Extra annotations applied only to the operator Pod.
+podAnnotations: {}
+
+# Termination grace period for the operator Pod.
+terminationGracePeriodSeconds: 10
