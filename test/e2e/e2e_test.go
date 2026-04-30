@@ -389,28 +389,27 @@ func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 		t.Fatalf("baseline check: client should reach server while vnet exists")
 	}
 
-	// Delete the vnet. All generated policies (including the baseline, since
-	// no member remains) should be removed.
+	// Delete the vnet. All generated policies (membership + baseline) should
+	// be removed by the reconciler's cleanupForDeleted + gcBaselineIfEmpty
+	// path. Both deletions are independent reconcile actions, so the wait
+	// has to cover both — not just the membership policy.
 	kubectlMust(t, "delete", "vnet", "-n", ns, "temp")
 
-	// Wait for the membership policy to be gone.
+	// Poll until no operator-managed NetworkPolicy is left in the namespace
+	// (covers both the membership policy and the baseline). Allow up to 30s;
+	// in practice this completes in a couple of reconcile cycles.
 	deadline := time.Now().Add(30 * time.Second)
+	var lastOut string
 	for time.Now().Before(deadline) {
-		_, code := kubectl(t, "get", "networkpolicy", "-n", ns, "kube-vnet-temp-"+ns)
-		if code != 0 {
-			break
+		out, _ := kubectl(t, "get", "networkpolicy", "-n", ns,
+			"-l", "kube-vnet/managed-by=kube-vnet", "-o", "name")
+		lastOut = strings.TrimSpace(out)
+		if lastOut == "" {
+			return
 		}
 		time.Sleep(time.Second)
 	}
-	// With the vnet gone the default-allow returns (operator removes its
-	// baseline once the namespace has no managed members). Connectivity may
-	// resume — what matters is the operator cleaned up cleanly. We assert
-	// no operator-managed policies remain.
-	out := kubectlMust(t, "get", "networkpolicy", "-n", ns,
-		"-l", "kube-vnet/managed-by=kube-vnet", "-o", "name")
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("operator-managed policies still exist after vnet delete:\n%s", out)
-	}
+	t.Fatalf("operator-managed policies still exist 30s after vnet delete:\n%s", lastOut)
 }
 
 // TestE2E_DNS_StillResolves: pods inside a vnet still reach CoreDNS, because
