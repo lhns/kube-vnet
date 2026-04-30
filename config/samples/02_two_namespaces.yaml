@@ -21,7 +21,10 @@ metadata:
   namespace: platform
 spec:
   description: |
-    Payments services. Reachable from the webapp and monitoring namespaces.
+    Payments services. Pods in the webapp and monitoring namespaces may
+    join this network by adding the prefixed join label
+    kube-vnet/net.platform.payments=true. Pods in those namespaces that
+    don't carry the label are not granted access.
   allowedNamespaces:
     names:
       - webapp

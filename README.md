@@ -125,7 +125,9 @@ kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
 
 ## Cross-namespace reach
 
-By default, only pods in a `VirtualNetwork`'s home namespace can join. To let pods from other namespaces in, set `spec.allowedNamespaces`:
+`spec.allowedNamespaces` controls **which namespaces' pods are allowed to join** the network — not which pods are blanket-granted access. A pod in an allowed namespace still needs to opt in by adding the prefixed join label; pods in those namespaces that *don't* carry the label get nothing.
+
+By default (field omitted), only pods in the home namespace can join. To let pods from other namespaces in:
 
 ```yaml
 spec:
@@ -137,11 +139,11 @@ Three matchers are supported, and they union:
 
 | Field | Meaning |
 |---|---|
-| `all: true` | Any namespace (the wildcard). |
-| `names: [a, b]` | Exact namespace names. No glob/regex; use `selector` for groups. |
-| `selector: { matchLabels: { tier: prod } }` | Match namespaces by their labels. |
+| `all: true` | Pods in any namespace may join (when they add the join label). |
+| `names: [a, b]` | Pods in these namespaces may join (when they add the join label). Names match exactly — no glob/regex; use `selector` for groups. |
+| `selector: { matchLabels: { tier: prod } }` | Pods in namespaces matching the label selector may join (when they add the join label). |
 
-The home namespace is always allowed implicitly.
+The home namespace is always allowed implicitly. Glob patterns are deliberately not supported — use `selector` for groups.
 
 ### Two label forms
 

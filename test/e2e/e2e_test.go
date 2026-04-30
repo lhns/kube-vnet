@@ -229,6 +229,47 @@ func TestE2E_AllowedNamespaces_Names_PositiveAndNegative(t *testing.T) {
 	}
 }
 
+// TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked: a pod in a namespace
+// that's listed in allowedNamespaces but does NOT carry the join label gets
+// no access. allowedNamespaces gates *eligibility to join*, not blanket
+// access. Proves the join-vs-blanket semantic at the actual-traffic level.
+func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
+	homeNS := uniqueNS(t, "ujoin-home")
+	listedNS := uniqueNS(t, "ujoin-listed")
+	ensureNamespace(t, homeNS, nil)
+	ensureNamespace(t, listedNS, nil)
+	defer cleanupNamespace(t, homeNS)
+	defer cleanupNamespace(t, listedNS)
+
+	allowed := fmt.Sprintf("    names: [%s]\n", listedNS)
+	applyYAML(t, vnetSpec("svc", homeNS, allowed))
+	applyYAML(t, httpServerPod(homeNS, "server", map[string]string{
+		"kube-vnet/net.svc": "true",
+	}))
+	// labeled-and-listed: should reach.
+	applyYAML(t, clientPod(listedNS, "labeled", map[string]string{
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+	}))
+	// unlabeled-but-listed: even though its namespace is allowedNamespaces,
+	// without the join label it's NOT a member → must not reach.
+	applyYAML(t, clientPod(listedNS, "bystander", nil))
+	waitForPod(t, homeNS, "server", 90*time.Second)
+	waitForPod(t, listedNS, "labeled", 90*time.Second)
+	waitForPod(t, listedNS, "bystander", 90*time.Second)
+
+	// Wait for the operator to install policies (a labeled pod exists, so the
+	// baseline + membership policy should land in listedNS too).
+	time.Sleep(5 * time.Second)
+
+	ip := podIP(t, homeNS, "server")
+	if !canReach(t, listedNS, "labeled", ip, allowProbe) {
+		t.Fatalf("labeled pod in listed namespace should reach the server")
+	}
+	if !cannotReach(t, listedNS, "bystander", ip, denyProbe) {
+		t.Fatalf("unlabeled pod in listed namespace must NOT reach the server (allowedNamespaces gates join eligibility, not blanket access)")
+	}
+}
+
 // TestE2E_AllowedNamespaces_Selector_PositiveAndNegative: same as above but
 // using a label-based selector instead of an explicit name list.
 func TestE2E_AllowedNamespaces_Selector_PositiveAndNegative(t *testing.T) {

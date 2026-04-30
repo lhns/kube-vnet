@@ -32,6 +32,10 @@ The home namespace is always implicitly allowed. If `allowedNamespaces` is unset
 - `{ names: [...] }` matches exactly. Glob patterns (`payments-*`) are deliberately not supported — they're ambiguous (glob vs regex vs prefix), redundant with label selectors, and not idiomatic in Kubernetes APIs (cert-manager, Cilium, Istio do not accept globs in name lists). Users wanting prefix matching should label their namespaces and use `selector`.
 - Combining `Names` and `Selector` unions; combining either with `All` is meaningless (`All` wins).
 
+**Join eligibility, not blanket access:**
+
+`allowedNamespaces` answers "which namespaces' pods are *allowed to join* this network?", **not** "which pods are granted access to this network's members?". A pod in a permitted namespace still has to add the prefixed join label `kube-vnet/net.<homeNS>.<vnet>=true` to become a member; pods in the namespace that don't carry the label get nothing. The reconciler enforces this on the discovery side (only labeled pods become members), and the generated `NetworkPolicy` peer rules use `podSelector: { matchExpressions: [{ key: <join-key>, operator: Exists }] }` so even at the policy layer, the only pods granted access are those carrying the join key.
+
 ## Consequences
 
 - **Pro**: One policy-generation strategy, not two. Simpler reconciler.

@@ -616,5 +616,62 @@ func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 	})
 }
 
+// TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember: a pod in a
+// listed allowed namespace that does NOT carry the join label is not a member.
+// allowedNamespaces gates *eligibility to join*, not blanket access. See
+// ADR 0005.
+func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "uhome")
+	foreign := uniqueNS(t, "uforeign")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(foreign, nil, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
+		},
+	})
+
+	// Two pods in the listed foreign namespace:
+	//   joiner — has the prefixed join label, should become a member.
+	//   bystander — has no kube-vnet label, must be ignored.
+	mustCreate(t, makePod(foreign, "joiner", map[string]string{
+		"kube-vnet/net." + home + ".shared": "true",
+	}))
+	mustCreate(t, makePod(foreign, "bystander", map[string]string{
+		"app": "unrelated",
+	}))
+
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "shared"}, v); err != nil {
+			return err
+		}
+		// Members for the foreign namespace must contain only "joiner".
+		var foreignMembers []string
+		for _, m := range v.Status.Members {
+			if m.Namespace == foreign {
+				foreignMembers = m.Pods
+			}
+		}
+		if len(foreignMembers) != 1 || foreignMembers[0] != "joiner" {
+			return fmt.Errorf("foreign members = %v, want [joiner]", foreignMembers)
+		}
+		// And the policy in foreign uses the prefixed join key as its selector,
+		// which by construction won't match bystander's labels.
+		fp, err := findPolicy(ctx, foreign, "kube-vnet-shared-"+foreign)
+		if err != nil {
+			return err
+		}
+		want := "kube-vnet/net." + home + ".shared"
+		if got := fp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
+			return fmt.Errorf("foreign policy selector key=%s want %s", got, want)
+		}
+		return nil
+	})
+}
+
 // ensure imports stay used when individual tests are commented out
 var _ = corev1.Namespace{}

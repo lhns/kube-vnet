@@ -25,7 +25,10 @@ metadata:
   namespace: platform
 spec:
   description: |
-    Payments services. Reachable from any prod namespace, identified by tier=prod.
+    Payments services. Pods in any namespace labeled tier=prod may join this
+    network (by adding the prefixed join label). Pods in tier=prod namespaces
+    that don't carry the label are not granted access; pods in non-prod
+    namespaces can't join at all.
   allowedNamespaces:
     selector:
       matchLabels:
