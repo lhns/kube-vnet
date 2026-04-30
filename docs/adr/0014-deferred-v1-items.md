@@ -28,6 +28,8 @@ The design doc (`docs/kube-vnet-design.md`) lists items required for a "complete
 
 - **Label cardinality stress test** — design § Open Questions, Q5. Verify that pods joining N vnets (large N, e.g. 50+) don't degrade the watch predicate or selector path in measurable ways. Best added as one more case in the e2e suite (or a separate benchmark) once the e2e lane is proven stable in CI. Not blocking v1 for typical workloads (1–5 vnets per pod).
 
+- **AdminNetworkPolicy adoption for the deny baseline** — see [ADR 0019](0019-baseline-durability.md). The current drift-correction defense is sufficient for the common threat (accidental deletion); ANP becomes the proper answer for hard isolation guarantees once CNI support is universal and the API lands at v1.
+
 ## Consequences
 
 - **Pro**: The original ADR-0014 list is now mostly closed; what remains is small and well-scoped.

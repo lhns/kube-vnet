@@ -521,5 +521,100 @@ func TestIntegration_BaselineGC_ForeignNamespaceEmpties(t *testing.T) {
 	})
 }
 
+// TestIntegration_PolicyRestoredEvent: deleting an operator-managed
+// NetworkPolicy must trigger drift correction AND emit a PolicyRestored event
+// on the owning vnet, so accidental or hostile deletion is observable. See
+// ADR 0019.
+func TestIntegration_PolicyRestoredEvent(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "restore")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+
+	policyName := "kube-vnet-v-" + ns
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, policyName)
+		return err
+	})
+
+	// Delete the membership policy. The drift watch should restore it.
+	p := &networkingv1.NetworkPolicy{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: policyName}, p); err != nil {
+		t.Fatalf("get policy: %v", err)
+	}
+	if err := testClient.Delete(ctx, p); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+
+	// Policy comes back.
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, policyName)
+		return err
+	})
+
+	// And a PolicyRestored event is recorded on the vnet.
+	eventually(t, 10*time.Second, func() error {
+		var events corev1.EventList
+		if err := testClient.List(ctx, &events, client.InNamespace(ns)); err != nil {
+			return err
+		}
+		for _, e := range events.Items {
+			if e.Reason == EventPolicyRestored && e.InvolvedObject.Kind == "VirtualNetwork" {
+				return nil
+			}
+		}
+		return fmt.Errorf("PolicyRestored event not found yet")
+	})
+}
+
+// TestIntegration_ExcludedNamespace_PodSurfacedInDegraded: a pod in an
+// operator-excluded namespace (kube-system by default) carrying the prefixed
+// join label is dropped from membership AND surfaced as InvalidJoiner so the
+// user can see why it isn't joining.
+func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "exhome")
+	mustCreate(t, makeNamespace(home, nil, nil))
+
+	// kube-system is excluded by default in the test reconciler? Check:
+	// suite_integration_test.go uses NewNamespaceFilter(nil) which has empty
+	// excluded set. We need to use an excluded namespace name. We'll build one
+	// by adding the kube-vnet/disabled annotation to a test namespace, since
+	// that triggers the same NamespaceExcluded path via IsManaged.
+	excluded := uniqueNS(t, "exdisabled")
+	mustCreate(t, makeNamespace(excluded, map[string]string{"kube-vnet/disabled": "true"}, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "vex", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{All: true},
+		},
+	})
+	mustCreate(t, makePod(excluded, "rogue", map[string]string{
+		"kube-vnet/net." + home + ".vex": "true",
+	}))
+
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "vex"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+			return fmt.Errorf("Degraded != True")
+		}
+		// The Degraded message must mention the excluded pod.
+		for _, c := range v.Status.Conditions {
+			if c.Type == "Degraded" && c.Reason == ReasonInvalidJoiners &&
+				strings.Contains(c.Message, excluded+"/rogue") {
+				return nil
+			}
+		}
+		return fmt.Errorf("Degraded condition does not surface %s/rogue: %+v", excluded, v.Status.Conditions)
+	})
+}
+
 // ensure imports stay used when individual tests are commented out
 var _ = corev1.Namespace{}

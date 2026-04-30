@@ -38,16 +38,18 @@ const (
 	ReasonApplyFailed           = "ApplyFailed"
 	ReasonInvalidName           = "InvalidName"
 	ReasonNamespaceNotAllowed   = "NamespaceNotAllowed"
+	ReasonNamespaceExcluded     = "NamespaceExcluded"
 	ReasonNoIssues              = "NoIssues"
 )
 
 // Event reasons (Kubernetes Event.Reason — short, stable, machine-readable).
 const (
-	EventReady       = "Ready"
-	EventNotReady    = "NotReady"
-	EventDegraded    = "Degraded"
-	EventRecovered   = "Recovered"
-	EventApplyFailed = "ApplyFailed"
+	EventReady           = "Ready"
+	EventNotReady        = "NotReady"
+	EventDegraded        = "Degraded"
+	EventRecovered       = "Recovered"
+	EventApplyFailed     = "ApplyFailed"
+	EventPolicyRestored  = "PolicyRestored"
 )
 
 // nameRegex enforces DNS-1123 label format on VirtualNetwork names (no dots).
@@ -144,7 +146,8 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	for i := range out.Policies {
 		p := &out.Policies[i]
 		desiredKeys[p.Namespace+"/"+p.Name] = true
-		if err := r.applyPolicy(ctx, p); err != nil {
+		restored, err := r.applyPolicyAndDetectRestore(ctx, p)
+		if err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
 			applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Inc()
 			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
@@ -153,6 +156,10 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			_ = r.updateStatus(ctx, vnet, members, policyRefs)
 			r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 			return ctrl.Result{}, err
+		}
+		if restored {
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventPolicyRestored,
+				fmt.Sprintf("recreated previously-deleted policy %s/%s", p.Namespace, p.Name))
 		}
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
@@ -166,12 +173,18 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if nsObj == nil || !r.NSFilter.IsManaged(nsObj) {
 			continue
 		}
-		if err := r.applyPolicy(ctx, DesiredBaseline(ns)); err != nil {
+		baseline := DesiredBaseline(ns)
+		restored, err := r.applyPolicyAndDetectRestore(ctx, baseline)
+		if err != nil {
 			logger.Error(err, "apply baseline failed", "namespace", ns)
 			applyErrors.WithLabelValues(ApplyErrorBaseline).Inc()
 			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
 				fmt.Sprintf("apply baseline in %s: %v", ns, err))
 			return ctrl.Result{}, err
+		}
+		if restored {
+			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventPolicyRestored,
+				fmt.Sprintf("recreated previously-deleted baseline in %s", ns))
 		}
 	}
 
@@ -301,6 +314,14 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 			return nil, nil, err
 		}
 		if ns == nil || !r.NSFilter.IsManaged(ns) {
+			// Operator-excluded or per-namespace-disabled. Surface this as an
+			// InvalidJoiner so the user can see why their labeled pod isn't
+			// a member, instead of silently ignoring it.
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace,
+				PodName:      p.Name,
+				Reason:       ReasonNamespaceExcluded,
+			})
 			continue
 		}
 		// Same-namespace pods always count.
@@ -333,6 +354,33 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 func (r *VirtualNetworkReconciler) applyPolicy(ctx context.Context, p *networkingv1.NetworkPolicy) error {
 	p.SetResourceVersion("")
 	return r.Patch(ctx, p, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
+}
+
+// applyPolicyAndDetectRestore server-side-applies a policy and returns whether the
+// apply effectively re-created a previously-existing operator-managed policy. The
+// caller can then emit a PolicyRestored event so deletion-then-recreation is
+// visible to operators (drift correction is otherwise silent — see ADR 0019).
+//
+// The "re-create" signal is: the policy was absent immediately before our apply.
+// We use the uncached APIReader so the staleness window of the informer cache
+// doesn't make us miss a real deletion.
+func (r *VirtualNetworkReconciler) applyPolicyAndDetectRestore(
+	ctx context.Context, p *networkingv1.NetworkPolicy,
+) (restored bool, err error) {
+	reader := client.Reader(r.Client)
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	pre := &networkingv1.NetworkPolicy{}
+	getErr := reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: p.Name}, pre)
+	wasAbsent := apierrors.IsNotFound(getErr)
+	if getErr != nil && !wasAbsent {
+		return false, getErr
+	}
+	if err := r.applyPolicy(ctx, p); err != nil {
+		return false, err
+	}
+	return wasAbsent, nil
 }
 
 // deleteStale removes operator-managed policies for this vnet that aren't in
