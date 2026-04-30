@@ -278,5 +278,123 @@ func TestIntegration_InvalidName_RejectedByAPI(t *testing.T) {
 	}
 }
 
+// TestIntegration_AllowedNamespaces_Selector verifies that the Selector matcher
+// permits a pod from a labeled foreign namespace and excludes one whose labels
+// don't match.
+func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "shome")
+	prod := uniqueNS(t, "sprod")
+	dev := uniqueNS(t, "sdev")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(prod, nil, map[string]string{"tier": "prod"}))
+	mustCreate(t, makeNamespace(dev, nil, map[string]string{"tier": "dev"}))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "selvnet", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
+			},
+		},
+	})
+	// Prod pod is allowed.
+	mustCreate(t, makePod(prod, "p", map[string]string{
+		"kube-vnet/net." + home + ".selvnet": "true",
+	}))
+	// Dev pod's join label should be ignored (label doesn't match) and surface as InvalidJoiner.
+	mustCreate(t, makePod(dev, "d", map[string]string{
+		"kube-vnet/net." + home + ".selvnet": "true",
+	}))
+
+	eventually(t, 10*time.Second, func() error {
+		// Prod produces a policy with the prefixed key.
+		pp, err := findPolicy(ctx, prod, "kube-vnet-selvnet-"+prod)
+		if err != nil {
+			return err
+		}
+		want := "kube-vnet/net." + home + ".selvnet"
+		if got := pp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
+			return fmt.Errorf("prod policy key=%s want %s", got, want)
+		}
+		// Dev does NOT produce a policy.
+		if _, err := findPolicy(ctx, dev, "kube-vnet-selvnet-"+dev); !apierrors.IsNotFound(err) {
+			return fmt.Errorf("dev policy should not exist; err=%v", err)
+		}
+		// Vnet status: Degraded=True with reason InvalidJoiners (the dev pod).
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "selvnet"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+			return fmt.Errorf("Degraded != True")
+		}
+		return nil
+	})
+}
+
+// TestIntegration_PodRelabeling exercises the handler.Funcs path (ADR 0013):
+// removing the join label from a pod must enqueue the formerly-joined vnet
+// so its policy stops listing this pod's namespace.
+func TestIntegration_PodRelabeling(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "relabel")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	pod := makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"})
+	mustCreate(t, pod)
+
+	// Wait for the policy to appear.
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		return err
+	})
+	// And the vnet to record the member in status.
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		for _, m := range v.Status.Members {
+			if m.Namespace == ns {
+				for _, name := range m.Pods {
+					if name == "p" {
+						return nil
+					}
+				}
+			}
+		}
+		return fmt.Errorf("pod p not yet in members")
+	})
+
+	// Strip the join label. The handler.Funcs path must still enqueue v.
+	current := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, current); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	delete(current.Labels, "kube-vnet/net.v")
+	if err := testClient.Update(ctx, current); err != nil {
+		t.Fatalf("update pod: %v", err)
+	}
+
+	// Members list should drop the pod.
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		for _, m := range v.Status.Members {
+			for _, name := range m.Pods {
+				if name == "p" {
+					return fmt.Errorf("pod p still listed")
+				}
+			}
+		}
+		return nil
+	})
+}
+
 // ensure imports stay used when individual tests are commented out
 var _ = corev1.Namespace{}
