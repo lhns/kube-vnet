@@ -22,9 +22,19 @@ operator:
     - kube-system
     - kube-public
     - kube-node-lease
-  # When true, install the kube-vnet-default-deny baseline in every non-
-  # excluded, non-disabled namespace, even those with no VirtualNetwork
-  # members. See README "Default-deny everywhere".
+  # Ingress-isolation mode. Three values: none / namespace / pod.
+  #   none      — no baseline; ingress unrestricted by kube-vnet.
+  #   namespace — baseline allows ingress from same-namespace pods.
+  #   pod       — baseline denies all ingress; only vnet membership policies grant allows.
+  # Per-namespace annotation kube-vnet/ingress-isolation overrides this default.
+  # Override lists below force specific namespaces to a specific mode.
+  ingressIsolation:
+    mode: none
+    forceNone: []
+    forceNamespace: []
+    forcePod: []
+  # DEPRECATED: alias for ingressIsolation.mode=pod when set to true.
+  # Retained for one release cycle; switch to ingressIsolation.mode.
   defaultDenyEverywhere: false
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.

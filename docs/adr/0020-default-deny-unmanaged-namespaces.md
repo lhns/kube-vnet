@@ -1,6 +1,6 @@
 # 0020 — `--default-deny-everywhere` flag for cluster-wide default-deny
 
-Status: Accepted
+Status: Superseded by ADR 0024 (operator config rename to `--ingress-isolation` + per-mode override lists) and ADR 0025 (the model itself moves from a binary to a three-valued enum)
 
 ## Context
 

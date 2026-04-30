@@ -41,7 +41,20 @@ spec:
             - --health-probe-bind-address={{ .Values.operator.healthProbeBindAddress }}
             - --label-prefix={{ .Values.operator.labelPrefix }}
             - --excluded-namespaces={{ join "," .Values.operator.excludedNamespaces }}
+            {{- with .Values.operator.ingressIsolation }}
+            - --ingress-isolation={{ default "none" .mode }}
+            {{- with .forceNone }}
+            - --ingress-isolation-none={{ join "," . }}
+            {{- end }}
+            {{- with .forceNamespace }}
+            - --ingress-isolation-namespace={{ join "," . }}
+            {{- end }}
+            {{- with .forcePod }}
+            - --ingress-isolation-pod={{ join "," . }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.operator.defaultDenyEverywhere }}
+            # DEPRECATED: prefer operator.ingressIsolation.mode=pod.
             - --default-deny-everywhere
             {{- end }}
           env:
