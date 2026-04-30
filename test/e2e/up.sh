@@ -41,15 +41,23 @@ case "$CNI" in
     kubectl apply --server-side -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
     kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
     kubectl apply -f "$SCRIPT_DIR/calico-installation.yaml"
-    # calico-system pods take a moment to materialize after the Installation CR.
+    # calico-system + its workloads materialize after the Installation CR is
+    # reconciled. Wait for both the deployment and the daemonset to exist.
     for i in $(seq 1 60); do
-      if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1; then
+      if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1 \
+         && kubectl -n calico-system get ds csi-node-driver >/dev/null 2>&1; then
         break
       fi
       echo "waiting for calico-system to materialize ($i)"
       sleep 5
     done
-    kubectl wait --for=condition=Ready pods --all -n calico-system --timeout=300s
+    # Workload-level readiness, not pod-level. `kubectl wait pods --all` races
+    # against the operator's rolling pod replacements during startup; rollout
+    # status watches the workload's generation/replica counts and is immune.
+    kubectl rollout status -n calico-system deploy/calico-kube-controllers --timeout=300s
+    kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
+    kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
+    kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
     kubectl wait --for=condition=Ready node --all --timeout=180s
     ;;
 esac
