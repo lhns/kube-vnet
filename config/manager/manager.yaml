@@ -31,6 +31,11 @@ spec:
             - --leader-elect
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
+            # The kustomize-driven dev/e2e deployment runs every namespace
+            # at pod-strict ingress isolation so the e2e suite's
+            # "must-be-blocked" assertions hold. Chart users get the
+            # conservative `none` default and opt in per namespace.
+            - --ingress-isolation=pod
           env:
             - name: POD_NAMESPACE
               valueFrom:
