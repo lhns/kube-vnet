@@ -123,8 +123,13 @@ jobs:
             "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
 
       - name: generate chart SBOM
+        # syft can't introspect Helm OCI artifacts (layer media type
+        # application/vnd.cncf.helm.chart.content.v1.tar+gzip is unknown
+        # to the oci-registry source), so we point it at the local
+        # tarball produced by `helm package` above. The contents are
+        # identical to what was pushed to ghcr.io.
         run: |
-          syft "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}" \
+          syft "kube-vnet-${{ steps.helm_push.outputs.chart_version }}.tgz" \
             -o spdx-json=kube-vnet-chart.sbom.spdx.json
 
       - name: cosign attach chart SBOM as attestation
