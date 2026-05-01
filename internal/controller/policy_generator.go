@@ -211,9 +211,6 @@ var (
 	// (potential sources of ingress to me). Used in ingress.from.
 	peerInitiatorValues = []string{"true", string(DirectionBoth), string(DirectionEgress)}
 
-	// peerReceiverValues matches peers that ACCEPT traffic (potential
-	// destinations of egress from me). Used in egress.to.
-	peerReceiverValues = []string{"true", string(DirectionBoth), string(DirectionIngress)}
 )
 
 func selfValuesFor(d Direction) []string {
@@ -232,29 +229,30 @@ func selfValuesFor(d Direction) []string {
 // PolicyTypes: Ingress + ingress allow rules.
 func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == DirectionIngress }
 
-// dirHasEgress reports whether a policy for direction d should include
-// PolicyTypes: Egress + egress allow rules.
-func dirHasEgress(d Direction) bool { return d == DirectionBoth || d == DirectionEgress }
-
 // hasInitiator reports whether the (form, direction-map) tuple has any
-// pod that can initiate traffic (egress-capable: both or egress).
+// pod that can initiate traffic (egress-capable: both or egress). Used
+// to decide whether to emit a peer entry that other pods' ingress.from
+// rules will reference.
 func hasInitiator(byDir map[Direction][]string) bool {
 	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionEgress]) > 0
 }
 
-// hasReceiver reports whether the (form, direction-map) tuple has any
-// pod that can accept ingress (ingress-capable: both or ingress).
-func hasReceiver(byDir map[Direction][]string) bool {
-	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionIngress]) > 0
-}
-
 // Generate returns the desired NetworkPolicy set for a VirtualNetwork.
 //
-// Up to three policies are produced per (namespace, key-form) pair —
-// one per direction class (bidi, ingress-only, egress-only) that has
-// at least one member. The home namespace can have entries under both
-// KeyBare and KeyPrefixed when both forms are in use, doubling the
-// per-namespace cap to 6.
+// Membership policies are ingress-only (PolicyTypes: [Ingress]). The operator
+// never restricts egress (ADR 0025: ingress-isolation-only model). A pod
+// joining a vnet still resolves DNS, reaches the apiserver, talks to the
+// internet — exactly the pre-membership posture for egress.
+//
+// Per (namespace, key-form), up to two policies are produced — one for
+// receiver-capable members (direction `both` and `ingress`) and one for
+// initiator-only members (direction `egress`) iff that pod itself needs
+// no ingress restrictions… actually direction `egress` produces NO
+// self-policy because such pods don't accept ingress and we don't restrict
+// their egress. So in practice: at most one self-policy per (ns, form)
+// for the receiver-capable members. The home namespace can have entries
+// under both KeyBare and KeyPrefixed when both forms are in use,
+// doubling the per-namespace cap to 2.
 //
 // Owner references are set only on policies in the home namespace
 // (Kubernetes rejects cross-namespace owner refs).
@@ -310,8 +308,8 @@ func Generate(in GenerateInput) GenerateOutput {
 	}
 
 	// Collect (peerNS, peerForm) tuples that can initiate (sources of ingress).
+	// Membership policies are ingress-only now, so we don't track receivers.
 	initiators := []peerKey{}
-	receivers := []peerKey{}
 	for _, peerNS := range memberNamespaces {
 		byForm := in.MembersByNS[peerNS]
 		for _, form := range []KeyForm{KeyBare, KeyPrefixed} {
@@ -321,9 +319,6 @@ func Generate(in GenerateInput) GenerateOutput {
 			}
 			if hasInitiator(byDir) {
 				initiators = append(initiators, peerKey{peerNS, form})
-			}
-			if hasReceiver(byDir) {
-				receivers = append(receivers, peerKey{peerNS, form})
 			}
 		}
 	}
@@ -348,20 +343,15 @@ func Generate(in GenerateInput) GenerateOutput {
 	for _, pk := range initiators {
 		peerFroms = append(peerFroms, makePeer(pk, peerInitiatorValues))
 	}
-	peerTos := make([]networkingv1.NetworkPolicyPeer, 0, len(receivers))
-	for _, pk := range receivers {
-		peerTos = append(peerTos, makePeer(pk, peerReceiverValues))
-	}
 
-	// Bindings contribute additional peer entries: one per binding, using
-	// the binding's verbatim podSelector + the binding's own namespace.
+	// Bindings contribute additional peer entries (initiators only — we don't
+	// restrict egress, so receivers don't need to appear in any peer list).
 	// Bindings with DirectionNone are skipped.
 	type bindingPeer struct {
 		ns       string
 		selector metav1.LabelSelector
 	}
 	bindingInitiators := []bindingPeer{}
-	bindingReceivers := []bindingPeer{}
 	bindingNSes := make([]string, 0, len(in.BindingsByNS))
 	for ns := range in.BindingsByNS {
 		bindingNSes = append(bindingNSes, ns)
@@ -380,9 +370,6 @@ func Generate(in GenerateInput) GenerateOutput {
 			if b.Direction == DirectionBoth || b.Direction == DirectionEgress {
 				bindingInitiators = append(bindingInitiators, bindingPeer{ns, b.PodSelector})
 			}
-			if b.Direction == DirectionBoth || b.Direction == DirectionIngress {
-				bindingReceivers = append(bindingReceivers, bindingPeer{ns, b.PodSelector})
-			}
 		}
 	}
 	makeBindingPeer := func(bp bindingPeer) networkingv1.NetworkPolicyPeer {
@@ -397,13 +384,11 @@ func Generate(in GenerateInput) GenerateOutput {
 	for _, bp := range bindingInitiators {
 		peerFroms = append(peerFroms, makeBindingPeer(bp))
 	}
-	for _, bp := range bindingReceivers {
-		peerTos = append(peerTos, makeBindingPeer(bp))
-	}
 
-	// Note: no DNS allow rule is emitted by membership policies anymore.
-	// Under the new ingress-isolation baseline (ADR 0025) egress is never
-	// restricted by kube-vnet, so DNS works without an explicit allow.
+	// Note: membership policies are strictly ingress-only. The operator never
+	// adds egress restrictions; egress (DNS, the apiserver, the public
+	// internet, other namespaces) is unrestricted from the operator's
+	// perspective. See ADR 0025.
 
 	policies := []networkingv1.NetworkPolicy{}
 	for _, ns := range memberNamespaces {
@@ -414,7 +399,11 @@ func Generate(in GenerateInput) GenerateOutput {
 				continue
 			}
 			selectorKey := JoinLabelKeyByForm(prefix, homeNS, vnet.Name, form)
-			for _, dir := range []Direction{DirectionBoth, DirectionIngress, DirectionEgress} {
+			// Direction `egress`-only members don't get a self-policy: they
+			// don't accept ingress (so no ingress allow rules apply to them)
+			// and we don't restrict egress. They still appear in *other*
+			// pods' ingress.from peer lists via peerInitiatorValues.
+			for _, dir := range []Direction{DirectionBoth, DirectionIngress} {
 				if len(byDir[dir]) == 0 {
 					continue
 				}
@@ -440,20 +429,11 @@ func Generate(in GenerateInput) GenerateOutput {
 								Values:   selfValuesFor(dir),
 							}},
 						},
+						PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 					},
 				}
-
-				if dirHasIngress(dir) {
-					policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
-					if len(peerFroms) > 0 {
-						policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
-					}
-				}
-				if dirHasEgress(dir) {
-					policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
-					if len(peerTos) > 0 {
-						policy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{To: peerTos}}
-					}
+				if len(peerFroms) > 0 {
+					policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
 				}
 
 				if ns == homeNS {
@@ -480,7 +460,9 @@ func Generate(in GenerateInput) GenerateOutput {
 		copy(sortedBs, bs)
 		sort.Slice(sortedBs, func(i, j int) bool { return sortedBs[i].Name < sortedBs[j].Name })
 		for _, b := range sortedBs {
-			if b.Direction == DirectionNone {
+			// Same logic as label-driven members: bindings whose direction
+			// doesn't accept ingress (`egress` or `none`) get no self-policy.
+			if !dirHasIngress(b.Direction) {
 				continue
 			}
 			policy := networkingv1.NetworkPolicy{
@@ -500,19 +482,11 @@ func Generate(in GenerateInput) GenerateOutput {
 				},
 				Spec: networkingv1.NetworkPolicySpec{
 					PodSelector: b.PodSelector,
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 				},
 			}
-			if dirHasIngress(b.Direction) {
-				policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeIngress)
-				if len(peerFroms) > 0 {
-					policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
-				}
-			}
-			if dirHasEgress(b.Direction) {
-				policy.Spec.PolicyTypes = append(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
-				if len(peerTos) > 0 {
-					policy.Spec.Egress = []networkingv1.NetworkPolicyEgressRule{{To: peerTos}}
-				}
+			if len(peerFroms) > 0 {
+				policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
 			}
 			policies = append(policies, policy)
 		}

@@ -72,10 +72,12 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !equalStringSlice(got, wantValues) {
 		t.Errorf("podSelector values=%v want %v", got, wantValues)
 	}
-	// Bidi policy: one ingress allow + one egress allow (peers only, no DNS
-	// — egress is unrestricted under the new baseline; ADR 0025).
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 1 {
-		t.Errorf("ingress=%d egress=%d (expected 1 each)", len(p.Spec.Ingress), len(p.Spec.Egress))
+	// Membership policies are ingress-only (ADR 0025): no egress restriction.
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 0 {
+		t.Errorf("ingress=%d egress=%d (want 1 ingress, 0 egress)", len(p.Spec.Ingress), len(p.Spec.Egress))
+	}
+	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Errorf("policyTypes=%v want [Ingress]", p.Spec.PolicyTypes)
 	}
 }
 
@@ -134,8 +136,9 @@ func TestGenerate_HomeAndForeignMixed(t *testing.T) {
 }
 
 // TestGenerate_DirectionEnum_OneOfEach: a single namespace with three pods,
-// one of each direction, generates three policies (bidi, ingress, egress)
-// with the right podSelector values and policyTypes.
+// one of each direction, generates two self-policies (bidi, ingress) — the
+// `egress`-only pod produces no self-policy because it accepts no ingress and
+// the operator no longer restricts egress (ADR 0025).
 func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	out := Generate(GenerateInput{
 		VNet: newVNet("payments", "platform"),
@@ -149,8 +152,8 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 			},
 		},
 	})
-	if len(out.Policies) != 3 {
-		t.Fatalf("expected 3 policies, got %d", len(out.Policies))
+	if len(out.Policies) != 2 {
+		t.Fatalf("expected 2 policies (bidi + ingress; no policy for egress-only), got %d", len(out.Policies))
 	}
 
 	byName := map[string]*kpolicySummary{}
@@ -166,8 +169,8 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	if !equalStringSlice(bidi.podSelectorValues, []string{"true", "both"}) {
 		t.Errorf("bidi podSelector values=%v", bidi.podSelectorValues)
 	}
-	if !bidi.hasIngress || !bidi.hasEgress {
-		t.Errorf("bidi should have both Ingress and Egress")
+	if !bidi.hasIngress || bidi.hasEgress {
+		t.Errorf("bidi should have Ingress only (egress is never restricted)")
 	}
 
 	ingress, ok := byName["kube-vnet-payments-platform-ingress"]
@@ -181,20 +184,13 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 		t.Errorf("ingress-only should have Ingress only")
 	}
 
-	egress, ok := byName["kube-vnet-payments-platform-egress"]
-	if !ok {
-		t.Fatalf("missing egress-only policy")
-	}
-	if !equalStringSlice(egress.podSelectorValues, []string{"egress"}) {
-		t.Errorf("egress podSelector values=%v", egress.podSelectorValues)
-	}
-	if egress.hasIngress || !egress.hasEgress {
-		t.Errorf("egress-only should have Egress only")
+	if _, exists := byName["kube-vnet-payments-platform-egress"]; exists {
+		t.Errorf("egress-only direction must NOT produce a self-policy")
 	}
 }
 
-// TestGenerate_DirectionEnum_PeerSelectorsNarrowed: a bidi policy's peer
-// rules use the right In-values to match initiator/receiver peers respectively.
+// TestGenerate_DirectionEnum_PeerSelectorsNarrowed: peer rules narrow to
+// initiator-capable peers via `In [true, both, egress]` selectors.
 func TestGenerate_DirectionEnum_PeerSelectorsNarrowed(t *testing.T) {
 	out := Generate(GenerateInput{
 		VNet: newVNet("payments", "platform"),
@@ -206,15 +202,12 @@ func TestGenerate_DirectionEnum_PeerSelectorsNarrowed(t *testing.T) {
 		t.Fatalf("expected 1 policy, got %d", len(out.Policies))
 	}
 	p := out.Policies[0]
-	// Ingress.from should reference initiator-capable peers.
 	from := p.Spec.Ingress[0].From[0].PodSelector.MatchExpressions[0]
 	if !equalStringSlice(from.Values, []string{"true", "both", "egress"}) {
 		t.Errorf("ingress.from peer values=%v want [true both egress]", from.Values)
 	}
-	// Egress.to (first rule, before DNS) should reference receiver-capable peers.
-	to := p.Spec.Egress[0].To[0].PodSelector.MatchExpressions[0]
-	if !equalStringSlice(to.Values, []string{"true", "both", "ingress"}) {
-		t.Errorf("egress.to peer values=%v want [true both ingress]", to.Values)
+	if len(p.Spec.Egress) != 0 {
+		t.Errorf("expected no egress section, got %d rules", len(p.Spec.Egress))
 	}
 }
 
@@ -296,8 +289,11 @@ func TestGenerate_Binding_EmitsPerBindingPolicy(t *testing.T) {
 	if got := p.Spec.PodSelector.MatchLabels["app"]; got != "vendor-x" {
 		t.Errorf("podSelector did not match binding selector verbatim: %v", p.Spec.PodSelector)
 	}
-	if len(p.Spec.PolicyTypes) != 2 {
-		t.Errorf("PolicyTypes=%v want both", p.Spec.PolicyTypes)
+	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Errorf("PolicyTypes=%v want [Ingress] only", p.Spec.PolicyTypes)
+	}
+	if len(p.Spec.Egress) != 0 {
+		t.Errorf("expected no egress section on a binding policy, got %d", len(p.Spec.Egress))
 	}
 }
 
