@@ -42,10 +42,10 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.payments" {
 			return fmt.Errorf("podSelector key=%s", got)
 		}
-		// One ingress allow + one egress allow (peers); no DNS rule under
-		// the new ingress-only baseline (ADR 0025).
-		if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 1 {
-			return fmt.Errorf("expected 1 ingress and 1 egress rule, got ingress=%d egress=%d",
+		// Membership policies are ingress-only (ADR 0025): one ingress allow
+		// for vnet peers; no egress section (egress is never restricted).
+		if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 0 {
+			return fmt.Errorf("expected 1 ingress and 0 egress rules, got ingress=%d egress=%d",
 				len(p.Spec.Ingress), len(p.Spec.Egress))
 		}
 		return nil
@@ -252,8 +252,9 @@ func TestIntegration_DriftCorrection(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if len(got.Spec.Ingress) == 0 || len(got.Spec.Egress) == 0 {
-			return fmt.Errorf("rules still empty")
+		// Membership policies are ingress-only; only ingress should be restored.
+		if len(got.Spec.Ingress) == 0 {
+			return fmt.Errorf("ingress rules still empty after drift")
 		}
 		return nil
 	})
@@ -699,7 +700,10 @@ func TestIntegration_IngressIsolation_NoEgressInBaseline(t *testing.T) {
 // ----- direction modes + long-form-in-home tests ---------------------------
 
 // TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
-// direction values produce three direction-class policies in their namespace.
+// direction values produce two direction-class self-policies (bidi +
+// ingress). The `egress`-only pod gets NO self-policy: it accepts no
+// ingress and the operator no longer restricts egress (ADR 0025). It
+// still appears in other pods' ingress.from peer lists.
 func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "dir")
@@ -715,7 +719,6 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 		for _, name := range []string{
 			"kube-vnet-v-" + ns,
 			"kube-vnet-v-" + ns + "-ingress",
-			"kube-vnet-v-" + ns + "-egress",
 		} {
 			if _, err := findPolicy(ctx, ns, name); err != nil {
 				return fmt.Errorf("policy %s missing: %v", name, err)
@@ -723,6 +726,10 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 		}
 		return nil
 	})
+	// The egress-only direction must NOT produce a self-policy.
+	if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-egress"); !apierrors.IsNotFound(err) {
+		t.Errorf("egress-only direction must not produce a self-policy: err=%v", err)
+	}
 }
 
 // TestIntegration_DirectionEnum_TrueAliasIsBoth: legacy "true" value still
