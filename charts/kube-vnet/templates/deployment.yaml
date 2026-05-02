@@ -40,16 +40,28 @@ spec:
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.operator.healthProbeBindAddress }}
             - --label-prefix={{ .Values.operator.labelPrefix }}
-            - --excluded-namespaces={{ join "," .Values.operator.excludedNamespaces }}
+            {{- /* disabledNamespaces (preferred) with one-cycle excludedNamespaces fallback. */}}
+            {{- $disabled := default (list) .Values.operator.disabledNamespaces -}}
+            {{- if not $disabled }}{{- $disabled = default (list) .Values.operator.excludedNamespaces }}{{- end }}
+            {{- with $disabled }}
+            - --disabled-namespaces={{ join "," . }}
+            {{- end }}
             {{- with .Values.operator.ingressIsolation }}
-            - --ingress-isolation={{ default "none" .mode }}
-            {{- with .forceNone }}
+            - --ingress-isolation={{ required "operator.ingressIsolation.mode is required (one of: none, namespace, pod)" .mode }}
+            {{- /* namespaceOverrides.{none,namespace,pod} (preferred) with one-cycle force* fallback. */}}
+            {{- $no := default (list) (default (dict) .namespaceOverrides).none -}}
+            {{- if not $no }}{{- $no = default (list) .forceNone }}{{- end }}
+            {{- with $no }}
             - --ingress-isolation-none={{ join "," . }}
             {{- end }}
-            {{- with .forceNamespace }}
+            {{- $ns := default (list) (default (dict) .namespaceOverrides).namespace -}}
+            {{- if not $ns }}{{- $ns = default (list) .forceNamespace }}{{- end }}
+            {{- with $ns }}
             - --ingress-isolation-namespace={{ join "," . }}
             {{- end }}
-            {{- with .forcePod }}
+            {{- $pod := default (list) (default (dict) .namespaceOverrides).pod -}}
+            {{- if not $pod }}{{- $pod = default (list) .forcePod }}{{- end }}
+            {{- with $pod }}
             - --ingress-isolation-pod={{ join "," . }}
             {{- end }}
             {{- end }}

@@ -886,6 +886,48 @@ func touchNamespace(t *testing.T, name string) {
 	}
 }
 
+// TestIntegration_NamespaceOverride_ShieldsFromClusterMode verifies that a
+// namespace listed in OverrideIsolationNone does NOT get a baseline even
+// when the cluster-wide default is `pod`. This is the operator-side
+// equivalent of the chart's namespaceOverrides.none default that protects
+// kube-system / kube-public / kube-node-lease.
+func TestIntegration_NamespaceOverride_ShieldsFromClusterMode(t *testing.T) {
+	ctx := context.Background()
+	shielded := uniqueNS(t, "shielded")
+	mustCreate(t, makeNamespace(shielded, nil, nil))
+
+	// Flip cluster-wide default to pod and add the test namespace to the
+	// none-override list. Restore both at end of test.
+	priorMode := testNSReconciler.NSFilter.DefaultIsolation
+	testNSReconciler.NSFilter.DefaultIsolation = IsolationPod
+	testNSReconciler.NSFilter.OverrideIsolationNone[shielded] = true
+	t.Cleanup(func() {
+		testNSReconciler.NSFilter.DefaultIsolation = priorMode
+		delete(testNSReconciler.NSFilter.OverrideIsolationNone, shielded)
+	})
+
+	// Force a reconcile so the override takes effect on the existing namespace.
+	touchNamespace(t, shielded)
+
+	// Wait long enough for several reconciles, then assert no baseline.
+	time.Sleep(2 * time.Second)
+	bp := &networkingv1.NetworkPolicy{}
+	err := testClient.Get(ctx, client.ObjectKey{Namespace: shielded, Name: BaselinePolicyName}, bp)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("override-none should keep the baseline out even when default mode is pod, got err=%v", err)
+	}
+
+	// Sanity: a sibling namespace WITHOUT the override DOES get the baseline.
+	control := uniqueNS(t, "control")
+	mustCreate(t, makeNamespace(control, nil, nil))
+	eventually(t, 5*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: control, Name: BaselinePolicyName}, bp)
+	})
+	t.Cleanup(func() {
+		_ = testClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: control}})
+	})
+}
+
 // TestIntegration_DefaultDenyAll_FlagOff_NoBaselineInEmptyNS: regression guard
 // for the existing default — flag off, fresh namespace with no vnet, no
 // baseline appears.

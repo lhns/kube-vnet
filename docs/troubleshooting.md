@@ -48,7 +48,7 @@ Most common case. Walk through these in order:
    If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded.
 
    Two ways a namespace can be excluded:
-   - The operator-level `--excluded-namespaces` flag (defaults: `kube-system,kube-public,kube-node-lease`, plus the operator's own namespace).
+   - The operator-level `--disabled-namespaces` flag (default `[]`, plus the operator's own namespace; renamed from `--excluded-namespaces`, old name still accepted with deprecation warning). Note: `kube-system`, `kube-public`, `kube-node-lease` are no longer disabled by default — they're in `--ingress-isolation-none` instead, which means the operator *does* discover labeled pods there but won't install an ingress baseline.
    - The per-namespace annotation: `kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/disabled}'` — if it reads `true`, that's why.
 
 3. **Is the pod's namespace permitted by `allowedNamespaces`?**
@@ -154,14 +154,14 @@ The baseline lifecycle is owned by the `NamespaceReconciler` and is decided pure
 
    If `kube-vnet/disabled: "true"` is set, the operator does nothing in that namespace — including not installing the baseline. By design.
 
-3. Is the namespace in `--excluded-namespaces`?
+3. Is the namespace in `--disabled-namespaces` (formerly `--excluded-namespaces`)?
 
    ```bash
    kubectl get deploy -n kube-vnet-system kube-vnet-controller \
      -o jsonpath='{.spec.template.spec.containers[0].args}'
    ```
 
-   If your namespace appears (or `kube-system`/`kube-public`/`kube-node-lease`/the operator's own namespace), it's excluded.
+   If your namespace appears (or the operator's own namespace, which is added implicitly), the operator does nothing there. Separately, if your namespace appears in `--ingress-isolation-none` (defaults to `kube-system,kube-public,kube-node-lease`), the operator still discovers pods there but won't install an ingress baseline regardless of cluster-wide `mode`.
 
 4. Want a baseline in every managed namespace? Set `--ingress-isolation=pod` (or `namespace`). See [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md).
 
@@ -192,7 +192,7 @@ Check the `Ready` condition's reason:
 | `NoPodsMatch` | Selector matched no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
 | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
 | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |
-| `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--excluded-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |
+| `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces` (formerly `--excluded-namespaces`). | Remove the annotation, or move the binding to a managed namespace. |
 | `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
 | `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
 
@@ -248,7 +248,7 @@ The reason explains what to fix.
 | `NoMembers` | (`Ready=True` actually) — no pods are joining yet. | Add the join label to a pod. |
 | `PoliciesGenerated` | (`Ready=True`) — everything's working. | Nothing to fix. |
 | `InvalidName` | The vnet's name has a dot or other invalid character. | Recreate the vnet with a DNS-1123 label name (lowercase alphanumeric and hyphens, no dots). |
-| `HomeNamespaceExcluded` | The vnet's home namespace is in `--excluded-namespaces` or has `kube-vnet/disabled=true`. | Move the vnet to a managed namespace, or remove the namespace from the exclusion list / annotation. |
+| `HomeNamespaceExcluded` | The vnet's home namespace is in `--disabled-namespaces` (formerly `--excluded-namespaces`) or has `kube-vnet/disabled=true`. | Move the vnet to a managed namespace, or remove the namespace from the disabled list / annotation. |
 | `ApplyFailed` | The operator hit an apiserver error trying to apply a `NetworkPolicy`. | `kubectl logs deploy/kube-vnet-controller -n kube-vnet-system | grep apply` for the error detail. |
 | `NameCollision` | A user-managed `NetworkPolicy` exists with the same name kube-vnet wants to use, and it doesn't carry the `kube-vnet/managed-by` label. | Rename the user policy, or move it elsewhere. |
 

@@ -105,8 +105,11 @@ Helm (recommended):
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.1.0 \
-  --namespace kube-vnet-system --create-namespace
+  --namespace kube-vnet-system --create-namespace \
+  --set operator.ingressIsolation.mode=none
 ```
+
+The chart has no default for `operator.ingressIsolation.mode`; pick one of `none`, `namespace`, or `pod` at install time. `none` is the existing-cluster-friendly choice — see [`docs/install.md`](docs/install.md) for the trade-offs.
 
 Or install the rendered manifests directly:
 
@@ -221,7 +224,7 @@ Two equivalent ways:
       kube-vnet/disabled: "true"
   ```
 
-- **Operator-wide** — pass `--excluded-namespaces=foo,bar` to the controller. Defaults: `kube-system,kube-public,kube-node-lease`. The operator's own namespace is always added.
+- **Operator-wide** — pass `--disabled-namespaces=foo,bar` to the controller (Helm: `operator.disabledNamespaces`). Default: `[]`. The operator's own namespace is always added implicitly. (Renamed this cycle from `--excluded-namespaces` / `operator.excludedNamespaces`; old names accepted for one release with a deprecation warning.) Note that `kube-system`, `kube-public`, and `kube-node-lease` are no longer in this list by default — they're in `operator.ingressIsolation.namespaceOverrides.none` instead, so the operator never installs an ingress baseline there but still discovers deliberate joiners.
 
 When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible joiners for any VirtualNetwork (regardless of `allowedNamespaces`).
 
@@ -235,7 +238,7 @@ Each namespace has an **ingress-isolation mode** controlling its baseline:
 | `namespace` | Baseline allows ingress from same-namespace pods only. |
 | `pod` | Baseline denies all ingress. Pods are reachable only via membership policies or explicit user-managed policies. |
 
-Set per-namespace via the `kube-vnet/ingress-isolation` annotation, or cluster-wide via `--ingress-isolation` (default `none`). Per-mode override lists let cluster operators carve out exceptions:
+Set per-namespace via the `kube-vnet/ingress-isolation` annotation, or cluster-wide via `--ingress-isolation` / `operator.ingressIsolation.mode` (no default — required at install time). Per-mode override lists let cluster operators carve out exceptions:
 
 ```yaml
 args:
@@ -259,9 +262,9 @@ See ADRs [0023](docs/adr/0023-decoupled-disabled-and-ingress-isolation.md), [002
 | `--health-probe-bind-address` | `:8081` | health/readiness endpoint |
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
 | `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
-| `--excluded-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces excluded from kube-vnet management |
-| `--ingress-isolation` | `none` | cluster-wide default ingress-isolation mode (`none`/`namespace`/`pod`) |
-| `--ingress-isolation-none` | `""` | CSV of namespaces forced to `none` |
+| `--disabled-namespaces` | `""` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`). Renamed from `--excluded-namespaces` (still accepted, deprecated) |
+| `--ingress-isolation` | **(required)** | cluster-wide default ingress-isolation mode (`none`/`namespace`/`pod`) — no default; must be set explicitly |
+| `--ingress-isolation-none` | `kube-system,kube-public,kube-node-lease` | CSV of namespaces forced to `none` |
 | `--ingress-isolation-namespace` | `""` | CSV of namespaces forced to `namespace` |
 | `--ingress-isolation-pod` | `""` | CSV of namespaces forced to `pod` |
 | `--default-deny-everywhere` | `false` | **deprecated**; alias for `--ingress-isolation=pod` |

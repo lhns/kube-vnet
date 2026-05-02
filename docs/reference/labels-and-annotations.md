@@ -74,7 +74,7 @@ X→Y flows iff X is initiator-capable (`both`/`egress`) **and** Y is receiver-c
 | **Value** | `"true"` to opt out. Any other value (including absent) means managed. |
 | **Set by** | The cluster admin / namespace owner. |
 | **Meaning** | "Operator: do nothing in this namespace." No baseline is created; no membership policies are generated for pods here; pods here are not eligible joiners for any VirtualNetwork (regardless of any vnet's `allowedNamespaces`). |
-| **Used by** | `NamespaceFilter.IsManaged()` in the operator. |
+| **Used by** | `NamespaceFilter.IsManaged()` in the operator. The cluster-level mirror of this annotation is the `operator.disabledNamespaces` Helm value / `--disabled-namespaces` CLI flag (renamed this cycle from `excludedNamespaces` / `--excluded-namespaces`; the old names are still accepted for one release with a deprecation warning). The annotation key itself — `kube-vnet/disabled` — is unchanged. |
 
 Example:
 

@@ -9,13 +9,18 @@ Sample manifests are in the project repo at
 https://github.com/lhns/kube-vnet/tree/main/config/samples
 
 {{- $iso := default (dict) .Values.operator.ingressIsolation }}
-{{- $mode := default "none" $iso.mode }}
+{{- $mode := $iso.mode }}
 {{- if eq $mode "pod" }}
 
-WARNING: ingressIsolation.mode is "pod". Every non-excluded, non-disabled
-namespace will get the default-deny baseline (no ingress allowed except via
-vnet membership policies). Workloads that previously relied on default-allow
-will lose ingress connectivity from outside their vnet.
+WARNING: ingressIsolation.mode is "pod". Every namespace not in
+disabledNamespaces and not in ingressIsolation.namespaceOverrides.none will
+get the default-deny baseline (no ingress allowed except via vnet membership
+policies). Workloads that previously relied on default-allow will lose
+ingress connectivity from outside their vnet.
+
+By default, kube-system / kube-public / kube-node-lease are protected via
+ingressIsolation.namespaceOverrides.none. Keep them there unless you have a
+deliberate reason to apply a baseline to the control plane.
 
 {{- end }}
 {{- if .Values.operator.defaultDenyEverywhere }}
@@ -23,5 +28,19 @@ will lose ingress connectivity from outside their vnet.
 DEPRECATED: operator.defaultDenyEverywhere is set. Switch to
 operator.ingressIsolation.mode (set to "pod" for the same effect). The old
 value will be removed in a future release.
+
+{{- end }}
+{{- if .Values.operator.excludedNamespaces }}
+
+DEPRECATED: operator.excludedNamespaces is set. Rename to
+operator.disabledNamespaces (same semantics). The old key will be removed in
+a future release.
+
+{{- end }}
+{{- if or $iso.forceNone $iso.forceNamespace $iso.forcePod }}
+
+DEPRECATED: operator.ingressIsolation.{forceNone,forceNamespace,forcePod}
+are set. Move them to operator.ingressIsolation.namespaceOverrides.{none,
+namespace,pod}. The old keys will be removed in a future release.
 
 {{- end }}

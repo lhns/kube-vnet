@@ -232,7 +232,7 @@ The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches 
 
 ### Disabling the operator for a namespace
 
-The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline regardless of ingress-isolation, no membership policies, no eligibility as a peer, no honoring bindings. The operator-level flag `--excluded-namespaces` (defaults: `kube-system,kube-public,kube-node-lease`; the operator's own namespace is always added implicitly) has the same effect at the cluster level.
+The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline regardless of ingress-isolation, no membership policies, no eligibility as a peer, no honoring bindings. The operator-level flag `--disabled-namespaces` (default `[]`; the operator's own namespace is always added implicitly; renamed from `--excluded-namespaces` this cycle, old name still accepted with a deprecation warning) has the same effect at the cluster level. The three control-plane namespaces (`kube-system`, `kube-public`, `kube-node-lease`) used to live here as defaults; they've moved to `operator.ingressIsolation.namespaceOverrides.none` so the operator can still discover deliberate joiners there but never installs an ingress baseline.
 
 See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (now superseded by ADR 0023 for the baseline-control half) and [ADR 0007](adr/0007-operator-level-excluded-namespaces.md).
 

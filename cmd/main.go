@@ -43,7 +43,8 @@ func main() {
 		probeAddr               string
 		enableLeaderElect       bool
 		labelPrefix             string
-		excludedNamespaces      string
+		disabledNamespaces      string
+		legacyExcludedNamespaces string
 		ingressIsolationMode    string
 		ingressIsolationNone    string
 		ingressIsolationNS      string
@@ -56,26 +57,33 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
 	flag.StringVar(&labelPrefix, "label-prefix", controller.DefaultLabelPrefix, "label prefix for join labels (must end with /)")
-	flag.StringVar(&excludedNamespaces, "excluded-namespaces",
-		"kube-system,kube-public,kube-node-lease",
-		"comma-separated namespaces excluded from kube-vnet management",
+	flag.StringVar(&disabledNamespaces, "disabled-namespaces", "",
+		"comma-separated namespaces the operator never touches (no baseline, no "+
+			"membership policies, pods not eligible peers, bindings ignored). "+
+			"Mirrors the per-namespace kube-vnet/disabled=true annotation.",
 	)
-	flag.StringVar(&ingressIsolationMode, "ingress-isolation", "none",
-		"cluster-wide default ingress-isolation mode (none|namespace|pod). "+
+	flag.StringVar(&legacyExcludedNamespaces, "excluded-namespaces", "",
+		"DEPRECATED: alias for --disabled-namespaces. Will be removed in a future release.",
+	)
+	flag.StringVar(&ingressIsolationMode, "ingress-isolation", "",
+		"REQUIRED. Cluster-wide default ingress-isolation mode (none|namespace|pod). "+
 			"Per-namespace annotation kube-vnet/ingress-isolation overrides this; "+
-			"the --ingress-isolation-{none,namespace,pod} override flags also win over this default.",
+			"the --ingress-isolation-{none,namespace,pod} override flags also win over this default. "+
+			"No default — pick deliberately. (Helm: operator.ingressIsolation.mode)",
 	)
-	flag.StringVar(&ingressIsolationNone, "ingress-isolation-none", "",
-		"comma-separated namespaces forced to ingress-isolation mode `none` "+
+	flag.StringVar(&ingressIsolationNone, "ingress-isolation-none",
+		"kube-system,kube-public,kube-node-lease",
+		"comma-separated namespaces overridden to ingress-isolation mode `none` "+
 			"(no baseline). Wins over --ingress-isolation; the per-namespace "+
-			"annotation still wins over this.",
+			"annotation still wins over this. Default protects the system "+
+			"namespaces from a non-`none` cluster-wide mode.",
 	)
 	flag.StringVar(&ingressIsolationNS, "ingress-isolation-namespace", "",
-		"comma-separated namespaces forced to ingress-isolation mode `namespace` "+
+		"comma-separated namespaces overridden to ingress-isolation mode `namespace` "+
 			"(baseline allows ingress from same-namespace pods).",
 	)
 	flag.StringVar(&ingressIsolationPod, "ingress-isolation-pod", "",
-		"comma-separated namespaces forced to ingress-isolation mode `pod` "+
+		"comma-separated namespaces overridden to ingress-isolation mode `pod` "+
 			"(baseline denies all ingress).",
 	)
 	flag.BoolVar(&legacyDefaultDenyEvery, "default-deny-everywhere", false,
@@ -92,25 +100,37 @@ func main() {
 	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	excluded := splitAndTrim(excludedNamespaces)
-	if ownNS := os.Getenv("POD_NAMESPACE"); ownNS != "" {
-		excluded = append(excluded, ownNS)
+	disabled := splitAndTrim(disabledNamespaces)
+	if legacy := splitAndTrim(legacyExcludedNamespaces); len(legacy) > 0 {
+		setupLog.Info("--excluded-namespaces is deprecated; use --disabled-namespaces. " +
+			"Both lists are merged for now.")
+		disabled = append(disabled, legacy...)
 	}
-	nsFilter := controller.NewNamespaceFilter(excluded)
+	if ownNS := os.Getenv("POD_NAMESPACE"); ownNS != "" {
+		disabled = append(disabled, ownNS)
+	}
+	nsFilter := controller.NewNamespaceFilter(disabled)
 
-	// Resolve the ingress-isolation default. Backward compat: the deprecated
-	// --default-deny-everywhere=true takes effect only when --ingress-isolation
-	// was left at its default value.
+	// Resolve the ingress-isolation mode. Required: empty means the user
+	// didn't pick one. The deprecated --default-deny-everywhere=true counts
+	// as picking `pod` for the duration of the deprecation window.
+	if ingressIsolationMode == "" && legacyDefaultDenyEvery {
+		setupLog.Info("--default-deny-everywhere is deprecated; treating as --ingress-isolation=pod. " +
+			"Switch to --ingress-isolation=pod (Helm: operator.ingressIsolation.mode=pod).")
+		ingressIsolationMode = "pod"
+	}
+	if ingressIsolationMode == "" {
+		setupLog.Info("--ingress-isolation is required and was not set. " +
+			"Pick one of: none, namespace, pod. " +
+			"(Helm: set operator.ingressIsolation.mode in your values.)")
+		os.Exit(1)
+	}
 	mode, ok := controller.ParseIsolationMode(ingressIsolationMode)
 	if !ok {
 		setupLog.Info("invalid --ingress-isolation value, refusing to start", "value", ingressIsolationMode)
 		os.Exit(1)
 	}
-	if legacyDefaultDenyEvery && ingressIsolationMode == "none" {
-		setupLog.Info("--default-deny-everywhere is deprecated; treating as --ingress-isolation=pod. " +
-			"Switch to --ingress-isolation when convenient.")
-		mode = controller.IsolationPod
-	} else if legacyDefaultDenyEvery {
+	if legacyDefaultDenyEvery && mode != controller.IsolationPod {
 		setupLog.Info("--default-deny-everywhere set alongside --ingress-isolation; the latter wins. " +
 			"Drop --default-deny-everywhere — it's deprecated.")
 	}
@@ -198,7 +218,7 @@ func main() {
 	setupLog.Info("starting kube-vnet operator",
 		"version", version, "commit", commit, "buildDate", date,
 		"labelPrefix", labelPrefix,
-		"excluded", fmt.Sprintf("%v", excluded),
+		"disabled", fmt.Sprintf("%v", disabled),
 		"ingressIsolation", string(mode))
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")

@@ -10,7 +10,33 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`operator.ingressIsolation.mode` (Helm) and `--ingress-isolation` (CLI) are
+  now required.** The chart no longer ships a default for `mode`; `helm install`
+  and `helm upgrade` fail fast via `required` if it's empty. The operator
+  binary exits non-zero at startup if `--ingress-isolation` is not set
+  explicitly. Existing chart users: add `mode: <none|namespace|pod>` to your
+  values (or pass `--set operator.ingressIsolation.mode=...`) before
+  upgrading. Operator-binary users: add `--ingress-isolation=...` to your
+  manager args. The deprecated `--default-deny-everywhere=true` /
+  `operator.defaultDenyEverywhere=true` continues to satisfy the requirement
+  (mapping to `pod` with a deprecation warning) for this cycle only.
+
 ### Behavior changes (upgrade-impacting)
+
+- **`kube-system`, `kube-public`, and `kube-node-lease` are no longer in
+  `disabledNamespaces` (formerly `excludedNamespaces`) by default.** They are
+  now in `operator.ingressIsolation.namespaceOverrides.none` (chart default
+  `[kube-system, kube-public, kube-node-lease]`; the operator's
+  `--ingress-isolation-none` default is the same CSV). The operator now
+  *discovers* deliberate joiner pods in those namespaces (so a cluster admin
+  can enroll a kube-system component in a vnet via the prefixed join label
+  and `allowedNamespaces`), but never installs an ingress-deny baseline
+  there, regardless of the cluster-wide `mode`. If you relied on the
+  operator never touching those namespaces *at all*, add them back to
+  `operator.disabledNamespaces` explicitly. The implicit `POD_NAMESPACE`
+  self-inclusion in `disabledNamespaces` is unchanged.
 
 - **The operator no longer restricts egress.** The baseline now carries
   `policyTypes: [Ingress]` only. Membership policies still allow egress to
@@ -46,7 +72,7 @@ release. Pinning to an exact version is recommended.
 - **`--ingress-isolation` flag family.** Cluster-wide default mode plus
   three per-mode override CSV lists (`--ingress-isolation-none`,
   `--ingress-isolation-namespace`, `--ingress-isolation-pod`). Helm:
-  `operator.ingressIsolation.{mode,forceNone,forceNamespace,forcePod}`.
+  `operator.ingressIsolation.{mode,namespaceOverrides.{none,namespace,pod}}`.
   Per-namespace annotation > override list > cluster-wide default. See
   ADR 0024.
 - **`VirtualNetworkBinding` CRD** (short names `vnb`, `vnbs`). Namespaced.
@@ -80,6 +106,23 @@ release. Pinning to an exact version is recommended.
   policies vs. per-namespace baseline lifecycle.
 - The release workflow now publishes signed artifacts and SBOMs in addition
   to the existing multi-arch container image and `release.yaml`.
+
+### Renamed
+
+- **`operator.excludedNamespaces` → `operator.disabledNamespaces`**, and CLI
+  flag **`--excluded-namespaces` → `--disabled-namespaces`**. Mirrors the
+  per-namespace `kube-vnet/disabled=true` annotation key. The default is now
+  `[]` (the three control-plane namespaces moved to
+  `operator.ingressIsolation.namespaceOverrides.none` — see "Behavior
+  changes" above). Old forms are accepted for one release with a startup /
+  `NOTES.txt` deprecation warning, and will be removed in the next release.
+- **`operator.ingressIsolation.forceNone`/`forceNamespace`/`forcePod`** →
+  **`operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`**.
+  The new keys nest under `ingressIsolation` and read the same way the
+  resolution rule reads ("override to mode `none`", etc.). Old keys are
+  accepted for one release with a `NOTES.txt` deprecation warning. CLI flag
+  names (`--ingress-isolation-none`, `--ingress-isolation-namespace`,
+  `--ingress-isolation-pod`) are unchanged — only the chart-side keys moved.
 
 ### Deprecated
 

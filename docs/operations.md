@@ -260,7 +260,7 @@ CRD changes are not applied by `helm upgrade` — see [`install.md`](install.md)
 
 ### "I want to enable cluster-wide ingress-isolation"
 
-`--ingress-isolation` defaults to `none`. Setting it to `pod` against an existing cluster will install the strict-ingress baseline in every non-excluded, non-disabled namespace immediately, which can break workloads that previously relied on default-allow ingress.
+The chart has no default for `mode` — every install picks one. To raise the posture from `none` to `pod` against an existing cluster, the strict-ingress baseline lands in every non-disabled, non-overridden namespace immediately, which can break workloads that previously relied on default-allow ingress.
 
 Recommended rollout:
 
@@ -274,11 +274,43 @@ Recommended rollout:
    # Or migrate per-namespace via the override list:
    helm upgrade kube-vnet ... \
      --set 'operator.ingressIsolation.mode=none' \
-     --set 'operator.ingressIsolation.forcePod={ns-a,ns-b}'
+     --set 'operator.ingressIsolation.namespaceOverrides.pod={ns-a,ns-b}'
    ```
 3. Remove the `kube-vnet/disabled` annotation namespace by namespace as workloads are migrated.
 
 Per-namespace overrides via the `kube-vnet/ingress-isolation` annotation always win over the operator-level config. See [ADR 0023](adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+
+### "An auditor is asking what kube-vnet does in `kube-system`"
+
+By default: nothing harmful. `kube-system`, `kube-public`, and `kube-node-lease` are listed in the chart's default `operator.ingressIsolation.namespaceOverrides.none`, so the operator's resolved mode for those namespaces is `none` — no baseline is installed. The operator still discovers any deliberate joiner pod there (so a user can opt a kube-system component into a vnet via the prefixed join label, if `allowedNamespaces` permits it), but it never installs an ingress-deny baseline that could break CoreDNS, the API aggregator, or other control-plane traffic.
+
+If you'd rather have the operator never look at those namespaces at all, add them to `operator.disabledNamespaces` instead. See [`security.md`](security.md) for the full RBAC inventory.
+
+### "I'm upgrading from a release that had `operator.excludedNamespaces` or `forceX`"
+
+A few breaking and behavior changes landed this cycle. Read these before `helm upgrade`.
+
+**`operator.ingressIsolation.mode` is now required.** The chart no longer defaults `mode`. Helm's `required` function fails the install/upgrade if it's empty:
+
+```
+Error: execution error at (kube-vnet/templates/deployment.yaml): operator.ingressIsolation.mode is required (one of: none, namespace, pod)
+```
+
+Add `mode: <none|namespace|pod>` to your values (or pass `--set operator.ingressIsolation.mode=...`) before running `helm upgrade`. If you operate the binary directly, add `--ingress-isolation=...` to the manager args — the operator binary now exits non-zero at startup if it isn't set explicitly. `--default-deny-everywhere=true` still satisfies the requirement (mapping to `pod`) with a deprecation warning.
+
+**System namespaces moved out of the disabled list.** Previously `kube-system`, `kube-public`, `kube-node-lease` were the default for `operator.excludedNamespaces` (now `operator.disabledNamespaces`). They've moved to `operator.ingressIsolation.namespaceOverrides.none`, with the chart default literally `[kube-system, kube-public, kube-node-lease]`. The operator's `--ingress-isolation-none` flag default is the same CSV. Effect: the operator now *discovers* labeled pods in those namespaces (so you can deliberately opt a kube-system component into a vnet via `allowedNamespaces`) but never installs an ingress-deny baseline there, regardless of `mode`. If you previously relied on the operator never touching those namespaces *at all* (not even discovery), add them back to `operator.disabledNamespaces` explicitly. The default for `disabledNamespaces` is now `[]`; `POD_NAMESPACE` (the operator's own namespace) is still added implicitly.
+
+**Renamed values, deprecated aliases.** All accept old names for one release with a startup / `helm install` deprecation warning:
+
+| Old | New |
+|---|---|
+| `operator.excludedNamespaces` | `operator.disabledNamespaces` |
+| CLI `--excluded-namespaces` | CLI `--disabled-namespaces` |
+| `operator.ingressIsolation.forceNone` | `operator.ingressIsolation.namespaceOverrides.none` |
+| `operator.ingressIsolation.forceNamespace` | `operator.ingressIsolation.namespaceOverrides.namespace` |
+| `operator.ingressIsolation.forcePod` | `operator.ingressIsolation.namespaceOverrides.pod` |
+
+Update your values file and CI manifests during this cycle; the aliases will be removed in the next release.
 
 ### "I'm upgrading from a release that had `--default-deny-everywhere`"
 
@@ -292,12 +324,6 @@ Two behavior changes since the rename and the egress-unrestricted reshape:
 ### "Pods I expect to be isolated can talk to each other"
 
 See [`troubleshooting.md`](troubleshooting.md) — most common causes: CNI doesn't enforce NetworkPolicy, baseline missing in one of the namespaces involved, label form wrong (bare vs prefixed).
-
-### "An auditor is asking what kube-vnet does in `kube-system`"
-
-By default: nothing. `kube-system` is in `--excluded-namespaces`. The operator never installs a baseline there, never generates membership policies for pods there, and treats labeled pods there as `InvalidJoiner` with reason `NamespaceExcluded` (visible on the relevant VirtualNetwork's `Degraded` condition).
-
-See [`security.md`](security.md) for the full RBAC inventory.
 
 ---
 

@@ -74,3 +74,11 @@ The startup-time conflict check catches the "namespace in two lists" mistake at 
 - ADR 0020 — `--default-deny-everywhere`. Superseded by this ADR for the operator-level config rename.
 - ADR 0023 — decoupled `disabled` and `ingress-isolation`. The annotation half of the same redesign.
 - ADR 0025 — `ingress-isolation` rename + egress unrestricted. The shape of what the mode controls.
+
+## Addendum (2026-05-02)
+
+The chart's per-mode override keys have been renamed from `operator.ingressIsolation.{forceNone,forceNamespace,forcePod}` to `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`. The new keys nest naturally under `ingressIsolation` and read the same way the resolution rule reads ("override to mode `none`", etc.). The old keys are accepted for one release with a deprecation warning rendered through `NOTES.txt`. CLI flag names are unchanged — only the chart-side keys moved.
+
+`operator.ingressIsolation.mode` is now required on the chart side: there is no default, and `helm install` / `helm upgrade` fails fast via `required` if the value is empty. The operator binary mirrors this — it exits non-zero at startup if `--ingress-isolation` was not set explicitly. `--default-deny-everywhere=true` continues to satisfy the requirement (mapping to `pod` with a deprecation warning) for one cycle.
+
+The chart's default for `namespaceOverrides.none` is `[kube-system, kube-public, kube-node-lease]`, and the operator's `--ingress-isolation-none` flag default is the same CSV. These three namespaces have correspondingly been removed from the chart's default `disabledNamespaces` (formerly `excludedNamespaces`) and from the operator's `--disabled-namespaces` flag default — the operator now *discovers* deliberate joiner pods in those namespaces but never installs an ingress baseline there. The implicit `POD_NAMESPACE` self-inclusion in disabled-namespaces is unchanged.

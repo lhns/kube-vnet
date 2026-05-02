@@ -16,20 +16,46 @@ replicaCount: 1
 operator:
   # Label-key prefix for join labels. Must end with "/".
   labelPrefix: "kube-vnet/"
-  # Namespaces the operator never touches. The Helm release namespace is
-  # always added implicitly via POD_NAMESPACE.
-  excludedNamespaces:
-    - kube-system
-    - kube-public
-    - kube-node-lease
-  # Ingress-isolation mode. Three values: none / namespace / pod.
-  #   none      — no baseline; ingress unrestricted by kube-vnet.
-  #   namespace — baseline allows ingress from same-namespace pods.
-  #   pod       — baseline denies all ingress; only vnet membership policies grant allows.
-  # Per-namespace annotation kube-vnet/ingress-isolation overrides this default.
-  # Override lists below force specific namespaces to a specific mode.
+
+  # Namespaces the operator never touches at all (no baseline, no membership
+  # policies, pods not eligible peers in any vnet, bindings ignored). Mirrors
+  # the per-namespace `kube-vnet/disabled=true` annotation. The Helm release
+  # namespace is always added implicitly via POD_NAMESPACE.
+  #
+  # Default empty: the system namespaces (kube-system, kube-public,
+  # kube-node-lease) are no longer here. They live in
+  # ingressIsolation.namespaceOverrides.none below so the operator still
+  # discovers any deliberate joiner there.
+  disabledNamespaces: []
+  # DEPRECATED: alias for disabledNamespaces. Retained for one release cycle.
+  excludedNamespaces: []
+
   ingressIsolation:
-    mode: none
+    # REQUIRED. One of: none | namespace | pod.
+    #   none      — no baseline; ingress unrestricted by kube-vnet.
+    #   namespace — baseline allows ingress from same-namespace pods.
+    #   pod       — baseline denies all ingress; only vnet membership policies
+    #               grant allows.
+    # No default — `helm install/upgrade` fails fast if this is left unset.
+    # Pick deliberately.
+    mode: ""
+
+    # Per-namespace overrides of `mode`. The per-namespace
+    # `kube-vnet/ingress-isolation` annotation still takes precedence over
+    # both `mode` and these lists.
+    #
+    # Default puts the three system namespaces in `none` so a non-`none`
+    # cluster-wide mode never lands a deny-all baseline on the control
+    # plane. Override or extend as needed.
+    namespaceOverrides:
+      none:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+      namespace: []
+      pod: []
+    # DEPRECATED: replaced by namespaceOverrides.{none,namespace,pod}.
+    # Retained for one release cycle.
     forceNone: []
     forceNamespace: []
     forcePod: []

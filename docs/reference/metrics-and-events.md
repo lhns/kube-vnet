@@ -184,7 +184,7 @@ A `VirtualNetworkBinding`'s `Ready` condition uses these reasons (constants in `
 | `NoPodsMatch` | False | Selector valid but matched zero pods in the binding's namespace. |
 | `VirtualNetworkNotFound` | False | `spec.virtualNetworkRef` does not resolve. |
 | `NamespaceNotAllowed` | False | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
-| `NamespaceExcluded` | False | The binding's namespace has `kube-vnet/disabled=true` or is in `--excluded-namespaces`. |
+| `NamespaceExcluded` | False | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces` (formerly `--excluded-namespaces`). |
 | `UnknownDirection` | False | `spec.direction` is not one of the recognized values. |
 | `InvalidSelector` | False | `spec.podSelector` cannot be parsed. |
 

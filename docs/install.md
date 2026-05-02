@@ -40,38 +40,55 @@ You need cluster-admin (or equivalent) for the install — the operator needs cl
 
 The chart is published as an OCI artifact to `ghcr.io/lhns/charts/kube-vnet`. Helm 3.8+ supports OCI registries natively; no separate repository to add.
 
+The chart has **no default for `operator.ingressIsolation.mode`** — you must pick one of `none`, `namespace`, or `pod` at install time. This is deliberate: the cluster-wide ingress-isolation posture is not something to acquire silently.
+
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.1.0 \
-  --namespace kube-vnet-system --create-namespace
+  --namespace kube-vnet-system --create-namespace \
+  --set operator.ingressIsolation.mode=none
 ```
 
 Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
+
+If you forget `mode`, `helm install`/`helm upgrade` fails fast:
+
+```
+Error: execution error at (kube-vnet/templates/deployment.yaml): operator.ingressIsolation.mode is required (one of: none, namespace, pod)
+```
+
+Pick `none` if you only want the operator to install policies for explicit `VirtualNetwork` members (existing-cluster-friendly default behavior — start here unless you know you want broader posture). Pick `namespace` or `pod` to install an ingress-restricting baseline cluster-wide. See [`concepts.md`](concepts.md) and ADRs 0023–0025.
+
+The chart's default `operator.ingressIsolation.namespaceOverrides.none` lists `[kube-system, kube-public, kube-node-lease]`, so even if you pick `mode=pod` cluster-wide, those control-plane namespaces stay at `none` — the operator still discovers any deliberate joiner there but never installs a baseline.
 
 ### Common values
 
 ```bash
 # Pin a specific image tag (default: chart appVersion)
-helm install ... --set image.tag=v0.1.0
+helm install ... --set image.tag=v0.1.0 --set operator.ingressIsolation.mode=none
 
-# Cluster-wide ingress-isolation default (none|namespace|pod). See concepts.md and ADRs 0023-0025.
+# Cluster-wide ingress-isolation: pod (every non-overridden namespace gets a strict-ingress baseline)
 helm install ... --set operator.ingressIsolation.mode=pod
 
-# Per-mode override lists carve out exceptions to the cluster-wide default.
+# Per-mode namespace-override lists carve out exceptions to the cluster-wide default.
 helm install ... \
   --set 'operator.ingressIsolation.mode=pod' \
-  --set 'operator.ingressIsolation.forceNone={legacy,sandbox}' \
-  --set 'operator.ingressIsolation.forceNamespace={team-a,team-b}'
+  --set 'operator.ingressIsolation.namespaceOverrides.none={legacy,sandbox}' \
+  --set 'operator.ingressIsolation.namespaceOverrides.namespace={team-a,team-b}'
 
-# Customize the operator-level exclusion list (the operator's own ns is auto-added)
-helm install ... --set 'operator.excludedNamespaces={kube-system,kube-public,kube-node-lease,my-legacy-ns}'
+# Customize the operator-level disabled-namespaces list (defaults to []; the operator's own ns is auto-added)
+helm install ... \
+  --set operator.ingressIsolation.mode=none \
+  --set 'operator.disabledNamespaces={my-legacy-ns}'
 
 # Expose the metrics endpoint via a Service (off by default)
-helm install ... --set metricsService.enabled=true
+helm install ... --set operator.ingressIsolation.mode=none --set metricsService.enabled=true
 
 # Create a Prometheus PodMonitor (requires the Prometheus Operator)
-helm install ... --set podMonitor.enabled=true
+helm install ... --set operator.ingressIsolation.mode=none --set podMonitor.enabled=true
 ```
+
+> **Renamed values.** `operator.excludedNamespaces` is now `operator.disabledNamespaces` (mirrors the per-namespace `kube-vnet/disabled=true` annotation). The default is `[]` — the three control-plane namespaces moved to `operator.ingressIsolation.namespaceOverrides.none`. Likewise, `operator.ingressIsolation.forceNone/forceNamespace/forcePod` are now `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`. The old keys are accepted for one release with a deprecation warning surfaced via `NOTES.txt`.
 
 The full value reference is in [`reference/configuration.md`](reference/configuration.md). The chart's own README is [`charts/kube-vnet/README.md`](../charts/kube-vnet/README.md).
 
