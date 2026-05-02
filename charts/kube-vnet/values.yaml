@@ -23,12 +23,10 @@ operator:
   # namespace is always added implicitly via POD_NAMESPACE.
   #
   # Default empty: the system namespaces (kube-system, kube-public,
-  # kube-node-lease) are no longer here. They live in
+  # kube-node-lease) are not here. They live in
   # ingressIsolation.namespaceOverrides.none below so the operator still
   # discovers any deliberate joiner there.
   disabledNamespaces: []
-  # DEPRECATED: alias for disabledNamespaces. Retained for one release cycle.
-  excludedNamespaces: []
 
   ingressIsolation:
     # REQUIRED. One of: none | namespace | pod.
@@ -54,14 +52,6 @@ operator:
         - kube-node-lease
       namespace: []
       pod: []
-    # DEPRECATED: replaced by namespaceOverrides.{none,namespace,pod}.
-    # Retained for one release cycle.
-    forceNone: []
-    forceNamespace: []
-    forcePod: []
-  # DEPRECATED: alias for ingressIsolation.mode=pod when set to true.
-  # Retained for one release cycle; switch to ingressIsolation.mode.
-  defaultDenyEverywhere: false
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.
   leaderElect: true

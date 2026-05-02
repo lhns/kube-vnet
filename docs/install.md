@@ -88,8 +88,6 @@ helm install ... --set operator.ingressIsolation.mode=none --set metricsService.
 helm install ... --set operator.ingressIsolation.mode=none --set podMonitor.enabled=true
 ```
 
-> **Renamed values.** `operator.excludedNamespaces` is now `operator.disabledNamespaces` (mirrors the per-namespace `kube-vnet/disabled=true` annotation). The default is `[]` — the three control-plane namespaces moved to `operator.ingressIsolation.namespaceOverrides.none`. Likewise, `operator.ingressIsolation.forceNone/forceNamespace/forcePod` are now `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`. The old keys are accepted for one release with a deprecation warning surfaced via `NOTES.txt`.
-
 The full value reference is in [`reference/configuration.md`](reference/configuration.md). The chart's own README is [`charts/kube-vnet/README.md`](../charts/kube-vnet/README.md).
 
 ### Upgrading

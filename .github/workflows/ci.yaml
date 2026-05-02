@@ -99,11 +99,19 @@ jobs:
           version: v3.16.3
       - name: helm lint
         run: helm lint charts/kube-vnet
-      - name: helm template (default values)
-        run: helm template testrelease charts/kube-vnet --kube-version 1.31.0 > /dev/null
-      - name: helm template (defaultDenyEverywhere on)
+      - name: helm template (mode=none)
         run: |
           helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
-            --set operator.defaultDenyEverywhere=true \
+            --set operator.ingressIsolation.mode=none > /dev/null
+      - name: helm template (mode=pod, full options on)
+        run: |
+          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+            --set operator.ingressIsolation.mode=pod \
             --set podMonitor.enabled=true \
             --set metricsService.enabled=true > /dev/null
+      - name: helm template (no mode → required error)
+        run: |
+          if helm template testrelease charts/kube-vnet --kube-version 1.31.0 > /dev/null 2>&1; then
+            echo "expected helm template to fail without operator.ingressIsolation.mode" >&2
+            exit 1
+          fi

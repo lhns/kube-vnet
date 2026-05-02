@@ -224,7 +224,7 @@ Two equivalent ways:
       kube-vnet/disabled: "true"
   ```
 
-- **Operator-wide** — pass `--disabled-namespaces=foo,bar` to the controller (Helm: `operator.disabledNamespaces`). Default: `[]`. The operator's own namespace is always added implicitly. (Renamed this cycle from `--excluded-namespaces` / `operator.excludedNamespaces`; old names accepted for one release with a deprecation warning.) Note that `kube-system`, `kube-public`, and `kube-node-lease` are no longer in this list by default — they're in `operator.ingressIsolation.namespaceOverrides.none` instead, so the operator never installs an ingress baseline there but still discovers deliberate joiners.
+- **Operator-wide** — pass `--disabled-namespaces=foo,bar` to the controller (Helm: `operator.disabledNamespaces`). Default: `[]`. The operator's own namespace is always added implicitly. Note that `kube-system`, `kube-public`, and `kube-node-lease` are no longer in this list by default — they're in `operator.ingressIsolation.namespaceOverrides.none` instead, so the operator never installs an ingress baseline there but still discovers deliberate joiners.
 
 When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible joiners for any VirtualNetwork (regardless of `allowedNamespaces`).
 
@@ -252,8 +252,6 @@ Per-namespace annotation > override list > cluster-wide default. The baseline ca
 
 See ADRs [0023](docs/adr/0023-decoupled-disabled-and-ingress-isolation.md), [0024](docs/adr/0024-ingress-isolation-mode-and-overrides.md), and [0025](docs/adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
-> **Deprecated:** `--default-deny-everywhere` and `operator.defaultDenyEverywhere` are aliased to `--ingress-isolation=pod` (with a startup deprecation warning) and will be removed in a future release.
-
 ## Configuration
 
 | Flag | Default | Description |
@@ -262,12 +260,11 @@ See ADRs [0023](docs/adr/0023-decoupled-disabled-and-ingress-isolation.md), [002
 | `--health-probe-bind-address` | `:8081` | health/readiness endpoint |
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
 | `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
-| `--disabled-namespaces` | `""` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`). Renamed from `--excluded-namespaces` (still accepted, deprecated) |
+| `--disabled-namespaces` | `""` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
 | `--ingress-isolation` | **(required)** | cluster-wide default ingress-isolation mode (`none`/`namespace`/`pod`) — no default; must be set explicitly |
-| `--ingress-isolation-none` | `kube-system,kube-public,kube-node-lease` | CSV of namespaces forced to `none` |
-| `--ingress-isolation-namespace` | `""` | CSV of namespaces forced to `namespace` |
-| `--ingress-isolation-pod` | `""` | CSV of namespaces forced to `pod` |
-| `--default-deny-everywhere` | `false` | **deprecated**; alias for `--ingress-isolation=pod` |
+| `--ingress-isolation-none` | `kube-system,kube-public,kube-node-lease` | CSV of namespaces overridden to `none` |
+| `--ingress-isolation-namespace` | `""` | CSV of namespaces overridden to `namespace` |
+| `--ingress-isolation-pod` | `""` | CSV of namespaces overridden to `pod` |
 
 ## Observability
 

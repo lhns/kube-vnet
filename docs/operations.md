@@ -286,7 +286,7 @@ By default: nothing harmful. `kube-system`, `kube-public`, and `kube-node-lease`
 
 If you'd rather have the operator never look at those namespaces at all, add them to `operator.disabledNamespaces` instead. See [`security.md`](security.md) for the full RBAC inventory.
 
-### "I'm upgrading from a release that had `operator.excludedNamespaces` or `forceX`"
+### "I'm upgrading from a release with the old config-key names"
 
 A few breaking and behavior changes landed this cycle. Read these before `helm upgrade`.
 
@@ -296,30 +296,26 @@ A few breaking and behavior changes landed this cycle. Read these before `helm u
 Error: execution error at (kube-vnet/templates/deployment.yaml): operator.ingressIsolation.mode is required (one of: none, namespace, pod)
 ```
 
-Add `mode: <none|namespace|pod>` to your values (or pass `--set operator.ingressIsolation.mode=...`) before running `helm upgrade`. If you operate the binary directly, add `--ingress-isolation=...` to the manager args — the operator binary now exits non-zero at startup if it isn't set explicitly. `--default-deny-everywhere=true` still satisfies the requirement (mapping to `pod`) with a deprecation warning.
+Add `mode: <none|namespace|pod>` to your values (or pass `--set operator.ingressIsolation.mode=...`) before running `helm upgrade`. If you operate the binary directly, add `--ingress-isolation=...` to the manager args — the operator binary now exits non-zero at startup if it isn't set explicitly.
 
-**System namespaces moved out of the disabled list.** Previously `kube-system`, `kube-public`, `kube-node-lease` were the default for `operator.excludedNamespaces` (now `operator.disabledNamespaces`). They've moved to `operator.ingressIsolation.namespaceOverrides.none`, with the chart default literally `[kube-system, kube-public, kube-node-lease]`. The operator's `--ingress-isolation-none` flag default is the same CSV. Effect: the operator now *discovers* labeled pods in those namespaces (so you can deliberately opt a kube-system component into a vnet via `allowedNamespaces`) but never installs an ingress-deny baseline there, regardless of `mode`. If you previously relied on the operator never touching those namespaces *at all* (not even discovery), add them back to `operator.disabledNamespaces` explicitly. The default for `disabledNamespaces` is now `[]`; `POD_NAMESPACE` (the operator's own namespace) is still added implicitly.
+**System namespaces moved out of the disabled list.** Previously `kube-system`, `kube-public`, `kube-node-lease` were the default for `operator.disabledNamespaces`. They've moved to `operator.ingressIsolation.namespaceOverrides.none`, with the chart default literally `[kube-system, kube-public, kube-node-lease]`. The operator's `--ingress-isolation-none` flag default is the same CSV. Effect: the operator now *discovers* labeled pods in those namespaces (so you can deliberately opt a kube-system component into a vnet via `allowedNamespaces`) but never installs an ingress-deny baseline there, regardless of `mode`. If you previously relied on the operator never touching those namespaces *at all* (not even discovery), add them back to `operator.disabledNamespaces` explicitly. The default for `disabledNamespaces` is now `[]`; `POD_NAMESPACE` (the operator's own namespace) is still added implicitly.
 
-**Renamed values, deprecated aliases.** All accept old names for one release with a startup / `helm install` deprecation warning:
+**Renamed values — old names no longer accepted.** Rename in your values file and CI manifests *before* you upgrade. There is no compatibility shim:
 
-| Old | New |
+| Old (removed) | New |
 |---|---|
 | `operator.excludedNamespaces` | `operator.disabledNamespaces` |
 | CLI `--excluded-namespaces` | CLI `--disabled-namespaces` |
 | `operator.ingressIsolation.forceNone` | `operator.ingressIsolation.namespaceOverrides.none` |
 | `operator.ingressIsolation.forceNamespace` | `operator.ingressIsolation.namespaceOverrides.namespace` |
 | `operator.ingressIsolation.forcePod` | `operator.ingressIsolation.namespaceOverrides.pod` |
+| CLI `--default-deny-everywhere` | CLI `--ingress-isolation=pod` |
+| `operator.defaultDenyEverywhere` | `operator.ingressIsolation.mode=pod` |
 
-Update your values file and CI manifests during this cycle; the aliases will be removed in the next release.
-
-### "I'm upgrading from a release that had `--default-deny-everywhere`"
-
-Two behavior changes since the rename and the egress-unrestricted reshape:
+Two related behavior changes from the same cycle to keep in mind:
 
 - **Egress is no longer restricted** by the operator's baseline. Existing installs that relied on the previous "deny everything except DNS + vnet members" egress will see their egress posture loosen on upgrade. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
 - **The implicit "first vnet member triggers the baseline" coupling is gone.** Set `kube-vnet/ingress-isolation: pod` on the namespace explicitly (or use the operator-level config) if you want the previous behavior.
-
-`--default-deny-everywhere=true` and `operator.defaultDenyEverywhere=true` continue to work as aliases for `--ingress-isolation=pod` (with a deprecation warning at startup). The deprecated names will be removed in a future release.
 
 ### "Pods I expect to be isolated can talk to each other"
 

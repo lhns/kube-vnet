@@ -23,24 +23,3 @@ ingressIsolation.namespaceOverrides.none. Keep them there unless you have a
 deliberate reason to apply a baseline to the control plane.
 
 {{- end }}
-{{- if .Values.operator.defaultDenyEverywhere }}
-
-DEPRECATED: operator.defaultDenyEverywhere is set. Switch to
-operator.ingressIsolation.mode (set to "pod" for the same effect). The old
-value will be removed in a future release.
-
-{{- end }}
-{{- if .Values.operator.excludedNamespaces }}
-
-DEPRECATED: operator.excludedNamespaces is set. Rename to
-operator.disabledNamespaces (same semantics). The old key will be removed in
-a future release.
-
-{{- end }}
-{{- if or $iso.forceNone $iso.forceNamespace $iso.forcePod }}
-
-DEPRECATED: operator.ingressIsolation.{forceNone,forceNamespace,forcePod}
-are set. Move them to operator.ingressIsolation.namespaceOverrides.{none,
-namespace,pod}. The old keys will be removed in a future release.
-
-{{- end }}

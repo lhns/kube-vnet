@@ -19,14 +19,12 @@ release. Pinning to an exact version is recommended.
   explicitly. Existing chart users: add `mode: <none|namespace|pod>` to your
   values (or pass `--set operator.ingressIsolation.mode=...`) before
   upgrading. Operator-binary users: add `--ingress-isolation=...` to your
-  manager args. The deprecated `--default-deny-everywhere=true` /
-  `operator.defaultDenyEverywhere=true` continues to satisfy the requirement
-  (mapping to `pod` with a deprecation warning) for this cycle only.
+  manager args.
 
 ### Behavior changes (upgrade-impacting)
 
 - **`kube-system`, `kube-public`, and `kube-node-lease` are no longer in
-  `disabledNamespaces` (formerly `excludedNamespaces`) by default.** They are
+  `disabledNamespaces` by default.** They are
   now in `operator.ingressIsolation.namespaceOverrides.none` (chart default
   `[kube-system, kube-public, kube-node-lease]`; the operator's
   `--ingress-isolation-none` default is the same CSV). The operator now
@@ -114,24 +112,27 @@ release. Pinning to an exact version is recommended.
   per-namespace `kube-vnet/disabled=true` annotation key. The default is now
   `[]` (the three control-plane namespaces moved to
   `operator.ingressIsolation.namespaceOverrides.none` — see "Behavior
-  changes" above). Old forms are accepted for one release with a startup /
-  `NOTES.txt` deprecation warning, and will be removed in the next release.
+  changes" above).
 - **`operator.ingressIsolation.forceNone`/`forceNamespace`/`forcePod`** →
   **`operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`**.
   The new keys nest under `ingressIsolation` and read the same way the
-  resolution rule reads ("override to mode `none`", etc.). Old keys are
-  accepted for one release with a `NOTES.txt` deprecation warning. CLI flag
-  names (`--ingress-isolation-none`, `--ingress-isolation-namespace`,
+  resolution rule reads ("override to mode `none`", etc.). CLI flag names
+  (`--ingress-isolation-none`, `--ingress-isolation-namespace`,
   `--ingress-isolation-pod`) are unchanged — only the chart-side keys moved.
 
-### Deprecated
+### Removed
 
-- `--default-deny-everywhere` operator flag and
-  `operator.defaultDenyEverywhere` Helm value. Aliased to
-  `--ingress-isolation=pod` (with a startup deprecation warning) when
-  `--ingress-isolation` is at its default. **Will be removed in a future
-  release.** Migrate to `--ingress-isolation` and the
-  `operator.ingressIsolation.*` Helm values.
+The deprecated aliases that were briefly accepted for the renames above are
+gone. There is no compatibility shim — installs still using these names must
+migrate before upgrading.
+
+- CLI flag `--excluded-namespaces` (use `--disabled-namespaces`).
+- CLI flag `--default-deny-everywhere` (use `--ingress-isolation=pod`).
+- Helm value `operator.excludedNamespaces` (use `operator.disabledNamespaces`).
+- Helm value `operator.defaultDenyEverywhere` (use `operator.ingressIsolation.mode=pod`).
+- Helm value `operator.ingressIsolation.forceNone` (use `operator.ingressIsolation.namespaceOverrides.none`).
+- Helm value `operator.ingressIsolation.forceNamespace` (use `operator.ingressIsolation.namespaceOverrides.namespace`).
+- Helm value `operator.ingressIsolation.forcePod` (use `operator.ingressIsolation.namespaceOverrides.pod`).
 
 ### Superseded ADRs
 

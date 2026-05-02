@@ -147,7 +147,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | True | `NoMembers` | "no pods are joining this VirtualNetwork" | Reconcile succeeded; no pods carry the appropriate join label. |
 | True | `PoliciesGenerated` | "<N> NetworkPolic(y|ies) across <M> namespace(s)" | Reconcile succeeded; at least one policy generated. |
 | False | `InvalidName` | "name <name> is not a DNS-1123 label" | The name fails the runtime validation regex (the CRD's CEL rule should prevent this from being persisted; this is defense-in-depth). |
-| False | `HomeNamespaceExcluded` | "home namespace <ns> is excluded by the operator" | The vnet's home namespace is in `--disabled-namespaces` (formerly `--excluded-namespaces`) or has `kube-vnet/disabled=true`. |
+| False | `HomeNamespaceExcluded` | "home namespace <ns> is excluded by the operator" | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. |
 | False | `ApplyFailed` | apiserver error message | A `NetworkPolicy` apply call returned an error. |
 | False | `NamespaceNotAllowed` | "..." | A vnet-level surface for the namespace-permission check; usually the per-pod `InvalidJoiners` reason on `Degraded` is what users see. |
 | False | `NamespaceExcluded` | "..." | A vnet-level surface for namespace-exclusion; usually surfaces as `HomeNamespaceExcluded` when the home namespace itself is excluded. |
@@ -308,7 +308,7 @@ The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permi
 | False | `NoPodsMatch` | The selector is valid but matched zero pods in the binding's namespace. |
 | False | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. |
 | False | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
-| False | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces` (formerly `--excluded-namespaces`). |
+| False | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. |
 | False | `UnknownDirection` | `spec.direction` is not one of the recognized values. |
 | False | `InvalidSelector` | `spec.podSelector` is not a parseable label selector. |
 

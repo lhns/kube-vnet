@@ -17,12 +17,10 @@ The operator binary (`/manager` in the container) accepts these flags. They map 
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--label-prefix` | string | `kube-vnet/` | Label-key prefix for join labels. Must end with `/`. Changing this is rare; mostly useful if you already have an unrelated `kube-vnet/` namespace in your cluster's labels. |
 | `--disabled-namespaces` | string (comma-separated) | `""` | Namespaces the operator never touches. The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md). |
-| `--excluded-namespaces` | string (comma-separated) | (none) | **Deprecated.** Old name for `--disabled-namespaces`. Accepted for one release with a startup deprecation warning. |
 | `--ingress-isolation` | string enum | **(required)** | Cluster-wide default ingress-isolation mode. One of `none`, `namespace`, `pod`. The operator binary exits non-zero at startup if this flag is not set explicitly. Per-namespace `kube-vnet/ingress-isolation` annotations and the per-mode override lists below take precedence. See [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). |
-| `--ingress-isolation-none` | string (CSV) | `kube-system,kube-public,kube-node-lease` | Namespaces forced to `ingress-isolation=none` regardless of the cluster-wide default. The default keeps control-plane namespaces unbaseline'd while still letting the operator discover labeled pods there. |
-| `--ingress-isolation-namespace` | string (CSV) | `""` | Namespaces forced to `ingress-isolation=namespace`. |
-| `--ingress-isolation-pod` | string (CSV) | `""` | Namespaces forced to `ingress-isolation=pod`. |
-| `--default-deny-everywhere` | bool | `false` | **Deprecated.** Satisfies the `--ingress-isolation` requirement when set; aliased to `--ingress-isolation=pod` with a startup deprecation warning. Will be removed in a future release. See [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md). |
+| `--ingress-isolation-none` | string (CSV) | `kube-system,kube-public,kube-node-lease` | Namespaces overridden to `ingress-isolation=none` regardless of the cluster-wide default. The default keeps control-plane namespaces unbaseline'd while still letting the operator discover labeled pods there. |
+| `--ingress-isolation-namespace` | string (CSV) | `""` | Namespaces overridden to `ingress-isolation=namespace`. |
+| `--ingress-isolation-pod` | string (CSV) | `""` | Namespaces overridden to `ingress-isolation=pod`. |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
@@ -96,15 +94,10 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 |---|---|---|---|
 | `operator.labelPrefix` | string | `kube-vnet/` | → `--label-prefix`. |
 | `operator.disabledNamespaces` | `[]string` | `[]` | → `--disabled-namespaces` (the chart joins them with commas). Mirrors the per-namespace `kube-vnet/disabled=true` annotation. The operator's own namespace is added implicitly via `POD_NAMESPACE`. |
-| `operator.excludedNamespaces` | `[]string` | (none) | **Deprecated.** Old name for `operator.disabledNamespaces`. Accepted for one release with a `NOTES.txt` deprecation warning. |
 | `operator.ingressIsolation.mode` | string enum | **(required)** | → `--ingress-isolation`. One of `none`, `namespace`, `pod`. The chart has no default; `helm install`/`helm upgrade` fails fast via `required` if this is empty. |
-| `operator.ingressIsolation.namespaceOverrides.none` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--ingress-isolation-none`. Namespaces forced to `none` regardless of the cluster-wide mode. The default carves out the three control-plane namespaces so they never get an ingress baseline. |
-| `operator.ingressIsolation.namespaceOverrides.namespace` | `[]string` | `[]` | → `--ingress-isolation-namespace`. Namespaces forced to `namespace`. |
-| `operator.ingressIsolation.namespaceOverrides.pod` | `[]string` | `[]` | → `--ingress-isolation-pod`. Namespaces forced to `pod`. |
-| `operator.ingressIsolation.forceNone` | `[]string` | (none) | **Deprecated.** Old name for `operator.ingressIsolation.namespaceOverrides.none`. Accepted for one release. |
-| `operator.ingressIsolation.forceNamespace` | `[]string` | (none) | **Deprecated.** Old name for `operator.ingressIsolation.namespaceOverrides.namespace`. Accepted for one release. |
-| `operator.ingressIsolation.forcePod` | `[]string` | (none) | **Deprecated.** Old name for `operator.ingressIsolation.namespaceOverrides.pod`. Accepted for one release. |
-| `operator.defaultDenyEverywhere` | bool | `false` | **Deprecated.** Satisfies the `mode` requirement when set; aliased to `operator.ingressIsolation.mode=pod` with a startup deprecation warning. |
+| `operator.ingressIsolation.namespaceOverrides.none` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--ingress-isolation-none`. Namespaces overridden to `none` regardless of the cluster-wide mode. The default carves out the three control-plane namespaces so they never get an ingress baseline. |
+| `operator.ingressIsolation.namespaceOverrides.namespace` | `[]string` | `[]` | → `--ingress-isolation-namespace`. Namespaces overridden to `namespace`. |
+| `operator.ingressIsolation.namespaceOverrides.pod` | `[]string` | `[]` | → `--ingress-isolation-pod`. Namespaces overridden to `pod`. |
 | `operator.leaderElect` | bool | `true` | → `--leader-elect`. Recommended on; harmless with one replica and required for safe multi-replica HA. |
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |

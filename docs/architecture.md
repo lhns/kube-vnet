@@ -54,7 +54,7 @@ The reconciler delegates two pure-functional pieces:
 
 Plus a small predicate component:
 
-- **`namespace.go:NamespaceFilter`** — `IsManaged(ns)` answers "should the operator act in this namespace?". Combines the operator-level `--disabled-namespaces` flag (renamed from `--excluded-namespaces`, old name still accepted with deprecation warning) and the per-namespace `kube-vnet/disabled=true` annotation.
+- **`namespace.go:NamespaceFilter`** — `IsManaged(ns)` answers "should the operator act in this namespace?". Combines the operator-level `--disabled-namespaces` flag and the per-namespace `kube-vnet/disabled=true` annotation.
 
 ---
 
@@ -209,7 +209,7 @@ Resolution order, highest precedence first:
 2. Operator-level override lists (`--ingress-isolation-{none,namespace,pod}`).
 3. Cluster-wide default (`--ingress-isolation`, required — no default).
 
-`kube-vnet/disabled=true` and `--disabled-namespaces` (formerly `--excluded-namespaces`) membership override everything: nothing kube-vnet-related happens in those namespaces.
+`kube-vnet/disabled=true` and `--disabled-namespaces` membership override everything: nothing kube-vnet-related happens in those namespaces.
 
 ---
 
