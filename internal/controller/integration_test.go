@@ -260,6 +260,100 @@ func TestIntegration_DriftCorrection(t *testing.T) {
 	})
 }
 
+// TestIntegration_DriftCorrection_Membership_DeleteRestores: deleting an
+// operator-owned membership policy outright (k9s "delete", `kubectl delete`)
+// should be detected and the policy re-created within one reconcile cycle.
+// Covers the same path as TestIntegration_DriftCorrection but with delete
+// semantics instead of spec-clobber.
+func TestIntegration_DriftCorrection_Membership_DeleteRestores(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "drift-mem-del")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+
+	policyName := "kube-vnet-v-" + ns
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, policyName)
+		return err
+	})
+
+	// Delete the membership policy outright.
+	if err := testClient.Delete(ctx, &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: policyName},
+	}); err != nil {
+		t.Fatalf("delete membership policy: %v", err)
+	}
+
+	// Operator should re-create it with the right labels.
+	eventually(t, 10*time.Second, func() error {
+		got, err := findPolicy(ctx, ns, policyName)
+		if err != nil {
+			return err
+		}
+		if got.Labels[LabelManagedBy] != LabelManagedByValue {
+			return fmt.Errorf("missing managed-by label after re-create: %v", got.Labels)
+		}
+		if got.Labels[LabelRole] != LabelRoleMembership {
+			return fmt.Errorf("role label not %q after re-create: %v", LabelRoleMembership, got.Labels)
+		}
+		if got.Labels[LabelNetwork] != ns+".v" {
+			return fmt.Errorf("network label not %q after re-create: %v", ns+".v", got.Labels)
+		}
+		return nil
+	})
+}
+
+// TestIntegration_DriftCorrection_Baseline_DeleteRestores: deleting the
+// kube-vnet-default-deny baseline should be detected and the policy
+// re-applied. Without the NetworkPolicy watch on NamespaceReconciler this
+// test fails — the namespace itself isn't touched, so no Namespace event
+// fires and the baseline stays gone.
+func TestIntegration_DriftCorrection_Baseline_DeleteRestores(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "drift-base-del")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+
+	// Wait for the operator to install the baseline.
+	eventually(t, 10*time.Second, func() error {
+		bp := &networkingv1.NetworkPolicy{}
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Delete it outright.
+	if err := testClient.Delete(ctx, &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: BaselinePolicyName},
+	}); err != nil {
+		t.Fatalf("delete baseline: %v", err)
+	}
+
+	// Operator should re-apply the baseline with the right labels and shape.
+	eventually(t, 10*time.Second, func() error {
+		bp := &networkingv1.NetworkPolicy{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
+			return err
+		}
+		if bp.Labels[LabelManagedBy] != LabelManagedByValue {
+			return fmt.Errorf("missing managed-by label after re-create: %v", bp.Labels)
+		}
+		if bp.Labels[LabelRole] != LabelRoleBaseline {
+			return fmt.Errorf("role label not %q after re-create: %v", LabelRoleBaseline, bp.Labels)
+		}
+		// IsolationPod baseline: PolicyTypes [Ingress], no allow rules.
+		if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+			return fmt.Errorf("policyTypes after re-create: %v want [Ingress]", bp.Spec.PolicyTypes)
+		}
+		if len(bp.Spec.Ingress) != 0 {
+			return fmt.Errorf("expected no ingress allow rules for IsolationPod baseline, got %d", len(bp.Spec.Ingress))
+		}
+		return nil
+	})
+}
+
 func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "disabled")

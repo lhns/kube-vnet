@@ -7,9 +7,14 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NamespaceReconciler is the *sole owner* of the
@@ -19,10 +24,16 @@ import (
 // not by membership presence — see ADR 0023.
 //
 // For each Namespace event:
-//   - If the namespace is excluded (`--excluded-namespaces`) or annotated
+//   - If the namespace is excluded (`--disabled-namespaces`) or annotated
 //     `kube-vnet/disabled=true`, ensure no baseline is present.
 //   - Otherwise resolve the isolation mode and apply (or remove) the baseline
 //     accordingly.
+//
+// The reconciler also watches `NetworkPolicy` events scoped to baseline
+// policies (label `kube-vnet/role=baseline`) so a manual delete of the
+// baseline is detected and the policy is re-applied within one reconcile
+// cycle. This mirrors the drift-correction behavior the
+// VirtualNetworkReconciler provides for membership policies.
 type NamespaceReconciler struct {
 	client.Client
 	APIReader client.Reader
@@ -75,7 +86,26 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Match operator-managed baseline policies so a manual delete of
+	// kube-vnet-default-deny enqueues the namespace for re-reconcile.
+	baselinePredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		l := obj.GetLabels()
+		return l[LabelManagedBy] == LabelManagedByValue && l[LabelRole] == LabelRoleBaseline
+	})
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Namespace{}).
+		Watches(
+			&networkingv1.NetworkPolicy{},
+			handler.EnqueueRequestsFromMapFunc(baselinePolicyToNamespace),
+			builder.WithPredicates(baselinePredicate),
+		).
 		Complete(r)
+}
+
+// baselinePolicyToNamespace maps a baseline NetworkPolicy event back to a
+// reconcile request keyed on the policy's namespace (NamespaceReconciler is
+// keyed on the cluster-scoped namespace name).
+func baselinePolicyToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }

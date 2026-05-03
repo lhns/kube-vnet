@@ -179,10 +179,10 @@ Per-binding policies are named `kube-vnet-<vnet>-b-<binding>` and live in the bi
 
 | | |
 |---|---|
-| **On** | `kube-vnet/role=membership` on per-vnet membership policies. `kube-vnet/role=baseline` on the `kube-vnet-default-deny` baseline. |
+| **On** | `kube-vnet/role=membership` on per-vnet membership policies (label-driven and binding-driven alike). `kube-vnet/role=baseline` on the `kube-vnet-default-deny` baseline. |
 | **Set by** | The operator. |
-| **Meaning** | Distinguishes the two policy classes. |
-| **Used by** | `gcBaselineIfEmpty` (counts membership policies via this label to decide whether the baseline is still needed). |
+| **Meaning** | Discriminates the two policy classes the operator owns. |
+| **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet-default-deny` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |
 
 Example: an operator-managed membership policy in `webapp` for vnet `monitoring/observability`:
 
