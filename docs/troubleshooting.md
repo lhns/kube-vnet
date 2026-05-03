@@ -81,6 +81,29 @@ Most common case. Walk through these in order:
 
 ---
 
+## I labeled my pod and the vnet is Ready, but external pods can still reach it
+
+This is the most common adoption surprise. Most likely cause: **the namespace has no `kube-vnet/ingress-isolation` annotation and the cluster-wide `mode` is `none`**.
+
+```bash
+# Check the cluster-wide mode the operator is running with
+kubectl -n kube-vnet-system get deploy kube-vnet-controller -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep ingress-isolation
+
+# Check the per-namespace annotation
+kubectl get ns <your-ns> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'
+```
+
+If the cluster-wide mode is `none` (the default for new adopters) and the namespace has no annotation, the operator does NOT install a baseline in that namespace. Your labeled pod is part of the vnet, and *its own* ingress is restricted to vnet peers — but unlabeled pods in the same namespace and traffic from unmanaged namespaces still reach pods that aren't selected by any policy.
+
+To opt the namespace in:
+
+```bash
+kubectl annotate ns <your-ns> kube-vnet/ingress-isolation=pod --overwrite
+# or `=namespace` for "allow same-ns ingress + vnet peers"
+```
+
+See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#kube-vnetingress-isolation) and [`concepts.md#the-ingress-isolation-baseline`](concepts.md#the-ingress-isolation-baseline) for the full precedence rules.
+
 ## Pods I expect to be isolated can talk to each other
 
 1. **Does your CNI enforce NetworkPolicy?**

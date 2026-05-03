@@ -61,6 +61,25 @@ Pick `none` if you only want the operator to install policies for explicit `Virt
 
 The chart's default `operator.ingressIsolation.namespaceOverrides.none` lists `[kube-system, kube-public, kube-node-lease]`, so even if you pick `mode=pod` cluster-wide, those control-plane namespaces stay at `none` — the operator still discovers any deliberate joiner there but never installs a baseline.
 
+#### What `mode: none` means for new namespaces
+
+After install with `mode: none`, no namespace gets a baseline policy until you annotate it. The samples in [`../config/samples/`](../config/samples/) all set `kube-vnet/ingress-isolation: pod` on their namespaces — apply one to see kube-vnet's isolation behavior end-to-end. To opt your own namespace in:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: my-app
+  annotations:
+    kube-vnet/ingress-isolation: pod  # or `namespace` for same-ns ingress allowed
+```
+
+Or for an existing namespace:
+
+```bash
+kubectl annotate ns my-app kube-vnet/ingress-isolation=pod --overwrite
+```
+
 ### Common values
 
 ```bash

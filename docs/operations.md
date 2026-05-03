@@ -229,6 +229,12 @@ Events have a default TTL of 1 hour (apiserver-managed) — they're a notificati
 
 ## Operational playbooks
 
+### "I just installed kube-vnet with mode: none — why isn't anything isolated?"
+
+That's by design. After `helm install`, no namespace gets a baseline policy until you either set `kube-vnet/ingress-isolation` on it (per-namespace), add it to `operator.ingressIsolation.namespaceOverrides.{namespace,pod}` (operator-level), or change the cluster-wide `mode`. kube-vnet doesn't silently impose ingress restrictions during adoption.
+
+The included samples opt-in via the namespace annotation so the isolation behavior is observable when you `kubectl apply -f config/samples/01_same_namespace.yaml`. Production rollouts typically pick one of the operator-level paths (cluster-wide `mode` change, or the override list) once the team is ready.
+
 ### "I want to know if kube-vnet is healthy"
 
 ```bash

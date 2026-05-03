@@ -2,6 +2,13 @@
 # ignore that namespace entirely — no baseline policy is created, no membership
 # policies are generated, and pods there are not eligible joiners for any
 # VirtualNetwork (regardless of allowedNamespaces).
+#
+# `disabled` and `ingress-isolation` are independent. Setting
+# `kube-vnet/disabled: "true"` opts the namespace out of kube-vnet entirely;
+# `kube-vnet/ingress-isolation` picks the baseline shape inside an opted-in
+# namespace. The disabled namespace below has no isolation annotation because
+# it would be moot — the operator ignores it. The other (active) namespace
+# uses ingress-isolation `pod` so the example demonstrates real isolation.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -13,6 +20,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork

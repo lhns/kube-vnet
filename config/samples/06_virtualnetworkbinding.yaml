@@ -6,6 +6,19 @@
 #
 # Direction has the same enum semantics as the join label value:
 # both | ingress | egress | none. Defaults to "both".
+#
+# The binding's namespace is set to ingress-isolation `pod` so the binding's
+# effect is observable: only the pods matched by the binding's podSelector
+# accept ingress from the target vnet's peers; everything else in the
+# namespace stays isolated. Apply alongside config/samples/02_two_namespaces.yaml
+# (which creates the `platform/payments` vnet that this binding references).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: webapp
+  annotations:
+    kube-vnet/ingress-isolation: pod
+---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetworkBinding
 metadata:

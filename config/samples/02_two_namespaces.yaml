@@ -1,18 +1,30 @@
 # Two specific foreign namespaces are allowed to join, in addition to the home namespace.
+#
+# All three namespaces are set to ingress-isolation `pod` so each one only
+# accepts ingress that the membership policies grant. `allowedNamespaces`
+# gates which foreign namespaces can JOIN the vnet; the per-namespace
+# `kube-vnet/ingress-isolation` annotation decides what happens to ingress
+# inside each namespace independently.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork

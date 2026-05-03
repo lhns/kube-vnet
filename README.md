@@ -111,6 +111,8 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 The chart has no default for `operator.ingressIsolation.mode`; pick one of `none`, `namespace`, or `pod` at install time. `none` is the existing-cluster-friendly choice — see [`docs/install.md`](docs/install.md) for the trade-offs.
 
+> Picking `mode: none` is the safe adoption default at the cluster level — kube-vnet won't install any baseline policies until you opt a namespace in. Each example under [`config/samples/`](config/samples/) opts its namespaces in via `kube-vnet/ingress-isolation: pod` so the isolation effect is observable. Apply one of those manifests and run a few `kubectl exec ... curl` probes to see kube-vnet in action.
+
 Or install the rendered manifests directly:
 
 ```bash

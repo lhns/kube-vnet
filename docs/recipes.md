@@ -4,6 +4,8 @@ Worked end-to-end examples beyond the minimal samples in [`config/samples/`](../
 
 For the conceptual model behind these patterns, see [`concepts.md`](concepts.md).
 
+> **Each recipe namespace is annotated `kube-vnet/ingress-isolation: pod`** so the recipe's network behavior is fully observable: vnet membership grants ingress, anything outside the vnet is denied. To match a different production posture (e.g. `mode: namespace` for "same-ns ingress is fine but cross-ns requires a vnet"), change the annotation in each Namespace block. See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#kube-vnetingress-isolation) and the [ingress-isolation concept](concepts.md#the-ingress-isolation-baseline).
+
 ---
 
 ## Index
@@ -34,6 +36,8 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 # vnet 1: frontend ↔ backend
 apiVersion: kube-vnet.lhns.de/v1alpha1
@@ -121,11 +125,17 @@ A scrape target (your application) exposes `/metrics`. Prometheus, in `monitorin
 ```yaml
 apiVersion: v1
 kind: Namespace
-metadata: { name: monitoring }
+metadata:
+  name: monitoring
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
-metadata: { name: webapp }
+metadata:
+  name: webapp
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -189,7 +199,10 @@ Two vnets that should not be reachable from each other directly, with a designat
 ```yaml
 apiVersion: v1
 kind: Namespace
-metadata: { name: platform }
+metadata:
+  name: platform
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -270,7 +283,10 @@ The join label *value* declares which directions a pod participates in: `both` (
 ```yaml
 apiVersion: v1
 kind: Namespace
-metadata: { name: platform }
+metadata:
+  name: platform
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -342,11 +358,17 @@ Some pods can't be labeled because their template comes from an upstream Helm ch
 ```yaml
 apiVersion: v1
 kind: Namespace
-metadata: { name: platform }
+metadata:
+  name: platform
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
-metadata: { name: webapp }
+metadata:
+  name: webapp
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork

@@ -1,14 +1,23 @@
 # Wildcard: any namespace's pods may join. Useful for cross-cutting concerns
 # like observability or service mesh sidecars.
+#
+# Both namespaces are set to ingress-isolation `pod` so the example shows the
+# isolation effect end-to-end. Note that even with `allowedNamespaces.all=true`
+# on the vnet, each namespace still picks its own ingress-isolation
+# independently — a wildcard vnet doesn't blanket-isolate every namespace.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
+  annotations:
+    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
