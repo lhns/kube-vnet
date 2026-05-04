@@ -10,6 +10,8 @@ Three install paths, in order of preference: **Helm** (recommended), **`kubectl 
 
 `>= 1.25`. The CRD uses an `x-kubernetes-validations` (CEL) rule for name validation; CEL became Generally Available in 1.25.
 
+On Kubernetes ≥ 1.30 the chart additionally installs a `ValidatingAdmissionPolicy` (and binding) that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]` — typos like `kube-vnet/net.X=bothh` are caught at `kubectl apply`. On clusters older than 1.30 the chart skips the VAP; the operator's runtime `Degraded`/`UnknownDirection` reason still catches the same typos at reconcile time, so isolation correctness is unchanged on older clusters — they just lose the admission-time fast feedback. See [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+
 ### CNI that enforces NetworkPolicy
 
 kube-vnet *generates* `networking.k8s.io/v1` `NetworkPolicy` resources. Your CNI is what actually drops packets. Without a `NetworkPolicy`-enforcing CNI, kube-vnet's policies have no effect.

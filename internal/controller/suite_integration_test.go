@@ -106,6 +106,19 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	diagReconciler := &JoinLabelDiagnosticReconciler{
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Recorder:    mgr.GetEventRecorderFor("kube-vnet-joinlabel-test"),
+		LabelPrefix: DefaultLabelPrefix,
+		NSFilter:    NewNamespaceFilter(nil),
+	}
+	if err := diagReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup joinlabel diagnostic reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		if err := mgr.Start(ctx); err != nil {

@@ -1116,5 +1116,171 @@ func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing
 	})
 }
 
+// ----- JoinLabelDiagnosticReconciler (pod-scoped events; ADR 0027) -------
+
+// hasPodEventWithReason returns nil when an Event of the given reason has
+// been recorded against the named pod. Used in eventually() polling.
+func hasPodEventWithReason(ctx context.Context, ns, podName, reason string) func() error {
+	return func() error {
+		var events corev1.EventList
+		if err := testClient.List(ctx, &events, client.InNamespace(ns)); err != nil {
+			return err
+		}
+		for i := range events.Items {
+			e := &events.Items[i]
+			if e.InvolvedObject.Kind == "Pod" && e.InvolvedObject.Name == podName && e.Reason == reason {
+				return nil
+			}
+		}
+		return fmt.Errorf("no Event with reason %q on pod %s/%s", reason, ns, podName)
+	}
+}
+
+// noPodEventWithReason confirms (after a brief settle) that no Event of the
+// given reason was recorded against the named pod.
+func noPodEventWithReason(t *testing.T, ctx context.Context, ns, podName, reason string) {
+	t.Helper()
+	time.Sleep(2 * time.Second) // give the controller a chance to (not) emit
+	var events corev1.EventList
+	if err := testClient.List(ctx, &events, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for i := range events.Items {
+		e := &events.Items[i]
+		if e.InvolvedObject.Kind == "Pod" && e.InvolvedObject.Name == podName && e.Reason == reason {
+			t.Fatalf("unexpected Event with reason %q on pod %s/%s: %s", reason, ns, podName, e.Message)
+		}
+	}
+}
+
+// TestIntegration_PodEvent_BareVnetNotFound: a pod in any namespace carrying
+// `kube-vnet/net.<X>` (bare form) where no vnet of name X exists in the pod's
+// own namespace gets a Warning Event.
+func TestIntegration_PodEvent_BareVnetNotFound(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "pe-bare-nf")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	// Note: NO vnet created in `ns`. The bare label points at nothing.
+	mustCreate(t, makePod(ns, "lonely", map[string]string{"kube-vnet/net.imaginary": "both"}))
+
+	eventually(t, 10*time.Second, hasPodEventWithReason(ctx, ns, "lonely", EventBareJoinLabelVnetNotFound))
+}
+
+// TestIntegration_PodEvent_BareWithLocalVnet_NoEvent: bare form is legitimate
+// when a vnet of that name exists in the pod's own namespace; no Event.
+func TestIntegration_PodEvent_BareWithLocalVnet_NoEvent(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "pe-bare-ok")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
+	noPodEventWithReason(t, ctx, ns, "p", EventBareJoinLabelVnetNotFound)
+}
+
+// TestIntegration_PodEvent_PrefixedVnetNotFound: a pod carrying a prefixed
+// label whose named vnet doesn't exist gets a Warning Event.
+func TestIntegration_PodEvent_PrefixedVnetNotFound(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "pe-pre-nf")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	// Reference a non-existent vnet at "ghost-home/v".
+	mustCreate(t, makePod(ns, "p", map[string]string{
+		"kube-vnet/net.ghost-home.v": "both",
+	}))
+	eventually(t, 10*time.Second, hasPodEventWithReason(ctx, ns, "p", EventPrefixedJoinLabelVnetNotFound))
+}
+
+// TestIntegration_PodEvent_PrefixedNamespaceNotAllowed: vnet exists at the
+// named home but its allowedNamespaces doesn't include the pod's namespace.
+func TestIntegration_PodEvent_PrefixedNamespaceNotAllowed(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "pe-na-home")
+	other := uniqueNS(t, "pe-na-other")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(other, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: home},
+		// allowedNamespaces left nil = home-only; `other` is NOT permitted.
+	})
+	mustCreate(t, makePod(other, "p", map[string]string{
+		"kube-vnet/net." + home + ".v": "both",
+	}))
+	eventually(t, 10*time.Second, hasPodEventWithReason(ctx, other, "p", EventJoinLabelNamespaceNotAllowed))
+}
+
+// TestIntegration_PodEvent_LegitimateMember_NoEvent: prefixed label, vnet
+// exists, pod's namespace IS permitted → no diagnostic event.
+func TestIntegration_PodEvent_LegitimateMember_NoEvent(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "pe-ok-home")
+	other := uniqueNS(t, "pe-ok-other")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(other, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{other}},
+		},
+	})
+	mustCreate(t, makePod(other, "p", map[string]string{
+		"kube-vnet/net." + home + ".v": "both",
+	}))
+	noPodEventWithReason(t, ctx, other, "p", EventPrefixedJoinLabelVnetNotFound)
+	noPodEventWithReason(t, ctx, other, "p", EventJoinLabelNamespaceNotAllowed)
+}
+
+// TestIntegration_PodEvent_DisabledNamespace_NoEvent: pods in `disabled`
+// namespaces are explicit opt-outs; no diagnostics.
+func TestIntegration_PodEvent_DisabledNamespace_NoEvent(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "pe-disabled")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.imaginary": "both"}))
+	noPodEventWithReason(t, ctx, ns, "p", EventBareJoinLabelVnetNotFound)
+}
+
+// TestIntegration_EmptyDirection_NoMember: a pod with `kube-vnet/net.X: ""`
+// is NOT a member (empty parses as none, ADR 0027). The vnet membership
+// policy's podSelector matches `In [true, both, ingress]` — empty isn't in
+// the list — so no policy adds back ingress for this pod.
+func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "pe-empty")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	// Two pods: one with explicit "both" (canonical member), one with "" (not).
+	mustCreate(t, makePod(ns, "real", map[string]string{"kube-vnet/net.v": "both"}))
+	mustCreate(t, makePod(ns, "empty", map[string]string{"kube-vnet/net.v": ""}))
+
+	// Wait for the membership policy to land for the real member.
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		return err
+	})
+
+	// Vnet status should list only `real` as a member; `empty` should NOT
+	// appear (its label parses as none, so it's not a joiner).
+	v := &vnetv1alpha1.VirtualNetwork{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+		t.Fatalf("get vnet: %v", err)
+	}
+	for _, m := range v.Status.Members {
+		for _, p := range m.Pods {
+			if p == "empty" {
+				t.Fatalf("pod with kube-vnet/net.v=\"\" should NOT be a member; status.members lists it")
+			}
+		}
+	}
+
+	// Belt-and-braces: also confirm `empty` doesn't get a diagnostic event
+	// (empty is a deliberate opt-out, not a misuse).
+	noPodEventWithReason(t, ctx, ns, "empty", EventBareJoinLabelVnetNotFound)
+}
+
 // ensure imports stay used when individual tests are commented out
+var _ = strings.HasPrefix
 var _ = corev1.Namespace{}

@@ -1,0 +1,54 @@
+{{- /*
+Validating admission for kube-vnet join-label values.
+
+Rejects Pod create/update where any label key matching `<labelPrefix>net.*`
+has a value outside the recognized direction enum. The full enum:
+  both, ingress, egress, none, true, false (legacy aliases), or empty
+  string (treated as `none` by the operator — i.e. "not a member").
+
+Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
+older clusters this template renders nothing; the operator's vnet-status
+`UnknownDirection` reason still catches bad values at reconcile time.
+
+See ADR 0027.
+*/}}
+{{- /* VAP is GA in admissionregistration.k8s.io/v1 since Kubernetes 1.30. */ -}}
+{{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
+{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
+{{- if or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30)) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "kube-vnet.fullname" . }}-join-label-direction
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+  variables:
+    - name: joinKeyPrefix
+      expression: '{{ .Values.operator.labelPrefix | default "kube-vnet/" }}net.'
+    - name: validValues
+      expression: '["both","ingress","egress","none","true","false",""]'
+  validations:
+    - expression: |
+        object.metadata.labels.all(k,
+          !k.startsWith(variables.joinKeyPrefix) ||
+          object.metadata.labels[k] in variables.validValues)
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none, true, false (empty allowed; treated as none). See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "kube-vnet.fullname" . }}-join-label-direction
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "kube-vnet.fullname" . }}-join-label-direction
+  validationActions: [Deny]
+{{- end }}

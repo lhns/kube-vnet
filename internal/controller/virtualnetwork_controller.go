@@ -701,9 +701,43 @@ func summarizeInvalid(in []InvalidJoiner) string {
 			parts = append(parts, fmt.Sprintf("(+%d more)", len(in)-max))
 			break
 		}
-		parts = append(parts, j.PodNamespace+"/"+j.PodName)
+		// "<ns>/<pod>:<reason>" — surfaces the per-pod failure category on
+		// the vnet's Degraded message so a user reading `kubectl describe
+		// vnet` sees which pod failed for which specific reason instead of
+		// only a flat list of names.
+		parts = append(parts, fmt.Sprintf("%s/%s:%s", j.PodNamespace, j.PodName, j.Reason))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// HasJoinLabel reports whether obj carries at least one label key with the
+// kube-vnet join-label prefix `<labelPrefix>net.`. Used as the predicate
+// for both the VirtualNetworkReconciler's pod watch and the
+// JoinLabelDiagnosticReconciler's pod watch.
+func HasJoinLabel(obj client.Object, labelPrefix string) bool {
+	if obj == nil {
+		return false
+	}
+	keyPrefix := labelPrefix + "net."
+	for k := range obj.GetLabels() {
+		if strings.HasPrefix(k, keyPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// JoinLabelPodPredicate returns a predicate that fires when *either* the old
+// or new pod object carries any join label.
+func JoinLabelPodPredicate(labelPrefix string) predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return HasJoinLabel(e.ObjectOld, labelPrefix) || HasJoinLabel(e.ObjectNew, labelPrefix)
+		},
+		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+	}
 }
 
 // SetupWithManager wires watches: VirtualNetwork (primary), Pod (label-prefix predicate
@@ -712,26 +746,7 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	prefix := r.labelPrefix()
 	keyPrefix := prefix + "net."
 
-	// Predicate fires when *either* the old or new object has any join label.
-	hasJoinLabel := func(obj client.Object) bool {
-		if obj == nil {
-			return false
-		}
-		for k := range obj.GetLabels() {
-			if strings.HasPrefix(k, keyPrefix) {
-				return true
-			}
-		}
-		return false
-	}
-	podPredicate := predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return hasJoinLabel(e.Object) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return hasJoinLabel(e.Object) },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return hasJoinLabel(e.ObjectOld) || hasJoinLabel(e.ObjectNew)
-		},
-		GenericFunc: func(e event.GenericEvent) bool { return hasJoinLabel(e.Object) },
-	}
+	podPredicate := JoinLabelPodPredicate(prefix)
 
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue

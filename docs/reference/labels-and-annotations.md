@@ -13,7 +13,7 @@ These are how pods declare membership in `VirtualNetwork` resources.
 | | |
 |---|---|
 | **On** | `Pod` (typically via `Deployment.spec.template.metadata.labels`) |
-| **Value** | One of `both` (default), `ingress`, `egress`, `none`. Legacy aliases: `"true"` → `both`, `"false"` → `none`. Unknown values surface on the vnet's `Degraded` condition with reason `UnknownDirection`. |
+| **Value** | One of `both` (default), `ingress`, `egress`, `none`. Legacy aliases: `"true"` → `both`, `"false"` → `none`, `""` (empty) → `none`. Unknown values are rejected at admission on Kubernetes ≥ 1.30 (the chart's `ValidatingAdmissionPolicy`); on older clusters they are admitted but surface on the vnet's `Degraded` condition with reason `UnknownDirection`. |
 | **Set by** | The user / workload owner. |
 | **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in the same namespace as this pod, with the given direction." |
 | **Used by** | The operator's pod-watch + `discoverMembers` + the generated NetworkPolicy's `podSelector` and peer rules. |
@@ -31,7 +31,7 @@ labels:
 | | |
 |---|---|
 | **On** | `Pod` |
-| **Value** | Same direction enum as the bare form: `both`, `ingress`, `egress`, `none` (or legacy `"true"`/`"false"`). |
+| **Value** | Same direction enum as the bare form: `both`, `ingress`, `egress`, `none` (or legacy `"true"`/`"false"`; `""` is also treated as `none`). |
 | **Set by** | The user / workload owner. |
 | **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in namespace `<homeNS>`, with the given direction." |
 | **Used by** | Same as bare form, but works across namespaces. |
@@ -61,6 +61,20 @@ For the rationale, see [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) (
 | `none` | Not a member (equivalent to label absent). |
 
 X→Y flows iff X is initiator-capable (`both`/`egress`) **and** Y is receiver-capable (`both`/`ingress`).
+
+### Diagnostics
+
+When a join label is present but membership can't be honored, kube-vnet surfaces the cause on the *Pod* (Warning event) so the pod owner sees it via `kubectl describe pod`. Three reasons:
+
+| Reason | Meaning |
+|---|---|
+| `BareJoinLabelVnetNotFound` | Pod has the bare form `kube-vnet/net.<X>` but no `VirtualNetwork` named `<X>` exists in the pod's own namespace (or the pod is in a foreign namespace where the bare form is not recognized). |
+| `PrefixedJoinLabelVnetNotFound` | Pod has `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` doesn't exist. |
+| `JoinLabelNamespaceNotAllowed` | The vnet exists at the named home, but its `spec.allowedNamespaces` does not permit the pod's namespace. |
+
+In addition, on Kubernetes ≥ 1.30 the chart installs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]`. On older clusters the same condition still surfaces at reconcile time as `Degraded`/`UnknownDirection` on the vnet.
+
+See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [`../troubleshooting.md`](../troubleshooting.md#pod-events-kube-vnet-emits).
 
 ---
 

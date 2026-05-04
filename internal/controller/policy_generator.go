@@ -49,8 +49,8 @@ const (
 //
 // Aliases honored by ParseDirection:
 //
-//	"true" / ""      → DirectionBoth   (legacy: key presence meant member)
-//	"false"          → DirectionNone
+//	"true"           → DirectionBoth   (legacy presence-only alias)
+//	"false" / ""     → DirectionNone   (empty intentionally maps to "not a member")
 //
 // Anything else is rejected by ParseDirection (returns ok=false). Callers
 // should surface unknown values as InvalidJoiner with reason UnknownDirection.
@@ -66,15 +66,20 @@ const (
 // ParseDirection normalizes a label value to a Direction. Returns ok=false
 // for unrecognized non-empty values; the parsed Direction is DirectionNone
 // in that case (not a member).
+//
+// Empty string maps to DirectionNone — i.e. a pod with `kube-vnet/net.X: ""`
+// is NOT a member. This is a behavior change from earlier v1alpha1 where
+// the empty value was a presence-only alias for `both`. The legacy `true`
+// alias still maps to `both`. See ADR 0021 (Addendum) and ADR 0027.
 func ParseDirection(value string) (Direction, bool) {
 	switch value {
-	case "both", "true", "":
+	case "both", "true":
 		return DirectionBoth, true
 	case "ingress":
 		return DirectionIngress, true
 	case "egress":
 		return DirectionEgress, true
-	case "false", "none":
+	case "false", "none", "":
 		return DirectionNone, true
 	}
 	return DirectionNone, false

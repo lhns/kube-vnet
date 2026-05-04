@@ -12,6 +12,14 @@ release. Pinning to an exact version is recommended.
 
 ### Breaking
 
+- **Empty join-label value (`kube-vnet/net.X: ""`) now parses as `none`, not
+  `both`.** The legacy "presence-only meant member" rule mapped the empty
+  string to `both`; that no longer holds. A pod with `kube-vnet/net.X: ""` is
+  *not* a member. Update existing manifests to use an explicit `=both` (or the
+  legacy `=true` alias) if you intended membership. The legacy `"true"` /
+  `"false"` aliases are unchanged. See the
+  [ADR 0021 empty-string addendum](docs/adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--empty-string-value-reinterpreted-as-none)
+  and [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
 - **`operator.ingressIsolation.mode` (Helm) and `--ingress-isolation` (CLI) are
   now required.** The chart no longer ships a default for `mode`; `helm install`
   and `helm upgrade` fail fast via `required` if it's empty. The operator
@@ -51,6 +59,26 @@ release. Pinning to an exact version is recommended.
 
 ### Added
 
+- **`ValidatingAdmissionPolicy` for join-label direction values
+  (Kubernetes ≥ 1.30).** The chart ships a VAP + binding that rejects Pod
+  create/update when any `kube-vnet/net.*` label has a value not in
+  `[both, ingress, egress, none, true, false, ""]`. Typos like
+  `kube-vnet/net.X=bothh` fail at `kubectl apply` instead of being caught
+  later by the operator. Older clusters skip the VAP and continue to rely on
+  the operator's runtime `Degraded`/`UnknownDirection` reason for the same
+  fault. See [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
+- **Pod-scoped Warning events for stateful join-label diagnostics.** A new
+  `JoinLabelDiagnosticReconciler` watches Pods carrying `kube-vnet/net.*`
+  labels and emits Warning events on the Pod itself —
+  `BareJoinLabelVnetNotFound` (bare-form label with no vnet of that name in
+  the pod's own namespace), `PrefixedJoinLabelVnetNotFound` (prefixed-form
+  label naming a vnet that doesn't exist), and `JoinLabelNamespaceNotAllowed`
+  (vnet exists but its `spec.allowedNamespaces` excludes the pod's
+  namespace). Visible via `kubectl describe pod`. Pods in disabled or
+  excluded namespaces are skipped by design. The vnet-status reasons
+  (`InvalidJoiners`, etc.) are unchanged — they serve the vnet-owner
+  audience; the new pod events serve the pod-owner audience. See
+  [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
 - **Direction modes on join labels.** The label value declares the pod's
   participation: `both` (default), `ingress`, `egress`, `none`. Legacy
   aliases: `"true"` → `both`, `"false"` → `none`. Per-direction policies
@@ -98,6 +126,12 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Vnet `Degraded`/`InvalidJoiners` message format now includes the per-pod
+  reason.** Each per-pod entry in the Degraded message is
+  `<ns>/<pod>:<reason>` (was just `<ns>/<pod>`), so users can see which pod
+  failed for which reason at a glance via `kubectl describe vnet`. The cap at
+  3 entries still applies; the condition's `Reason` field stays
+  `InvalidJoiners`.
 - Baseline ownership moved to the `NamespaceReconciler`. The
   `VirtualNetworkReconciler` no longer touches the baseline. The two
   reconcilers now have clear, narrow ownership: per-vnet membership

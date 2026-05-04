@@ -8,6 +8,9 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Index
 
+- [Pod events kube-vnet emits](#pod-events-kube-vnet-emits)
+- [`kubectl apply` rejected my pod: "value not in [both, ingress, egress, none, true, false]"](#kubectl-apply-rejected-my-pod-value-not-in-both-ingress-egress-none-true-false)
+- [My pod with `kube-vnet/net.X: ""` stopped joining after upgrade](#my-pod-with-kube-vnetnetx--stopped-joining-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
@@ -24,6 +27,130 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [The operator pod won't start](#the-operator-pod-wont-start)
 - [How do I tell whether the operator is healthy?](#how-do-i-tell-whether-the-operator-is-healthy)
 - [Useful inspection commands](#useful-inspection-commands)
+
+---
+
+## Pod events kube-vnet emits
+
+Three Warning events fire on the Pod itself when a `kube-vnet/net.*` label is present but the membership can't be honored. They surface in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. See [ADR 0027](adr/0027-pod-scoped-join-label-events.md) for the design.
+
+> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get these events. Disabled is an explicit opt-out — the operator stays silent there by design.
+
+### `BareJoinLabelVnetNotFound`
+
+**Symptom.** The pod has `kube-vnet/net.<X>` (bare form) and isn't a member. `kubectl describe pod` shows:
+
+```
+Events:
+  Type     Reason                        Age   From       Message
+  ----     ------                        ----  ----       -------
+  Warning  BareJoinLabelVnetNotFound     10s   kube-vnet  no VirtualNetwork named "X" in namespace "<this-pod-ns>"
+```
+
+**Cause.** Either no `VirtualNetwork` of name `<X>` exists in the pod's *own* namespace, or the pod is in a foreign namespace where the bare form is not recognized at all. The bare form only works in the vnet's home namespace.
+
+**Fix.** If the vnet lives in a different namespace, use the prefixed form:
+
+```yaml
+labels:
+  kube-vnet/net.<home-ns>.<vnet-name>: both   # not kube-vnet/net.<vnet-name>
+```
+
+If the vnet really is meant to live in the pod's namespace, create it:
+
+```yaml
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: <X>
+  namespace: <this-pod-ns>
+```
+
+### `PrefixedJoinLabelVnetNotFound`
+
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>` and isn't a member. `kubectl describe pod`:
+
+```
+Events:
+  Type     Reason                            Age   From       Message
+  ----     ------                            ----  ----       -------
+  Warning  PrefixedJoinLabelVnetNotFound     10s   kube-vnet  no VirtualNetwork "<homeNS>/<X>"
+```
+
+**Cause.** The vnet `<homeNS>/<X>` doesn't exist — either typo'd home-namespace, typo'd vnet name, or the vnet hasn't been created yet.
+
+**Fix.** Verify the vnet exists at the named home:
+
+```bash
+kubectl get vnet -n <homeNS> <X>
+```
+
+Either correct the label key, or apply the missing `VirtualNetwork` manifest.
+
+### `JoinLabelNamespaceNotAllowed`
+
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. `kubectl describe pod`:
+
+```
+Events:
+  Type     Reason                          Age   From       Message
+  ----     ------                          ----  ----       -------
+  Warning  JoinLabelNamespaceNotAllowed    10s   kube-vnet  vnet "<homeNS>/<X>" does not allow namespace "<this-pod-ns>"
+```
+
+**Cause.** The vnet's `spec.allowedNamespaces` does not permit the pod's namespace. Same condition that surfaces on the *vnet's* `Degraded`/`InvalidJoiners` status, but addressed to the pod owner instead of the vnet owner.
+
+**Fix.** Either extend the vnet's `allowedNamespaces`:
+
+```bash
+kubectl patch vnet -n <homeNS> <X> --type=merge -p '
+spec:
+  allowedNamespaces:
+    names: [<this-pod-ns>]
+'
+```
+
+Or move the pod to a permitted namespace. (The vnet owner has to make the policy decision; pod owners can't override `allowedNamespaces`.)
+
+---
+
+## `kubectl apply` rejected my pod: "value not in [both, ingress, egress, none, true, false]"
+
+```
+$ kubectl apply -f mypod.yaml
+The pods "my-pod" is invalid: ValidatingAdmissionPolicy "kube-vnet-direction-values"
+denied request: kube-vnet/net.* label value must be one of [both ingress egress none true false ""]
+```
+
+**Cause.** Kubernetes ≥ 1.30 with the kube-vnet chart installed runs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has an unrecognized value (typo like `bothh`, or an arbitrary string). See [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+
+**Fix.** Set the value to one of the recognized direction strings:
+
+```yaml
+labels:
+  kube-vnet/net.payments: both        # bidirectional, the usual choice
+  # or `ingress`, `egress`, `none`, the legacy `true`/`false`, or `""` (treated as none)
+```
+
+On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
+
+---
+
+## My pod with `kube-vnet/net.X: ""` stopped joining after upgrade
+
+**Symptom.** A pod manifest that used `kube-vnet/net.<vnet>: ""` (empty string) used to be a member. After upgrade, the pod is no longer a member; no NetworkPolicy selects it.
+
+**Cause.** Breaking change. The empty-string value used to map to `both` (the legacy "presence-only meant member" rule). It now parses as `none` — i.e. *not a member*. See the [ADR 0021 empty-string addendum](adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--empty-string-value-reinterpreted-as-none) and [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+
+**Fix.** Set an explicit value:
+
+```yaml
+labels:
+  kube-vnet/net.payments: both     # was: ""
+  # or kube-vnet/net.payments: "true"  (legacy alias for both)
+```
+
+The legacy `"true"` alias is unchanged — only `""` flipped meaning.
 
 ---
 

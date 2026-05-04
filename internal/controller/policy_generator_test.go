@@ -357,8 +357,8 @@ func TestParseDirection(t *testing.T) {
 	}
 	cases := []tc{
 		{"both", DirectionBoth, true},
-		{"true", DirectionBoth, true},
-		{"", DirectionBoth, true}, // legacy: presence-only meant member
+		{"true", DirectionBoth, true}, // legacy alias preserved
+		{"", DirectionNone, true},     // empty now means "not a member" (ADR 0027)
 		{"ingress", DirectionIngress, true},
 		{"egress", DirectionEgress, true},
 		{"false", DirectionNone, true},

@@ -61,3 +61,9 @@ Peer rules referencing the home namespace include separate `from`/`to` entries p
 - ADR 0004 — Bare vs namespace-prefixed join label. This ADR loosens the "bare is the only form in home" rule.
 - ADR 0011 — Policy naming and truncation. Same hash-suffix mechanism applies to the new direction/form-suffixed names.
 - ADR 0021 — Direction modes on join labels. The two-policy-per-form shape interacts with the per-direction-class shape: in the worst case, 6 policies in the home namespace.
+
+## Addendum (2026-05-04) — foreign-NS bare-form misuse now surfaces as a Pod event
+
+A common adoption mistake is dropping the bare form (`kube-vnet/net.<vnet>`) on a pod in a *foreign* namespace, where it is not recognized as a join label. Previously this failed silently — the operator has no unambiguous way to attribute a foreign-namespace bare-form label to a single vnet, so it can't surface the issue on any vnet's status.
+
+As of [ADR 0027](0027-pod-scoped-join-label-events.md), this case emits a Warning event on the Pod itself with reason `BareJoinLabelVnetNotFound` whenever there is no vnet of the named form in the pod's own namespace. The fix is the same as before — switch to the prefixed form `kube-vnet/net.<homeNS>.<vnet>` — but the user now has a pod-scoped diagnostic surface to find the problem.

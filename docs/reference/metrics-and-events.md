@@ -174,6 +174,18 @@ The condition reasons that drive these events include `PoliciesGenerated`, `NoMe
 
 (A `NameCollision` event reason is planned alongside the same-named `Degraded` reason for the case where a user-managed `NetworkPolicy` blocks an operator name.)
 
+### Pod event reasons (join-label diagnostics)
+
+Emitted by the `JoinLabelDiagnosticReconciler` on the Pod object in the pod's own namespace. All Warning. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
+
+| Reason | Type | Scope | When it fires |
+|---|---|---|---|
+| `BareJoinLabelVnetNotFound` | Warning | Pod | Pod carries `kube-vnet/net.<X>` but no `VirtualNetwork` of name `<X>` exists in the pod's own namespace. |
+| `PrefixedJoinLabelVnetNotFound` | Warning | Pod | Pod carries `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` does not exist. |
+| `JoinLabelNamespaceNotAllowed` | Warning | Pod | The named vnet exists, but its `spec.allowedNamespaces` does not permit the pod's namespace. |
+
+Pods in `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespaces are skipped — explicit opt-out trumps diagnostic noise.
+
 ### VirtualNetworkBinding event reasons
 
 A `VirtualNetworkBinding`'s `Ready` condition uses these reasons (constants in `internal/controller/virtualnetworkbinding_controller.go`):
