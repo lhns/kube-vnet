@@ -13,6 +13,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [My pod with `kube-vnet/net.X: ""` stopped joining after upgrade](#my-pod-with-kube-vnetnetx--stopped-joining-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
+- [CNI pitfalls that silently break enforcement (separate page)](troubleshooting/cni-pitfalls.md)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
@@ -238,6 +239,8 @@ See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#
    This is the #1 cause when "all the YAMLs look right but pods talk anyway." kube-vnet generates `NetworkPolicy`; your CNI is what drops packets. If the CNI doesn't enforce, the policies are decorative.
 
    See [`install.md`](install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check: install Calico/Cilium/kube-router and re-test. If isolation now works, the previous CNI didn't enforce NetworkPolicy.
+
+   If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`troubleshooting/cni-pitfalls.md`](troubleshooting/cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
 
 2. **Is the ingress-isolation baseline present in the receiving namespace?**
 
