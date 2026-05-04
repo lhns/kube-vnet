@@ -126,6 +126,22 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Build: dropped QEMU emulation for arm64.** Added
+  `--platform=$BUILDPLATFORM` to the Dockerfile builder stage so the Go
+  toolchain runs natively on the runner's amd64 even when buildx targets
+  arm64. The `RUN go build` already cross-compiled via GOOS/GOARCH; the
+  toolchain itself was just being emulated for no good reason. Multi-arch
+  releases build noticeably faster.
+- **CI: per-commit dev builds.** `release.yaml` now also runs on every
+  branch push (and `workflow_dispatch`), producing signed
+  `0.0.0-dev.<short-sha>` images and chart tags so users can `helm
+  install --version 0.0.0-dev.abc1234` to test a specific commit
+  without cutting a release tag. Dev builds are single-arch (amd64) and
+  use the GitHub Actions buildx cache; typical wall time is 2–4 min vs
+  ~20 min for a full multi-arch release. Image gets additional
+  `:sha-<short>` and `:<branch>` tags; chart only the immutable SemVer
+  pre-release version. GitHub Release asset upload is gated to
+  release-mode (tag pushes only); dev pushes don't touch any Release.
 - **Vnet `Degraded`/`InvalidJoiners` message format now includes the per-pod
   reason.** Each per-pod entry in the Degraded message is
   `<ns>/<pod>:<reason>` (was just `<ns>/<pod>`), so users can see which pod

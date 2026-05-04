@@ -1,12 +1,22 @@
 name: release
 
+# Two modes:
+#   - release: triggered by `v*` tag push. Multi-arch build, full
+#     image+chart sign + SBOM + attest, plus GitHub Release asset upload.
+#   - dev:     any other push (any branch) or manual workflow_dispatch.
+#     Single-arch (amd64) build, image+chart still signed + SBOM'd
+#     (those steps cost <5s each), GitHub Release upload skipped.
+#     Versioned `0.0.0-dev.<short-sha>` so users can `helm install
+#     --version 0.0.0-dev.abc1234` to test a specific commit.
 on:
   push:
-    tags: ['v*']
+    tags:     ['v*']
+    branches: ['**']
+  workflow_dispatch:
 
 # id-token: write — required for cosign keyless signing via the GitHub OIDC token.
 # packages:  write — push images and the OCI Helm chart to ghcr.io.
-# contents:  write — create the GitHub Release with assets.
+# contents:  write — create the GitHub Release with assets (release mode only).
 permissions:
   contents: write
   packages: write
@@ -17,6 +27,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed by `git describe` in compute-mode (currently unused, harmless)
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
@@ -43,6 +55,36 @@ jobs:
         with:
           version: v3.16.3
 
+      # ------ mode (release vs dev) ----------------------------------------
+
+      - name: compute mode
+        id: mode
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME}"
+            CHART_VERSION="${VERSION#v}"
+            {
+              echo "mode=release"
+              echo "version=${VERSION}"
+              echo "chart_version=${CHART_VERSION}"
+              echo "platforms=linux/amd64,linux/arm64"
+              echo "extra_image_tags=ghcr.io/lhns/kube-vnet:latest"
+            } >> "$GITHUB_OUTPUT"
+          else
+            SHORT="${GITHUB_SHA::7}"
+            CHART_VERSION="0.0.0-dev.${SHORT}"
+            # Sanitize branch ref for use as an OCI tag (a-zA-Z0-9 plus -._).
+            BRANCH=$(echo "${GITHUB_REF_NAME}" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\+/-/g; s/^-\|-$//g')
+            {
+              echo "mode=dev"
+              echo "version=${CHART_VERSION}"
+              echo "chart_version=${CHART_VERSION}"
+              echo "platforms=linux/amd64"
+              echo "extra_image_tags=ghcr.io/lhns/kube-vnet:sha-${SHORT},ghcr.io/lhns/kube-vnet:${BRANCH}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "Mode resolved:" && cat "$GITHUB_OUTPUT"
+
       # ------ container image -----------------------------------------------
 
       - name: capture build metadata
@@ -56,14 +98,18 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ steps.mode.outputs.platforms }}
+          # GitHub Actions cache backend — scoped per-repo, no extra setup.
+          # Massively shortens unchanged-Go-deps rebuilds.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
-            VERSION=${{ github.ref_name }}
+            VERSION=${{ steps.mode.outputs.version }}
             COMMIT=${{ github.sha }}
             BUILD_DATE=${{ steps.meta.outputs.build_date }}
           tags: |
-            ghcr.io/lhns/kube-vnet:${{ github.ref_name }}
-            ghcr.io/lhns/kube-vnet:latest
+            ghcr.io/lhns/kube-vnet:${{ steps.mode.outputs.version }}
+            ${{ steps.mode.outputs.extra_image_tags }}
 
       - name: cosign sign image (keyless)
         env:
@@ -97,13 +143,13 @@ jobs:
 
       - name: package & push Helm chart
         id: helm_push
+        env:
+          CHART_VERSION: ${{ steps.mode.outputs.chart_version }}
+          APP_VERSION:   ${{ steps.mode.outputs.version }}
         run: |
-          # Strip the leading "v" from the tag for chart versioning (Helm prefers SemVer without it).
-          TAG="${{ github.ref_name }}"
-          CHART_VERSION="${TAG#v}"
           helm package charts/kube-vnet \
             --version "$CHART_VERSION" \
-            --app-version "$TAG" \
+            --app-version "$APP_VERSION" \
             --destination .
           echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
             --username "${{ github.actor }}" --password-stdin
@@ -151,6 +197,7 @@ jobs:
           cat checksums.txt
 
       - name: attach release assets
+        # Release-mode only: dev pushes don't attach to any tag-named Release.
         # The release is expected to already exist (the user creates it in the
         # GitHub UI with hand-written notes that include their own "What's
         # Changed" section). This step attaches the build artifacts to that
@@ -159,6 +206,7 @@ jobs:
         # `generate_release_notes` is deliberately NOT set: when it was, GitHub
         # appended its auto-changelog to the user's hand-written notes,
         # producing a duplicate "What's Changed" line.
+        if: steps.mode.outputs.mode == 'release'
         uses: softprops/action-gh-release@v3
         with:
           files: |
