@@ -98,6 +98,70 @@ func TestIntegration_Baseline_AnnotationCreates(t *testing.T) {
 	}
 }
 
+// TestIntegration_Baseline_SweepStaleLegacyName verifies the migration sweep:
+// a NetworkPolicy labelled as a kube-vnet baseline but with a name from a
+// previous release (e.g. `kube-vnet-default-deny`) gets deleted on next
+// reconcile, leaving only the current `BaselinePolicyName`.
+func TestIntegration_Baseline_SweepStaleLegacyName(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "stale-baseline")
+	mustCreate(t, makeNamespace(ns, map[string]string{
+		"kube-vnet/ingress-isolation": "pod",
+	}, nil))
+
+	// Wait for the current baseline to land first.
+	bp := &networkingv1.NetworkPolicy{}
+	eventually(t, 10*time.Second, func() error {
+		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
+	})
+
+	// Inject a legacy-named baseline by hand. Same labels the operator sets
+	// (so the sweep will find it via the label selector).
+	const legacyName = "kube-vnet-default-deny"
+	mustCreate(t, &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      legacyName,
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByValue,
+				LabelRole:      LabelRoleBaseline,
+			},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		},
+	})
+
+	// Touch the namespace to force a reconcile (the watch on baseline
+	// policies fires too, but a label change is a quicker enqueue).
+	nsObj := &corev1.Namespace{}
+	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
+		t.Fatalf("get ns: %v", err)
+	}
+	if nsObj.Labels == nil {
+		nsObj.Labels = map[string]string{}
+	}
+	nsObj.Labels["kube-vnet-test/touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
+	if err := testClient.Update(ctx, nsObj); err != nil {
+		t.Fatalf("touch ns: %v", err)
+	}
+
+	// The legacy-named baseline should be swept; the current one stays.
+	eventually(t, 10*time.Second, func() error {
+		stale := &networkingv1.NetworkPolicy{}
+		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: legacyName}, stale)
+		if !apierrors.IsNotFound(err) {
+			return fmt.Errorf("legacy baseline still exists: err=%v", err)
+		}
+		current := &networkingv1.NetworkPolicy{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, current); err != nil {
+			return fmt.Errorf("current baseline missing: %v", err)
+		}
+		return nil
+	})
+}
+
 func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 	ctx := context.Background()
 	home := uniqueNS(t, "home")

@@ -413,15 +413,15 @@ func TestPolicyNames_Shape(t *testing.T) {
 		t.Errorf("baseline = %q want kube-vnet", got)
 	}
 	bare := PolicyName("payments", "platform")
-	if !strings.HasPrefix(bare, "kube-vnet-payments-") {
+	if !strings.HasPrefix(bare, "kube-vnet.payments-") {
 		t.Errorf("bare shape: %q", bare)
 	}
 	pref := PolicyNameFor("payments", "platform", KeyPrefixed)
-	if !strings.HasPrefix(pref, "kube-vnet-platform.payments-") {
+	if !strings.HasPrefix(pref, "kube-vnet.platform.payments-") {
 		t.Errorf("prefixed shape: %q", pref)
 	}
 	bind := BindingPolicyName("platform", "payments", "webapp", "thirdparty")
-	if !strings.HasPrefix(bind, "kube-vnet-platform.payments.b.thirdparty-") {
+	if !strings.HasPrefix(bind, "kube-vnet.platform.payments.b.thirdparty-") {
 		t.Errorf("binding shape: %q", bind)
 	}
 }

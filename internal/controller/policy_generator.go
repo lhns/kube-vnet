@@ -162,22 +162,22 @@ func JoinLabelKeyByForm(prefix, homeNS, vnet string, form KeyForm) string {
 }
 
 // PolicyName returns the deterministic NetworkPolicy name for the bare-form
-// membership policy of (vnet, homeNS). Shape: `kube-vnet-<vnet>-<8hex>`
-// where the hash disambiguates against collisions arising from `-`
-// being valid inside vnet/namespace names.
+// membership policy of (vnet, homeNS). Shape: `kube-vnet.<vnet>-<8hex>`.
+// The prefix is dot-separated to keep visual structure clean even when
+// vnet/namespace names contain dashes (e.g. `netpol-demo`).
 //
 // Bare-form policies only exist in the vnet's home namespace; the policy's
 // `metadata.namespace` is implicitly homeNS, so it doesn't appear in the name.
 func PolicyName(vnet, homeNS string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-%s",
+	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s-%s",
 		vnet, policyHash("bare", homeNS, vnet)))
 }
 
 // PolicyNameFor returns the deterministic NetworkPolicy name for a given
 // (vnet, homeNS, key form). Shapes:
 //
-//	bare:     kube-vnet-<vnet>-<8hex>
-//	prefixed: kube-vnet-<homeNS>.<vnet>-<8hex>
+//	bare:     kube-vnet.<vnet>-<8hex>
+//	prefixed: kube-vnet.<homeNS>.<vnet>-<8hex>
 //
 // The prefixed shape mirrors the join-label key `kube-vnet/net.<homeNS>.<vnet>`,
 // using `.` as a separator (forbidden inside DNS-1123 labels, so unambiguous).
@@ -190,7 +190,7 @@ func PolicyNameFor(vnet, homeNS string, form KeyForm) string {
 	if form == KeyBare {
 		return PolicyName(vnet, homeNS)
 	}
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s.%s-%s",
+	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s-%s",
 		homeNS, vnet, policyHash("prefixed", homeNS, vnet)))
 }
 
@@ -524,13 +524,13 @@ const LabelBinding = "kube-vnet/binding"
 // BindingPolicyName returns the deterministic policy name for a
 // VirtualNetworkBinding-driven membership policy. Shape:
 //
-//	kube-vnet-<homeNS>.<vnet>.b.<binding>-<8hex>
+//	kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>
 //
 // The `.b.` marker distinguishes binding policies from prefixed-form
-// membership (`kube-vnet-<homeNS>.<vnet>-<hash>`). The hash disambiguates
+// membership (`kube-vnet.<homeNS>.<vnet>-<hash>`). The hash disambiguates
 // against pathological inputs where `.` parsing could otherwise be ambiguous.
 func BindingPolicyName(homeNS, vnet, bindingNS, binding string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s.%s.b.%s-%s",
+	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s.b.%s-%s",
 		homeNS, vnet, binding,
 		policyHash("binding", homeNS, vnet, bindingNS, binding)))
 }

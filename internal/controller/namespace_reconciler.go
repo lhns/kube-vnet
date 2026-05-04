@@ -62,16 +62,19 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	desired := DesiredBaseline(ns.Name, mode)
 	if desired == nil {
-		// No baseline wanted in this namespace. Delete any leftover.
-		bp := &networkingv1.NetworkPolicy{}
-		if err := r.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: BaselinePolicyName}, bp); err != nil {
-			if apierrors.IsNotFound(err) {
-				return ctrl.Result{}, nil
-			}
+		// No baseline wanted in this namespace. Sweep any leftover (current
+		// name and any legacy/stale-named baselines).
+		var existing networkingv1.NetworkPolicyList
+		if err := r.List(ctx, &existing,
+			client.InNamespace(ns.Name),
+			client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleBaseline},
+		); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.Delete(ctx, bp); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+		for i := range existing.Items {
+			if err := r.Delete(ctx, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
 		}
 		return ctrl.Result{}, nil
 	}
@@ -82,7 +85,43 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Error(err, "apply baseline failed", "mode", string(mode))
 		return ctrl.Result{}, err
 	}
+
+	// Sweep stale baselines: any policy in this namespace labelled as a
+	// kube-vnet-managed baseline whose name is not the current
+	// BaselinePolicyName is a leftover from a previous version (the constant
+	// changed in the policy-name-collisions rename — old name was
+	// `kube-vnet-default-deny`). Generic by name comparison so future
+	// renames are handled by the same code path.
+	if err := r.sweepStaleBaselines(ctx, ns.Name); err != nil {
+		logger.Error(err, "sweep stale baselines failed")
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
+}
+
+// sweepStaleBaselines deletes policies in `ns` that are labelled as a
+// kube-vnet-managed baseline but whose name differs from the current
+// BaselinePolicyName. Cheap (server-side label-filtered List).
+func (r *NamespaceReconciler) sweepStaleBaselines(ctx context.Context, ns string) error {
+	logger := log.FromContext(ctx).WithValues("namespace", ns)
+	var existing networkingv1.NetworkPolicyList
+	if err := r.List(ctx, &existing,
+		client.InNamespace(ns),
+		client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleBaseline},
+	); err != nil {
+		return err
+	}
+	for i := range existing.Items {
+		p := &existing.Items[i]
+		if p.Name == BaselinePolicyName {
+			continue
+		}
+		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		logger.Info("deleted stale baseline", "policy", p.Name, "current", BaselinePolicyName)
+	}
+	return nil
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {

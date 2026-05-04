@@ -15,19 +15,26 @@ release. Pinning to an exact version is recommended.
 - **NetworkPolicy names changed.** The previous `kube-vnet-<vnet>-<ns>[-prefixed]`
   / `kube-vnet-<vnet>-b-<binding>` / `kube-vnet-default-deny` scheme allowed
   collisions (e.g. baseline vs membership where vnet=`default` and ns=`deny`,
-  or vnet=`foo`/ns=`bar-baz` vs vnet=`foo-bar`/ns=`baz`). New scheme:
+  or vnet=`foo`/ns=`bar-baz` vs vnet=`foo-bar`/ns=`baz`). New scheme uses a
+  dot-separated structural prefix and an 8-hex identity hash:
   - Baseline: `kube-vnet` (per-namespace singleton)
-  - Membership bare (home NS): `kube-vnet-<vnet>-<8hex>`
-  - Membership prefixed: `kube-vnet-<homeNS>.<vnet>-<8hex>` (mirrors the
+  - Membership bare (home NS): `kube-vnet.<vnet>-<8hex>`
+  - Membership prefixed: `kube-vnet.<homeNS>.<vnet>-<8hex>` (mirrors the
     `kube-vnet/net.<homeNS>.<vnet>` label key)
-  - Per-binding: `kube-vnet-<homeNS>.<vnet>.b.<binding>-<8hex>`
+  - Per-binding: `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>`
 
-  The 8-hex suffix is an *identity* hash (SHA-256 of class+homeNS+vnet[+binding]
-  joined by `\x00`, first 4 bytes hex'd) — stable across membership churn.
-  After upgrade, the existing `deleteStale()` reconcile pass will remove
-  old-named managed policies and create new-named ones; NetworkPolicy is
-  additive, so traffic posture is unchanged during the transition. **Action
-  required**: any tooling/scripts hard-coded to old policy names must update.
+  The dot prefix avoids visual confusion with dash-bearing namespace names
+  (e.g. `netpol-demo`); the 8-hex suffix is an *identity* hash (SHA-256 of
+  class+homeNS+vnet[+binding] joined by `\x00`, first 4 bytes hex'd) — stable
+  across membership churn.
+
+  Migration is automatic: the existing `deleteStale()` pass GCs old-named
+  membership policies on the first reconcile, and the namespace reconciler
+  now sweeps stale baseline policies (any policy labelled
+  `kube-vnet/role=baseline` whose name differs from the current
+  `BaselinePolicyName`). NetworkPolicy is additive, so traffic posture is
+  unchanged during the transition. **Action required**: any tooling/scripts
+  hard-coded to old policy names must update.
 
 - **Empty join-label value (`kube-vnet/net.X: ""`) now parses as `none`, not
   `both`.** The legacy "presence-only meant member" rule mapped the empty
