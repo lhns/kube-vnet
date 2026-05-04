@@ -150,7 +150,15 @@ jobs:
             > checksums.txt
           cat checksums.txt
 
-      - name: create GitHub release
+      - name: attach release assets
+        # The release is expected to already exist (the user creates it in the
+        # GitHub UI with hand-written notes that include their own "What's
+        # Changed" section). This step attaches the build artifacts to that
+        # existing release. If the release doesn't exist yet, softprops
+        # creates an empty one — also fine; the user fills in the body.
+        # `generate_release_notes` is deliberately NOT set: when it was, GitHub
+        # appended its auto-changelog to the user's hand-written notes,
+        # producing a duplicate "What's Changed" line.
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -159,4 +167,3 @@ jobs:
             kube-vnet-image.sbom.spdx.json
             kube-vnet-chart.sbom.spdx.json
             checksums.txt
-          generate_release_notes: true
