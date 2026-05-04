@@ -94,7 +94,7 @@ jobs:
 
       - name: build & push image
         id: build_image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true
