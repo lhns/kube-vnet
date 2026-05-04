@@ -69,7 +69,7 @@ spec:
     metadata:
       labels:
         app: frontend
-        kube-vnet/net.web-tier: "true"     # only on the web tier
+        kube-vnet/net.web-tier: "both"     # only on the web tier
     spec:
       containers:
         - { name: app, image: nginx:alpine }
@@ -84,8 +84,8 @@ spec:
     metadata:
       labels:
         app: backend
-        kube-vnet/net.web-tier: "true"     # backend joins both
-        kube-vnet/net.data-tier: "true"
+        kube-vnet/net.web-tier: "both"     # backend joins both
+        kube-vnet/net.data-tier: "both"
     spec:
       containers:
         - { name: app, image: nginx:alpine }
@@ -100,7 +100,7 @@ spec:
     metadata:
       labels:
         app: database
-        kube-vnet/net.data-tier: "true"    # only on the data tier
+        kube-vnet/net.data-tier: "both"    # only on the data tier
     spec:
       containers:
         - { name: db, image: postgres:16, env: [{ name: POSTGRES_PASSWORD, value: example }] }
@@ -145,7 +145,7 @@ metadata:
 spec:
   description: |
     Cluster-wide observability network. Pods in any namespace may join
-    by adding the prefixed label kube-vnet/net.monitoring.observability=true.
+    by adding the prefixed label kube-vnet/net.monitoring.observability=both.
   allowedNamespaces:
     all: true
 ---
@@ -160,7 +160,7 @@ spec:
       labels:
         app: prometheus
         # Bare form — prometheus is in the home namespace (monitoring).
-        kube-vnet/net.observability: "true"
+        kube-vnet/net.observability: "both"
     spec:
       containers:
         - { name: prometheus, image: prom/prometheus:latest, ports: [{ containerPort: 9090 }] }
@@ -176,7 +176,7 @@ spec:
       labels:
         app: webapp
         # Prefixed form — webapp is in a different namespace.
-        kube-vnet/net.monitoring.observability: "true"
+        kube-vnet/net.monitoring.observability: "both"
     spec:
       containers:
         - { name: app, image: nginx:alpine }
@@ -184,7 +184,7 @@ spec:
 
 Effect:
 
-- Pods in **any namespace** that add `kube-vnet/net.monitoring.observability=true` become members of the observability network.
+- Pods in **any namespace** that add `kube-vnet/net.monitoring.observability=both` become members of the observability network.
 - Prometheus (in `monitoring`, with the bare label) and webapp (in `webapp`, with the prefixed label) can reach each other.
 - Pods in `webapp` that *don't* add the label get nothing extra. The `allowedNamespaces.all: true` *permits* joining; it doesn't grant blanket access.
 
@@ -228,7 +228,7 @@ spec:
     metadata:
       labels:
         app: payments-api
-        kube-vnet/net.payments: "true"
+        kube-vnet/net.payments: "both"
     spec:
       containers:
         - { name: app, image: nginx:alpine }
@@ -243,7 +243,7 @@ spec:
     metadata:
       labels:
         app: monitoring-agent
-        kube-vnet/net.monitoring: "true"
+        kube-vnet/net.monitoring: "both"
     spec:
       containers:
         - { name: agent, image: nginx:alpine }
@@ -259,8 +259,8 @@ spec:
     metadata:
       labels:
         app: gateway
-        kube-vnet/net.payments: "true"
-        kube-vnet/net.monitoring: "true"
+        kube-vnet/net.payments: "both"
+        kube-vnet/net.monitoring: "both"
     spec:
       containers:
         - { name: gateway, image: envoyproxy/envoy:distroless-v1.31-latest }
@@ -513,7 +513,7 @@ spec:
     metadata:
       labels:
         app: webapp
-        kube-vnet/net.webapp: "true"
+        kube-vnet/net.webapp: "both"
     spec:
       containers:
         - { name: app, image: nginx:alpine, ports: [{ containerPort: 80 }] }

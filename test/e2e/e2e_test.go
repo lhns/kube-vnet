@@ -132,8 +132,8 @@ func TestE2E_DifferentVNets_Isolated(t *testing.T) {
 
 	applyYAML(t, vnetSpec("payments", ns, ""))
 	applyYAML(t, vnetSpec("monitoring", ns, ""))
-	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.payments": "true"}))
-	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.monitoring": "true"}))
+	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.payments": "both"}))
+	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.monitoring": "both"}))
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "client", 90*time.Second)
 
@@ -153,7 +153,7 @@ func TestE2E_NoVNet_Isolated(t *testing.T) {
 	defer cleanupNamespace(t, ns)
 
 	applyYAML(t, vnetSpec("net1", ns, ""))
-	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "true"}))
+	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "both"}))
 	applyYAML(t, clientPod(ns, "loner", nil))
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "loner", 90*time.Second)
@@ -177,7 +177,7 @@ func TestE2E_AllowedNamespaces_All(t *testing.T) {
 
 	applyYAML(t, vnetSpec("observability", homeNS, "    all: true\n"))
 	applyYAML(t, httpServerPod(homeNS, "server", map[string]string{
-		"kube-vnet/net.observability": "true",
+		"kube-vnet/net.observability": "both",
 	}))
 	applyYAML(t, clientPod(foreignNS, "client", map[string]string{
 		fmt.Sprintf("kube-vnet/net.%s.observability", homeNS): "true",
@@ -208,7 +208,7 @@ func TestE2E_AllowedNamespaces_Names_PositiveAndNegative(t *testing.T) {
 	allowed := fmt.Sprintf("    names: [%s]\n", listedNS)
 	applyYAML(t, vnetSpec("svc", homeNS, allowed))
 	applyYAML(t, httpServerPod(homeNS, "server", map[string]string{
-		"kube-vnet/net.svc": "true",
+		"kube-vnet/net.svc": "both",
 	}))
 	applyYAML(t, clientPod(listedNS, "ok", map[string]string{
 		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
@@ -244,7 +244,7 @@ func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
 	allowed := fmt.Sprintf("    names: [%s]\n", listedNS)
 	applyYAML(t, vnetSpec("svc", homeNS, allowed))
 	applyYAML(t, httpServerPod(homeNS, "server", map[string]string{
-		"kube-vnet/net.svc": "true",
+		"kube-vnet/net.svc": "both",
 	}))
 	// labeled-and-listed: should reach.
 	applyYAML(t, clientPod(listedNS, "labeled", map[string]string{
@@ -286,7 +286,7 @@ func TestE2E_AllowedNamespaces_Selector_PositiveAndNegative(t *testing.T) {
 	allowed := "    selector:\n      matchLabels:\n        tier: prod\n"
 	applyYAML(t, vnetSpec("svc", homeNS, allowed))
 	applyYAML(t, httpServerPod(homeNS, "server", map[string]string{
-		"kube-vnet/net.svc": "true",
+		"kube-vnet/net.svc": "both",
 	}))
 	applyYAML(t, clientPod(prodNS, "ok", map[string]string{
 		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
@@ -317,15 +317,15 @@ func TestE2E_MultiVNet_Pod(t *testing.T) {
 	applyYAML(t, vnetSpec("payments", ns, ""))
 	applyYAML(t, vnetSpec("monitoring", ns, ""))
 	applyYAML(t, httpServerPod(ns, "p-server", map[string]string{
-		"kube-vnet/net.payments": "true",
+		"kube-vnet/net.payments": "both",
 	}))
 	applyYAML(t, httpServerPod(ns, "m-server", map[string]string{
-		"kube-vnet/net.monitoring": "true",
+		"kube-vnet/net.monitoring": "both",
 	}))
 	// Bridge pod is on BOTH vnets.
 	applyYAML(t, clientPod(ns, "bridge", map[string]string{
-		"kube-vnet/net.payments":   "true",
-		"kube-vnet/net.monitoring": "true",
+		"kube-vnet/net.payments":   "both",
+		"kube-vnet/net.monitoring": "both",
 	}))
 	waitForPod(t, ns, "p-server", 90*time.Second)
 	waitForPod(t, ns, "m-server", 90*time.Second)
@@ -350,8 +350,8 @@ func TestE2E_Relabel_DropsAccess(t *testing.T) {
 	defer cleanupNamespace(t, ns)
 
 	applyYAML(t, vnetSpec("net1", ns, ""))
-	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "true"}))
-	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "true"}))
+	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "both"}))
+	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "both"}))
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "client", 90*time.Second)
 
@@ -379,8 +379,8 @@ func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 	defer cleanupNamespace(t, ns)
 
 	applyYAML(t, vnetSpec("temp", ns, ""))
-	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.temp": "true"}))
-	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.temp": "true"}))
+	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.temp": "both"}))
+	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.temp": "both"}))
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "client", 90*time.Second)
 
@@ -420,7 +420,7 @@ func TestE2E_DNS_StillResolves(t *testing.T) {
 	defer cleanupNamespace(t, ns)
 
 	applyYAML(t, vnetSpec("net1", ns, ""))
-	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "true"}))
+	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "both"}))
 	waitForPod(t, ns, "client", 90*time.Second)
 
 	deadline := time.Now().Add(30 * time.Second)

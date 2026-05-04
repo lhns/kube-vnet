@@ -166,21 +166,18 @@ func PolicyName(vnet, ns string) string {
 }
 
 // PolicyNameFor returns the deterministic NetworkPolicy name for a given
-// (vnet, ns, direction class, key form). Preserves the legacy unsuffixed
-// name (`kube-vnet-<vnet>-<ns>`) for the bidirectional + bare case so
-// existing installs don't see policy renames.
-func PolicyNameFor(vnet, ns, homeNS string, dir Direction, form KeyForm) string {
+// (vnet, ns, key form). Preserves the legacy unsuffixed name
+// (`kube-vnet-<vnet>-<ns>`) for the bare-form case so existing installs
+// don't see policy renames. The home namespace's long-form variant gets a
+// `-prefixed` suffix.
+//
+// All receiver-capable direction classes (`both` and `ingress`) share a
+// single self-policy per (ns, form). `egress`-only members produce no
+// self-policy. See ADR 0021 (Addendum) for the consolidation rationale.
+func PolicyNameFor(vnet, ns, homeNS string, form KeyForm) string {
 	suffix := ""
-	switch dir {
-	case DirectionIngress:
-		suffix = "-ingress"
-	case DirectionEgress:
-		suffix = "-egress"
-	}
-	// Only the home namespace can have both forms; disambiguate the prefixed-
-	// form policy with a -prefixed suffix.
 	if ns == homeNS && form == KeyPrefixed {
-		suffix += "-prefixed"
+		suffix = "-prefixed"
 	}
 	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-%s%s", vnet, ns, suffix))
 }
@@ -201,33 +198,25 @@ func truncatePolicyName(name string) string {
 
 // Direction value helpers for selector LabelSelectorRequirement values.
 var (
-	// selfValues lists the join-label values that match the policy's own
-	// pods given the policy's direction class.
-	selfValuesBoth    = []string{"true", string(DirectionBoth)}
-	selfValuesIngress = []string{string(DirectionIngress)}
-	selfValuesEgress  = []string{string(DirectionEgress)}
+	// selfValuesReceiver matches pods that ACCEPT ingress: `both`,
+	// `ingress`, plus the legacy `true` alias (which means `both`).
+	// Used as the policy's own podSelector In-values for the single
+	// merged self-policy per (ns, form). Egress-only members are not
+	// included — they don't accept ingress, so they don't need a self-
+	// policy at all.
+	selfValuesReceiver = []string{"true", string(DirectionBoth), string(DirectionIngress)}
 
 	// peerInitiatorValues matches peers that can INITIATE traffic
 	// (potential sources of ingress to me). Used in ingress.from.
 	peerInitiatorValues = []string{"true", string(DirectionBoth), string(DirectionEgress)}
-
 )
 
-func selfValuesFor(d Direction) []string {
-	switch d {
-	case DirectionBoth:
-		return selfValuesBoth
-	case DirectionIngress:
-		return selfValuesIngress
-	case DirectionEgress:
-		return selfValuesEgress
-	}
-	return nil
+// hasReceiver reports whether the (form, direction-map) tuple has any
+// pod that accepts ingress (`both` or `ingress`). Used to decide whether
+// to emit a self-policy at all.
+func hasReceiver(byDir map[Direction][]string) bool {
+	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionIngress]) > 0
 }
-
-// dirHasIngress reports whether a policy for direction d should include
-// PolicyTypes: Ingress + ingress allow rules.
-func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == DirectionIngress }
 
 // hasInitiator reports whether the (form, direction-map) tuple has any
 // pod that can initiate traffic (egress-capable: both or egress). Used
@@ -236,6 +225,11 @@ func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == Directi
 func hasInitiator(byDir map[Direction][]string) bool {
 	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionEgress]) > 0
 }
+
+// dirHasIngress reports whether a binding's direction should produce a
+// self-policy. Bindings with `egress` or `none` direction get no self-
+// policy (they accept no ingress).
+func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == DirectionIngress }
 
 // Generate returns the desired NetworkPolicy set for a VirtualNetwork.
 //
@@ -399,55 +393,55 @@ func Generate(in GenerateInput) GenerateOutput {
 				continue
 			}
 			selectorKey := JoinLabelKeyByForm(prefix, homeNS, vnet.Name, form)
-			// Direction `egress`-only members don't get a self-policy: they
-			// don't accept ingress (so no ingress allow rules apply to them)
-			// and we don't restrict egress. They still appear in *other*
-			// pods' ingress.from peer lists via peerInitiatorValues.
-			for _, dir := range []Direction{DirectionBoth, DirectionIngress} {
-				if len(byDir[dir]) == 0 {
-					continue
-				}
-				policy := networkingv1.NetworkPolicy{
-					TypeMeta: metav1.TypeMeta{
-						APIVersion: networkingv1.SchemeGroupVersion.String(),
-						Kind:       "NetworkPolicy",
-					},
-					ObjectMeta: metav1.ObjectMeta{
-						Namespace: ns,
-						Name:      PolicyNameFor(vnet.Name, ns, homeNS, dir, form),
-						Labels: map[string]string{
-							LabelManagedBy: LabelManagedByValue,
-							LabelNetwork:   netID,
-							LabelRole:      LabelRoleMembership,
-						},
-					},
-					Spec: networkingv1.NetworkPolicySpec{
-						PodSelector: metav1.LabelSelector{
-							MatchExpressions: []metav1.LabelSelectorRequirement{{
-								Key:      selectorKey,
-								Operator: metav1.LabelSelectorOpIn,
-								Values:   selfValuesFor(dir),
-							}},
-						},
-						PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-					},
-				}
-				if len(peerFroms) > 0 {
-					policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
-				}
-
-				if ns == homeNS {
-					policy.OwnerReferences = []metav1.OwnerReference{{
-						APIVersion:         vnetv1alpha1.GroupVersion.String(),
-						Kind:               "VirtualNetwork",
-						Name:               vnet.Name,
-						UID:                vnet.UID,
-						Controller:         ptrTrue(),
-						BlockOwnerDeletion: ptrTrue(),
-					}}
-				}
-				policies = append(policies, policy)
+			// One self-policy per (ns, form), selecting all receiver-capable
+			// members (`both` and `ingress`, plus the legacy `true` alias).
+			// Direction `egress`-only members don't get a self-policy:
+			// they accept no ingress and we don't restrict egress. They
+			// still appear in *other* pods' ingress.from peer lists via
+			// peerInitiatorValues.
+			if !hasReceiver(byDir) {
+				continue
 			}
+			policy := networkingv1.NetworkPolicy{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: networkingv1.SchemeGroupVersion.String(),
+					Kind:       "NetworkPolicy",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: ns,
+					Name:      PolicyNameFor(vnet.Name, ns, homeNS, form),
+					Labels: map[string]string{
+						LabelManagedBy: LabelManagedByValue,
+						LabelNetwork:   netID,
+						LabelRole:      LabelRoleMembership,
+					},
+				},
+				Spec: networkingv1.NetworkPolicySpec{
+					PodSelector: metav1.LabelSelector{
+						MatchExpressions: []metav1.LabelSelectorRequirement{{
+							Key:      selectorKey,
+							Operator: metav1.LabelSelectorOpIn,
+							Values:   selfValuesReceiver,
+						}},
+					},
+					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+				},
+			}
+			if len(peerFroms) > 0 {
+				policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
+			}
+
+			if ns == homeNS {
+				policy.OwnerReferences = []metav1.OwnerReference{{
+					APIVersion:         vnetv1alpha1.GroupVersion.String(),
+					Kind:               "VirtualNetwork",
+					Name:               vnet.Name,
+					UID:                vnet.UID,
+					Controller:         ptrTrue(),
+					BlockOwnerDeletion: ptrTrue(),
+				}}
+			}
+			policies = append(policies, policy)
 		}
 	}
 

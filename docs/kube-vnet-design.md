@@ -161,9 +161,9 @@ spec:
     metadata:
       labels:
         app: orders
-        kube-vnet/net.payments: "true"
-        kube-vnet/net.monitoring: "true"
-        kube-vnet/net.kube-system.observability: "true"
+        kube-vnet/net.payments: "both"
+        kube-vnet/net.monitoring: "both"
+        kube-vnet/net.kube-system.observability: "both"
 ```
 
 - One label per VirtualNetwork joined.

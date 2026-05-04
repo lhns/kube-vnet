@@ -47,7 +47,7 @@ spec:
     metadata:
       labels:
         app: legacy-app
-        kube-vnet/net.monitoring.observability: "true"
+        kube-vnet/net.monitoring.observability: "both"
     spec:
       containers:
         - name: app

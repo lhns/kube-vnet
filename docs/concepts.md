@@ -95,15 +95,16 @@ For two members `X` and `Y` of the same vnet, traffic flows `X → Y` iff:
 | ingress | egress | no | yes |
 | egress | egress | no | no |
 
-### Per-direction policies
+### Membership policy emission
 
-The operator emits **up to one policy per direction class with at least one member** in each member-bearing namespace:
+The operator emits **one ingress-only policy per (namespace, key-form) with at least one receiver-capable member**:
 
-- `kube-vnet-<vnet>-<ns>` — bidirectional members. Selects `value In [true, both]`. `policyTypes: [Ingress, Egress]`. The unsuffixed name preserves the legacy v1alpha1 naming for the common case.
-- `kube-vnet-<vnet>-<ns>-ingress` — ingress-only members. Selects `value In [ingress]`. `policyTypes: [Ingress]`.
-- `kube-vnet-<vnet>-<ns>-egress` — egress-only members. Selects `value In [egress]`. `policyTypes: [Egress]`.
+- `kube-vnet-<vnet>-<ns>` — selects `value In [true, both, ingress]`, i.e. every member that can accept ingress. `policyTypes: [Ingress]`. The unsuffixed name preserves the legacy v1alpha1 naming.
+- `kube-vnet-<vnet>-<ns>-prefixed` — same shape, but selects the prefixed-form join label. Only emitted in the home namespace when both label forms are in use.
 
-In the home namespace, each direction class can produce two policies — one for the bare form and one (suffixed `-prefixed`) for the prefixed form — when both forms are in use. See [ADR 0021](adr/0021-direction-modes-on-join-labels.md) and [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
+`egress`-only members produce **no self-policy** — they accept no ingress, and the operator no longer restricts egress (ADR 0025). They still appear in *other* members' `ingress.from` peer rules via the `In [true, both, egress]` selector.
+
+The earlier per-direction policy split (separate `-ingress` / `-egress` suffixed policies) was consolidated after the egress-removed refactor — see ADRs [0021](adr/0021-direction-modes-on-join-labels.md) (Addendum), [0022](adr/0022-long-form-join-label-in-home-namespace.md), and [0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
 ---
 
@@ -250,11 +251,11 @@ For cross-namespace ingress isolation, both ends need baselines (or the receivin
 
 ---
 
-## The generated NetworkPolicy: per (vnet, namespace, direction class, label form)
+## The generated NetworkPolicy: per (vnet, namespace, label form)
 
-For each VirtualNetwork with members, the operator generates **one membership `NetworkPolicy` per (namespace, direction class) with members**. In the home namespace, each direction class can additionally split into two policies — one matching the bare key, one matching the prefixed key — when both label forms are in use. Bindings produce one extra policy per binding.
+For each VirtualNetwork with at least one receiver-capable member, the operator generates **one membership `NetworkPolicy` per (namespace, key-form)**. The home namespace can split into two policies (bare + `-prefixed`) when both label forms are in use. Each `VirtualNetworkBinding` produces one additional per-binding policy.
 
-Naming: `kube-vnet-<vnet>-<namespace>` for the bidirectional, bare-form, label-driven policy. Direction-suffixed (`-ingress` / `-egress`), form-suffixed (`-prefixed`), and binding-suffixed (`-b-<binding>`) variants apply otherwise. If the deterministic name exceeds Kubernetes' 253-character resource-name limit, the front is truncated and a 4-byte SHA-256 suffix is appended. See [ADR 0011](adr/0011-policy-naming-and-truncation.md).
+Naming: `kube-vnet-<vnet>-<namespace>` for the bare-form, label-driven policy (legacy v1alpha1 name preserved). The home long-form variant adds `-prefixed`. Per-binding policies use `kube-vnet-<vnet>-b-<binding>`. If the deterministic name exceeds Kubernetes' 253-character resource-name limit, the front is truncated and a 4-byte SHA-256 suffix is appended. See [ADR 0011](adr/0011-policy-naming-and-truncation.md) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md) (Addendum) for the bidi+ingress consolidation.
 
 Labels on every operator-managed `NetworkPolicy`:
 

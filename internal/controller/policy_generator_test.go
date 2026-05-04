@@ -68,7 +68,9 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 	if op := p.Spec.PodSelector.MatchExpressions[0].Operator; op != metav1.LabelSelectorOpIn {
 		t.Errorf("podSelector operator=%v want In", op)
 	}
-	wantValues := []string{"true", "both"}
+	// Self-policy selects all receiver-capable members (`both`, `ingress`, plus
+	// the legacy `true` alias).
+	wantValues := []string{"true", "both", "ingress"}
 	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !equalStringSlice(got, wantValues) {
 		t.Errorf("podSelector values=%v want %v", got, wantValues)
 	}
@@ -136,9 +138,12 @@ func TestGenerate_HomeAndForeignMixed(t *testing.T) {
 }
 
 // TestGenerate_DirectionEnum_OneOfEach: a single namespace with three pods,
-// one of each direction, generates two self-policies (bidi, ingress) — the
-// `egress`-only pod produces no self-policy because it accepts no ingress and
-// the operator no longer restricts egress (ADR 0025).
+// one of each direction, generates ONE merged self-policy that selects all
+// receiver-capable members (`both`, `ingress`, plus the legacy `true`
+// alias). The `egress`-only pod produces no self-policy because it accepts
+// no ingress and the operator no longer restricts egress (ADR 0025).
+//
+// The bidi+ingress consolidation is documented in ADR 0021 (Addendum).
 func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	out := Generate(GenerateInput{
 		VNet: newVNet("payments", "platform"),
@@ -152,40 +157,25 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 			},
 		},
 	})
-	if len(out.Policies) != 2 {
-		t.Fatalf("expected 2 policies (bidi + ingress; no policy for egress-only), got %d", len(out.Policies))
+	if len(out.Policies) != 1 {
+		t.Fatalf("expected 1 merged self-policy, got %d", len(out.Policies))
 	}
 
-	byName := map[string]*kpolicySummary{}
+	p := summarize(&out.Policies[0])
+	if out.Policies[0].Name != "kube-vnet-payments-platform" {
+		t.Errorf("policy name=%q want kube-vnet-payments-platform (legacy unsuffixed)", out.Policies[0].Name)
+	}
+	if !equalStringSlice(p.podSelectorValues, []string{"true", "both", "ingress"}) {
+		t.Errorf("podSelector values=%v want [true both ingress]", p.podSelectorValues)
+	}
+	if !p.hasIngress || p.hasEgress {
+		t.Errorf("merged self-policy should have Ingress only (egress never restricted)")
+	}
+	// The -ingress suffixed policy from the pre-merge era must NOT exist.
 	for i := range out.Policies {
-		p := &out.Policies[i]
-		byName[p.Name] = summarize(p)
-	}
-
-	bidi, ok := byName["kube-vnet-payments-platform"]
-	if !ok {
-		t.Fatalf("missing bidi policy")
-	}
-	if !equalStringSlice(bidi.podSelectorValues, []string{"true", "both"}) {
-		t.Errorf("bidi podSelector values=%v", bidi.podSelectorValues)
-	}
-	if !bidi.hasIngress || bidi.hasEgress {
-		t.Errorf("bidi should have Ingress only (egress is never restricted)")
-	}
-
-	ingress, ok := byName["kube-vnet-payments-platform-ingress"]
-	if !ok {
-		t.Fatalf("missing ingress-only policy")
-	}
-	if !equalStringSlice(ingress.podSelectorValues, []string{"ingress"}) {
-		t.Errorf("ingress podSelector values=%v", ingress.podSelectorValues)
-	}
-	if !ingress.hasIngress || ingress.hasEgress {
-		t.Errorf("ingress-only should have Ingress only")
-	}
-
-	if _, exists := byName["kube-vnet-payments-platform-egress"]; exists {
-		t.Errorf("egress-only direction must NOT produce a self-policy")
+		if name := out.Policies[i].Name; name != "kube-vnet-payments-platform" {
+			t.Errorf("unexpected extra policy %q (the merge should produce exactly one)", name)
+		}
 	}
 }
 

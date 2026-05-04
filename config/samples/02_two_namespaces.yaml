@@ -55,7 +55,7 @@ spec:
     metadata:
       labels:
         app: orders
-        kube-vnet/net.payments: "true"
+        kube-vnet/net.payments: "both"
     spec:
       containers:
         - name: app
@@ -74,7 +74,7 @@ spec:
     metadata:
       labels:
         app: frontend
-        kube-vnet/net.platform.payments: "true"
+        kube-vnet/net.platform.payments: "both"
     spec:
       containers:
         - name: app

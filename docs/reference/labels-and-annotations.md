@@ -151,7 +151,7 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **Value** | Always `kube-vnet`. |
 | **Set by** | The operator. |
 | **Meaning** | "This NetworkPolicy is managed by kube-vnet. Drift correction applies." |
-| **Used by** | The operator's NetworkPolicy watch predicate; `cleanupForDeleted`; `deleteStale`; `gcBaselineIfEmpty`; the `MetricsCollector`. Also referenced by the user-facing `kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet`. |
+| **Used by** | The operator's NetworkPolicy watch predicates (in both reconcilers); `cleanupForDeleted`; `deleteStale`; the `MetricsCollector`. Also referenced by the user-facing `kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet`. |
 
 ### `kube-vnet/network=<homeNS>.<vnet-name>`
 
@@ -236,7 +236,7 @@ The operator no longer relies on this label. Earlier releases used it in the bas
 
 ## Selector keys the operator generates dynamically
 
-Per `(vnet, namespace, direction class, label form)`, the operator generates a `NetworkPolicy` whose `podSelector` uses an `In` operator over the join label *value* to match the right direction class:
+Per `(vnet, namespace, key-form)`, the operator generates **one** ingress-only `NetworkPolicy` whose `podSelector` selects every receiver-capable member via an `In` operator over the join label *value*:
 
 ```yaml
 podSelector:
@@ -245,14 +245,12 @@ podSelector:
       # OR
       key: kube-vnet/net.<homeNS>.<vnet> # prefixed form
       operator: In
-      values: [true, both]               # bidirectional policy
-      # OR
-      values: [ingress]                  # ingress-only policy
-      # OR
-      values: [egress]                   # egress-only policy
+      values: [true, both, ingress]      # all receiver-capable members
 ```
 
-Peer rules apply the same value-narrowing on the *other* side: an `ingress` allow on Y selects peers that can initiate egress (`In [true, both, egress]`); an `egress` allow on Y selects peers that can accept ingress (`In [true, both, ingress]`).
+`egress`-only members are deliberately not in this set — they accept no ingress, and the operator no longer restricts egress (ADR 0025), so there's nothing to allow on a self-policy. They still appear as *peer initiators* in other members' ingress.from rules.
+
+Peer rules narrow to initiator-capable members on the source side: `ingress.from` selects peers via `kube-vnet/net.<vnet> In [true, both, egress]`. (The bidi+ingress merge is documented in [ADR 0021 Addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--bidi--ingress-self-policies-merged); the older split into separate `-ingress` / `-egress` self-policies is gone.)
 
 This is what enforces "join eligibility, not blanket access" at the policy level: a pod in the namespace without the join label, or with `value=none`, doesn't match the selector and gets nothing from the membership policy.
 

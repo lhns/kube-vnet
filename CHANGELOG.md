@@ -102,6 +102,20 @@ release. Pinning to an exact version is recommended.
   `VirtualNetworkReconciler` no longer touches the baseline. The two
   reconcilers now have clear, narrow ownership: per-vnet membership
   policies vs. per-namespace baseline lifecycle.
+- **Bidi + ingress self-policies merged into one per (namespace,
+  key-form).** Since membership policies became ingress-only (ADR 0025),
+  the previously-separate bidi (`kube-vnet-<vnet>-<ns>`) and ingress-only
+  (`kube-vnet-<vnet>-<ns>-ingress`) self-policies were spec-identical
+  except for `podSelector` In-values. They're now a single policy whose
+  selector matches `[true, both, ingress]`. The `-ingress` policy-name
+  suffix is gone. Existing `-ingress`-suffixed policies are GC'd by
+  `deleteStale` on the next reconcile. `egress`-only members continue to
+  produce no self-policy. See [ADR 0021 Addendum](docs/adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--bidi--ingress-self-policies-merged).
+- **Docs canonicalize the join-label value as `"both"`.** Examples
+  across `README.md`, `docs/recipes.md`, `docs/kube-vnet-design.md`, and
+  `config/samples/01-05` now use `kube-vnet/net.<vnet>: "both"`. The
+  legacy `"true"` (and `"false"`) still parse as aliases for `both` and
+  `none` respectively — no manifest changes required for existing users.
 - The release workflow now publishes signed artifacts and SBOMs in addition
   to the existing multi-arch container image and `release.yaml`.
 

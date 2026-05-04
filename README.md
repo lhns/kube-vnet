@@ -43,7 +43,7 @@ spec:
     metadata:
       labels:
         app: orders
-        kube-vnet/net.payments: "true"   # ← join the payments network
+        kube-vnet/net.payments: "both"   # ← join the payments network
     spec:
       containers: [{ name: app, image: nginx:alpine }]
 ```
@@ -70,9 +70,9 @@ The picture:
 │   │ select: all pods   ingress/egress: deny + DNS   │  │
 │   └─────────────────────────────────────────────────┘  │
 │                                                        │
-│   pod orders-1 [kube-vnet/net.payments=true] ──┐       │
+│   pod orders-1 [kube-vnet/net.payments=both] ──┐       │
 │                                                ▼ talks │
-│   pod orders-2 [kube-vnet/net.payments=true]           │
+│   pod orders-2 [kube-vnet/net.payments=both]           │
 │                                                        │
 │   pod cron-x   (no label)  ←── isolated by baseline    │
 └────────────────────────────────────────────────────────┘
@@ -144,7 +144,7 @@ In your Deployment's pod template:
 ```yaml
 metadata:
   labels:
-    kube-vnet/net.payments: "true"
+    kube-vnet/net.payments: "both"
 ```
 
 ### 4. Inspect
@@ -183,10 +183,10 @@ A pod's join label depends on whether it lives in the home namespace or another 
 
 ```yaml
 # Pod in the VirtualNetwork's home namespace (here: platform):
-labels: { kube-vnet/net.payments: "true" }
+labels: { kube-vnet/net.payments: "both" }
 
 # Pod in any other namespace (only if allowedNamespaces permits it):
-labels: { kube-vnet/net.platform.payments: "true" }
+labels: { kube-vnet/net.platform.payments: "both" }
 #                       ^^^^^^^^ home namespace baked into the label key
 ```
 

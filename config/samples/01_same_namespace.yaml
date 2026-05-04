@@ -38,7 +38,7 @@ spec:
       labels:
         app: orders
         # Bare join label for the home namespace.
-        kube-vnet/net.payments: "true"
+        kube-vnet/net.payments: "both"
     spec:
       containers:
         - name: app

@@ -28,7 +28,7 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	}
 	mustCreate(t, vnet)
 
-	pod := makePod(ns, "orders", map[string]string{"kube-vnet/net.payments": "true"})
+	pod := makePod(ns, "orders", map[string]string{"kube-vnet/net.payments": "both"})
 	mustCreate(t, pod)
 
 	eventually(t, 10*time.Second, func() error {
@@ -63,7 +63,7 @@ func TestIntegration_Baseline_NoLongerImplicitOnMember(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	mustCreate(t, makePod(ns, "p1", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p1", map[string]string{"kube-vnet/net.v": "both"}))
 
 	// Wait long enough for the membership policy to be applied …
 	eventually(t, 10*time.Second, func() error {
@@ -111,7 +111,7 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
 		},
 	})
-	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.shared": "true"}))
+	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.shared": "both"}))
 	mustCreate(t, makePod(foreign, "f", map[string]string{
 		"kube-vnet/net." + home + ".shared": "true",
 	}))
@@ -188,7 +188,7 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 		},
 	}
 	mustCreate(t, v)
-	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.doomed": "true"}))
+	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.doomed": "both"}))
 	mustCreate(t, makePod(foreign, "f", map[string]string{
 		"kube-vnet/net." + home + ".doomed": "true",
 	}))
@@ -227,7 +227,7 @@ func TestIntegration_DriftCorrection(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
 	policyName := "kube-vnet-v-" + ns
 	eventually(t, 10*time.Second, func() error {
@@ -272,7 +272,7 @@ func TestIntegration_DriftCorrection_Membership_DeleteRestores(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
 	policyName := "kube-vnet-v-" + ns
 	eventually(t, 10*time.Second, func() error {
@@ -361,7 +361,7 @@ func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
 	// Wait long enough for several reconciles, then verify nothing was created.
 	time.Sleep(2 * time.Second)
@@ -464,7 +464,7 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	pod := makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"})
+	pod := makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"})
 	mustCreate(t, pod)
 
 	// Wait for the policy to appear.
@@ -563,7 +563,7 @@ func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
 	}, nil))
 	v := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns}}
 	mustCreate(t, v)
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
 	bp := &networkingv1.NetworkPolicy{}
 	eventually(t, 10*time.Second, func() error {
@@ -599,7 +599,7 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
 	policyName := "kube-vnet-v-" + ns
 	eventually(t, 10*time.Second, func() error {
@@ -809,20 +809,26 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	mustCreate(t, makePod(ns, "ingr", map[string]string{"kube-vnet/net.v": "ingress"}))
 	mustCreate(t, makePod(ns, "egr", map[string]string{"kube-vnet/net.v": "egress"}))
 
+	// Single merged self-policy selecting all receiver-capable members
+	// (ADR 0021 Addendum). Both `bidi` and `ingr` pods are covered; `egr`
+	// gets no self-policy.
 	eventually(t, 10*time.Second, func() error {
-		for _, name := range []string{
-			"kube-vnet-v-" + ns,
-			"kube-vnet-v-" + ns + "-ingress",
-		} {
-			if _, err := findPolicy(ctx, ns, name); err != nil {
-				return fmt.Errorf("policy %s missing: %v", name, err)
-			}
+		p, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		if err != nil {
+			return err
+		}
+		got := p.Spec.PodSelector.MatchExpressions[0].Values
+		want := []string{"true", "both", "ingress"}
+		if !equalStringSlice(got, want) {
+			return fmt.Errorf("podSelector values=%v want %v", got, want)
 		}
 		return nil
 	})
-	// The egress-only direction must NOT produce a self-policy.
-	if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-egress"); !apierrors.IsNotFound(err) {
-		t.Errorf("egress-only direction must not produce a self-policy: err=%v", err)
+	// No -ingress / -egress suffixed self-policies after the merge.
+	for _, suffix := range []string{"-ingress", "-egress"} {
+		if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+suffix); !apierrors.IsNotFound(err) {
+			t.Errorf("policy with suffix %q must not exist after the merge: err=%v", suffix, err)
+		}
 	}
 }
 

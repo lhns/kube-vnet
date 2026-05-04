@@ -79,3 +79,15 @@ X→Y flows iff X has egress capability (`both` or `egress`) AND Y has ingress c
 - ADR 0003 — One label per VirtualNetwork. Direction is encoded in the value of that label, not as a separate label.
 - ADR 0009 — Server-side apply. New direction-class policies are applied with the same field manager; drift correction works identically.
 - ADR 0022 — Long-form join label in the home namespace. Both ADRs interact: when the long form is in use in the home namespace alongside the bare form, each direction class can produce two policies (one per form) — see ADR 0022.
+
+## Addendum (2026-05-04) — bidi + ingress self-policies merged
+
+After [ADR 0025](0025-ingress-isolation-rename-egress-unrestricted.md) made membership policies ingress-only, the bidi (`-` unsuffixed) and ingress-only (`-ingress`) self-policies became spec-identical except for `podSelector` In-values. They've been consolidated into **one self-policy per (namespace, key-form)** that selects all receiver-capable members via `kube-vnet/net.<vnet> In [true, both, ingress]`. The `-ingress` policy-name suffix is gone.
+
+The peer side is unchanged: ingress.from peers still narrow to initiator-capable values (`In [true, both, egress]`), so the direction-class algebra in the table above still holds end-to-end.
+
+`egress`-direction members continue to produce no self-policy: they accept no ingress, and the operator no longer restricts egress, so there's nothing to allow. They still appear in *other* members' ingress.from peer lists.
+
+Net policy count per (vnet, namespace, form) drops from up-to-2 (bidi + ingress) to exactly 1. Existing `-ingress`-suffixed policies left over from the pre-merge era are removed by the VirtualNetworkReconciler's `deleteStale` pass on the next reconcile. No user-facing migration is required; existing `=true` / `=both` / `=ingress` pod manifests keep working.
+
+The `Con` bullet above ("Up to 3× the policy count per namespace per vnet") and the related "policy-name suffixes (`-ingress` / `-egress`) being human-meaningful" mitigation are now obsolete; only the form-suffix (`-prefixed`) survives in self-policy names. Per-binding policies (`-b-<binding>`) are unaffected.
