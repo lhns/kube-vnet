@@ -31,8 +31,12 @@ spec:
         operations:  ["CREATE", "UPDATE"]
         resources:   ["pods"]
   variables:
+    # CEL expressions, not string literals — the values these variables
+    # take must themselves be valid CEL. Wrap the rendered prefix in inner
+    # double-quotes so CEL parses it as a string literal rather than as
+    # `kube-vnet / net .` (identifier / division / identifier / accessor).
     - name: joinKeyPrefix
-      expression: '{{ .Values.operator.labelPrefix | default "kube-vnet/" }}net.'
+      expression: {{ printf "\"%snet.\"" (default "kube-vnet/" .Values.operator.labelPrefix) | quote }}
     - name: validValues
       expression: '["both","ingress","egress","none","true","false",""]'
   validations:
