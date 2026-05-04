@@ -50,15 +50,18 @@ func ParseIsolationMode(value string) (IsolationMode, bool) {
 }
 
 // DesiredBaseline returns the baseline NetworkPolicy for a namespace given
-// the desired ingress-isolation mode. Returns nil for IsolationNone (the
-// caller should ensure no baseline exists in that case).
+// the desired ingress-isolation mode. Always returns a non-nil policy for
+// every IsolationMode — the baseline expresses the namespace's "outer
+// boundary" for ingress, which is well-defined even in IsolationNone (where
+// the boundary is "everywhere"). See ADR 0029.
 //
 // The baseline carries `policyTypes: [Ingress]` only — egress is never
 // restricted by kube-vnet. See ADR 0025.
+//
+// Callers that want "no kube-vnet objects in this namespace" must check
+// IsManaged separately; the disabled-namespaces path bypasses
+// DesiredBaseline entirely.
 func DesiredBaseline(ns string, mode IsolationMode) *networkingv1.NetworkPolicy {
-	if mode == IsolationNone {
-		return nil
-	}
 	policy := &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: networkingv1.SchemeGroupVersion.String(),
@@ -78,6 +81,17 @@ func DesiredBaseline(ns string, mode IsolationMode) *networkingv1.NetworkPolicy 
 		},
 	}
 	switch mode {
+	case IsolationNone:
+		// One empty ingress rule = "allow all sources on all ports" per
+		// the K8s NetworkPolicy spec ("An empty NetworkPolicyIngressRule
+		// matches all traffic"). Note: a NetworkPolicyPeer cannot itself
+		// be empty (the apiserver rejects `from: [{}]`); the right idiom
+		// is to leave both `from` and `ports` unset on the rule.
+		// Functionally indistinguishable from "no policy" — present so
+		// the namespace's mode is visible in `kubectl get netpol` and so
+		// the additive union with vnet membership policies stays
+		// "everywhere" (model: mode is the namespace's outer boundary).
+		policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{}}
 	case IsolationNamespace:
 		policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{
 			From: []networkingv1.NetworkPolicyPeer{{

@@ -8,9 +8,31 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestDesiredBaseline_None(t *testing.T) {
-	if p := DesiredBaseline("platform", IsolationNone); p != nil {
-		t.Fatalf("IsolationNone should return nil, got %+v", p)
+func TestDesiredBaseline_None_AllowAll(t *testing.T) {
+	p := DesiredBaseline("platform", IsolationNone)
+	if p == nil {
+		t.Fatalf("IsolationNone should return an allow-all baseline, got nil")
+	}
+	if p.Name != BaselinePolicyName || p.Namespace != "platform" {
+		t.Errorf("got %s/%s", p.Namespace, p.Name)
+	}
+	if p.Labels[LabelManagedBy] != LabelManagedByValue || p.Labels[LabelRole] != LabelRoleBaseline {
+		t.Errorf("missing labels: %v", p.Labels)
+	}
+	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
+		t.Errorf("policyTypes should be [Ingress] only, got %v", p.Spec.PolicyTypes)
+	}
+	// Allow-all is expressed as one empty ingress rule (no `from`, no `ports`),
+	// per K8s NetworkPolicy semantics. NetworkPolicyPeer can't itself be empty.
+	if len(p.Spec.Ingress) != 1 {
+		t.Fatalf("expected one ingress rule, got %d: %+v", len(p.Spec.Ingress), p.Spec.Ingress)
+	}
+	rule := p.Spec.Ingress[0]
+	if len(rule.From) != 0 || len(rule.Ports) != 0 {
+		t.Errorf("allow-all rule must have empty From and Ports, got %+v", rule)
+	}
+	if len(p.Spec.Egress) != 0 {
+		t.Errorf("baseline should not restrict egress, got %+v", p.Spec.Egress)
 	}
 }
 

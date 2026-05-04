@@ -55,10 +55,14 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
 	flag.StringVar(&labelPrefix, "label-prefix", controller.DefaultLabelPrefix, "label prefix for join labels (must end with /)")
-	flag.StringVar(&disabledNamespaces, "disabled-namespaces", "",
+	flag.StringVar(&disabledNamespaces, "disabled-namespaces",
+		"kube-system,kube-public,kube-node-lease",
 		"comma-separated namespaces the operator never touches (no baseline, no "+
 			"membership policies, pods not eligible peers, bindings ignored). "+
-			"Mirrors the per-namespace kube-vnet/disabled=true annotation.",
+			"Mirrors the per-namespace kube-vnet/disabled=true annotation. "+
+			"Default protects the system namespaces from kube-vnet objects "+
+			"entirely; remove a namespace from this list to enroll its pods in "+
+			"a vnet.",
 	)
 	flag.StringVar(&ingressIsolationMode, "ingress-isolation", "",
 		"REQUIRED. Cluster-wide default ingress-isolation mode (none|namespace|pod). "+
@@ -66,12 +70,12 @@ func main() {
 			"the --ingress-isolation-{none,namespace,pod} override flags also win over this default. "+
 			"No default — pick deliberately. (Helm: operator.ingressIsolation.mode)",
 	)
-	flag.StringVar(&ingressIsolationNone, "ingress-isolation-none",
-		"kube-system,kube-public,kube-node-lease",
+	flag.StringVar(&ingressIsolationNone, "ingress-isolation-none", "",
 		"comma-separated namespaces overridden to ingress-isolation mode `none` "+
-			"(no baseline). Wins over --ingress-isolation; the per-namespace "+
-			"annotation still wins over this. Default protects the system "+
-			"namespaces from a non-`none` cluster-wide mode.",
+			"(allow-all baseline). Wins over --ingress-isolation; the per-namespace "+
+			"annotation still wins over this. Default empty — system namespaces "+
+			"are kept out of kube-vnet entirely via --disabled-namespaces, not via "+
+			"this override (which would still create an allow-all baseline).",
 	)
 	flag.StringVar(&ingressIsolationNS, "ingress-isolation-namespace", "",
 		"comma-separated namespaces overridden to ingress-isolation mode `namespace` "+

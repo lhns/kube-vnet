@@ -22,15 +22,23 @@ operator:
   # the per-namespace `kube-vnet/disabled=true` annotation. The Helm release
   # namespace is always added implicitly via POD_NAMESPACE.
   #
-  # Default empty: the system namespaces (kube-system, kube-public,
-  # kube-node-lease) are not here. They live in
-  # ingressIsolation.namespaceOverrides.none below so the operator still
-  # discovers any deliberate joiner there.
-  disabledNamespaces: []
+  # Default lists the system namespaces (kube-system, kube-public,
+  # kube-node-lease). The operator stays out entirely there — no policies,
+  # not even an allow-all baseline. To enroll a system-namespace pod in a
+  # vnet, remove the namespace from this list (and consider whether you
+  # want it in ingressIsolation.namespaceOverrides.none or .namespace
+  # instead, since membership requires the operator to manage the NS).
+  disabledNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
 
   ingressIsolation:
     # REQUIRED. One of: none | namespace | pod.
-    #   none      — no baseline; ingress unrestricted by kube-vnet.
+    #   none      — baseline allows ingress from anywhere; ingress
+    #               effectively unrestricted by kube-vnet (the baseline is
+    #               functionally invisible but its presence makes the mode
+    #               visible in `kubectl get netpol`).
     #   namespace — baseline allows ingress from same-namespace pods.
     #   pod       — baseline denies all ingress; only vnet membership policies
     #               grant allows.
@@ -42,14 +50,11 @@ operator:
     # `kube-vnet/ingress-isolation` annotation still takes precedence over
     # both `mode` and these lists.
     #
-    # Default puts the three system namespaces in `none` so a non-`none`
-    # cluster-wide mode never lands a deny-all baseline on the control
-    # plane. Override or extend as needed.
+    # All three lists default to empty. System namespaces are kept out via
+    # `disabledNamespaces` above (operator stays out entirely), not via the
+    # `none` override here (which would still create an allow-all baseline).
     namespaceOverrides:
-      none:
-        - kube-system
-        - kube-public
-        - kube-node-lease
+      none: []
       namespace: []
       pod: []
   # Enable leader election. Recommended on; harmless overhead with one replica

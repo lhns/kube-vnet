@@ -12,6 +12,26 @@ release. Pinning to an exact version is recommended.
 
 ### Breaking
 
+- **Mode=none now materializes an allow-all baseline.** Previously, a managed
+  namespace with `ingress-isolation=none` had no `kube-vnet`-owned baseline
+  policy. As of this release, mode=none generates a baseline whose ingress
+  rule is empty (the K8s idiom for "allow all sources, all ports"). Traffic
+  outcome is identical for non-member pods. Vnet member pods in mode=none
+  are no longer over-restricted: their effective ingress is now correctly
+  "allow-all ∪ vnet peers = allow-all," consistent with the outer-boundary
+  model used by the other modes. **Visible effect**: `kubectl get netpol -A`
+  in a mode=none namespace now lists one additional `kube-vnet` policy. See
+  [ADR 0029](docs/adr/0029-allow-all-baseline-and-system-ns-disabled.md).
+- **System namespaces are `disabled` by default again.** `kube-system`,
+  `kube-public`, and `kube-node-lease` move from
+  `operator.ingressIsolation.namespaceOverrides.none` (chart) /
+  `--ingress-isolation-none` (CLI) into `operator.disabledNamespaces` /
+  `--disabled-namespaces`. Net effect on most clusters: zero — those
+  namespaces remain free of kube-vnet objects. Users who *relied* on the
+  previous default to enroll a system-namespace pod in a vnet must remove
+  the relevant namespace from `disabledNamespaces`. ADR 0029 supersedes the
+  default-placement choice in ADR 0023; the decoupling principle in 0023
+  is unchanged.
 - **NetworkPolicy names changed.** The previous `kube-vnet-<vnet>-<ns>[-prefixed]`
   / `kube-vnet-<vnet>-b-<binding>` / `kube-vnet-default-deny` scheme allowed
   collisions (e.g. baseline vs membership where vnet=`default` and ns=`deny`,

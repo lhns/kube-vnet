@@ -55,15 +55,10 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	mode := IsolationNone
-	if r.NSFilter.IsManaged(ns) {
-		mode = r.NSFilter.ResolveIsolation(ns)
-	}
-
-	desired := DesiredBaseline(ns.Name, mode)
-	if desired == nil {
-		// No baseline wanted in this namespace. Sweep any leftover (current
-		// name and any legacy/stale-named baselines).
+	// Disabled namespaces get no kube-vnet objects at all — bypass
+	// DesiredBaseline (which now always returns a non-nil policy) and sweep
+	// any leftovers.
+	if !r.NSFilter.IsManaged(ns) {
 		var existing networkingv1.NetworkPolicyList
 		if err := r.List(ctx, &existing,
 			client.InNamespace(ns.Name),
@@ -78,6 +73,9 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
+
+	mode := r.NSFilter.ResolveIsolation(ns)
+	desired := DesiredBaseline(ns.Name, mode)
 
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,
