@@ -6,7 +6,10 @@ import (
 )
 
 // BaselinePolicyName is the name of the operator-managed default-deny baseline.
-const BaselinePolicyName = "kube-vnet-default-deny"
+// Per-namespace singleton — namespace scoping handles uniqueness, so no hash
+// suffix is needed. Distinct from every membership/binding name (those all
+// add `-<vnet>...`), so user-chosen vnet/ns combinations cannot collide here.
+const BaselinePolicyName = "kube-vnet"
 
 // IsolationMode is the per-namespace ingress-isolation level.
 //

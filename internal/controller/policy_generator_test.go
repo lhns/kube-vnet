@@ -53,8 +53,9 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 		t.Fatalf("expected 1 policy, got %d", len(out.Policies))
 	}
 	p := out.Policies[0]
-	if p.Namespace != "platform" || p.Name != "kube-vnet-payments-platform" {
-		t.Errorf("unexpected name/ns: %s/%s", p.Namespace, p.Name)
+	wantName := PolicyName("payments", "platform")
+	if p.Namespace != "platform" || p.Name != wantName {
+		t.Errorf("unexpected name/ns: %s/%s want platform/%s", p.Namespace, p.Name, wantName)
 	}
 	if p.Labels[LabelManagedBy] != LabelManagedByValue || p.Labels[LabelNetwork] != "platform.payments" {
 		t.Errorf("unexpected labels: %v", p.Labels)
@@ -162,8 +163,9 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	}
 
 	p := summarize(&out.Policies[0])
-	if out.Policies[0].Name != "kube-vnet-payments-platform" {
-		t.Errorf("policy name=%q want kube-vnet-payments-platform (legacy unsuffixed)", out.Policies[0].Name)
+	wantName := PolicyName("payments", "platform")
+	if out.Policies[0].Name != wantName {
+		t.Errorf("policy name=%q want %q", out.Policies[0].Name, wantName)
 	}
 	if !equalStringSlice(p.podSelectorValues, []string{"true", "both", "ingress"}) {
 		t.Errorf("podSelector values=%v want [true both ingress]", p.podSelectorValues)
@@ -173,7 +175,7 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	}
 	// The -ingress suffixed policy from the pre-merge era must NOT exist.
 	for i := range out.Policies {
-		if name := out.Policies[i].Name; name != "kube-vnet-payments-platform" {
+		if name := out.Policies[i].Name; name != wantName {
 			t.Errorf("unexpected extra policy %q (the merge should produce exactly one)", name)
 		}
 	}
@@ -216,14 +218,17 @@ func TestGenerate_LongFormInHome(t *testing.T) {
 	if len(out.Policies) != 2 {
 		t.Fatalf("expected 2 policies (bare + prefixed), got %d", len(out.Policies))
 	}
+	wantBare := PolicyName("payments", "platform")
+	wantPref := PolicyNameFor("payments", "platform", KeyPrefixed)
 	var bare, pref *summaryByName
 	for i := range out.Policies {
 		p := &out.Policies[i]
 		s := &summaryByName{name: p.Name, key: p.Spec.PodSelector.MatchExpressions[0].Key}
-		if strings.HasSuffix(p.Name, "-prefixed") {
-			pref = s
-		} else {
+		switch p.Name {
+		case wantBare:
 			bare = s
+		case wantPref:
+			pref = s
 		}
 	}
 	if bare == nil || bare.key != "kube-vnet/net.payments" {
@@ -247,8 +252,9 @@ func TestGenerate_LongFormInHome_OnlyPrefixed(t *testing.T) {
 		t.Fatalf("expected 1 policy, got %d", len(out.Policies))
 	}
 	p := out.Policies[0]
-	if p.Name != "kube-vnet-payments-platform-prefixed" {
-		t.Errorf("name=%s want kube-vnet-payments-platform-prefixed", p.Name)
+	wantName := PolicyNameFor("payments", "platform", KeyPrefixed)
+	if p.Name != wantName {
+		t.Errorf("name=%s want %s", p.Name, wantName)
 	}
 	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.platform.payments" {
 		t.Errorf("podSelector key=%s", got)
@@ -270,8 +276,9 @@ func TestGenerate_Binding_EmitsPerBindingPolicy(t *testing.T) {
 		t.Fatalf("expected 1 policy, got %d", len(out.Policies))
 	}
 	p := out.Policies[0]
-	if p.Namespace != "webapp" || p.Name != "kube-vnet-payments-b-thirdparty" {
-		t.Errorf("policy ns/name = %s/%s", p.Namespace, p.Name)
+	wantName := BindingPolicyName("platform", "payments", "webapp", "thirdparty")
+	if p.Namespace != "webapp" || p.Name != wantName {
+		t.Errorf("policy ns/name = %s/%s want webapp/%s", p.Namespace, p.Name, wantName)
 	}
 	if v := p.Labels[LabelBinding]; v != "thirdparty" {
 		t.Errorf("LabelBinding=%q", v)
@@ -305,9 +312,10 @@ func TestGenerate_Binding_AddsPeerEntryToLabelDrivenPolicy(t *testing.T) {
 	if len(out.Policies) != 2 {
 		t.Fatalf("expected 2 policies (label + binding), got %d", len(out.Policies))
 	}
+	wantLabelPolicyName := PolicyName("payments", "platform")
 	var labelPolicy *networkingv1.NetworkPolicy
 	for i := range out.Policies {
-		if out.Policies[i].Name == "kube-vnet-payments-platform" {
+		if out.Policies[i].Name == wantLabelPolicyName {
 			labelPolicy = &out.Policies[i]
 		}
 	}
@@ -337,6 +345,84 @@ func TestPolicyName_TruncatesWithHash(t *testing.T) {
 	}
 	if got != PolicyName(long, long) {
 		t.Errorf("not deterministic")
+	}
+}
+
+// TestPolicyNames_NoCollisions covers the input pairs that produced
+// identical names under the old <vnet>-<ns> scheme. The current scheme
+// (type-letter shape + 8-hex identity hash) must produce distinct names.
+func TestPolicyNames_NoCollisions(t *testing.T) {
+	cases := []struct {
+		desc string
+		a, b string
+	}{
+		{
+			desc: "baseline vs membership where vnet=default ns=deny",
+			a:    BaselinePolicyName,
+			b:    PolicyName("default", "deny"),
+		},
+		{
+			desc: "vnet=foo ns=bar-baz vs vnet=foo-bar ns=baz (bare form)",
+			a:    PolicyName("foo", "bar-baz"),
+			b:    PolicyName("foo-bar", "baz"),
+		},
+		{
+			desc: "binding (vnet=v, binding=x in ns=n) vs prefixed membership where vnet=v homeNS=n",
+			a:    BindingPolicyName("n", "v", "n", "x"),
+			b:    PolicyNameFor("v", "n", KeyPrefixed),
+		},
+		{
+			desc: "home-NS prefixed (vnet=v homeNS=x) vs membership where homeNS=x-prefixed (would collide under old -prefixed suffix)",
+			a:    PolicyNameFor("v", "x", KeyPrefixed),
+			b:    PolicyName("v", "x-prefixed"),
+		},
+		{
+			desc: "two bindings on same vnet but different binding names",
+			a:    BindingPolicyName("home", "vnet", "ns", "alpha"),
+			b:    BindingPolicyName("home", "vnet", "ns", "beta"),
+		},
+		{
+			desc: "same binding name in two namespaces",
+			a:    BindingPolicyName("home", "vnet", "ns-a", "x"),
+			b:    BindingPolicyName("home", "vnet", "ns-b", "x"),
+		},
+	}
+	for _, c := range cases {
+		if c.a == c.b {
+			t.Errorf("%s: collision on %q", c.desc, c.a)
+		}
+	}
+}
+
+func TestPolicyNames_StableAcrossCalls(t *testing.T) {
+	// Identity hashing must be deterministic — same inputs, same name.
+	if PolicyName("v", "n") != PolicyName("v", "n") {
+		t.Error("PolicyName not deterministic")
+	}
+	if PolicyNameFor("v", "n", KeyPrefixed) != PolicyNameFor("v", "n", KeyPrefixed) {
+		t.Error("PolicyNameFor not deterministic")
+	}
+	if BindingPolicyName("h", "v", "bn", "b") != BindingPolicyName("h", "v", "bn", "b") {
+		t.Error("BindingPolicyName not deterministic")
+	}
+}
+
+func TestPolicyNames_Shape(t *testing.T) {
+	// Document the expected name shapes (regression guard).
+	if got := BaselinePolicyName; got != "kube-vnet" {
+		t.Errorf("baseline = %q want kube-vnet", got)
+	}
+	bare := PolicyName("payments", "platform")
+	if !strings.HasPrefix(bare, "kube-vnet-payments-") {
+		t.Errorf("bare shape: %q", bare)
+	}
+	pref := PolicyNameFor("payments", "platform", KeyPrefixed)
+	if !strings.HasPrefix(pref, "kube-vnet-platform.payments-") {
+		t.Errorf("prefixed shape: %q", pref)
+	}
+	bind := BindingPolicyName("platform", "payments", "webapp", "thirdparty")
+	if !strings.HasPrefix(bind, "kube-vnet-platform.payments.b.thirdparty-") {
+		t.Errorf("binding shape: %q", bind)
 	}
 }
 

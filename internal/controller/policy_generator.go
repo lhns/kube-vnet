@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
+	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -160,31 +161,52 @@ func JoinLabelKeyByForm(prefix, homeNS, vnet string, form KeyForm) string {
 	return prefix + "net." + homeNS + "." + vnet
 }
 
-// PolicyName returns the deterministic NetworkPolicy name for (vnet, ns) in
-// the bidirectional / bare-form case. Truncated with a hash suffix if the
-// result exceeds 253 characters.
+// PolicyName returns the deterministic NetworkPolicy name for the bare-form
+// membership policy of (vnet, homeNS). Shape: `kube-vnet-<vnet>-<8hex>`
+// where the hash disambiguates against collisions arising from `-`
+// being valid inside vnet/namespace names.
 //
-// For other direction classes or the long-form-in-home case, see
-// PolicyNameFor.
-func PolicyName(vnet, ns string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-%s", vnet, ns))
+// Bare-form policies only exist in the vnet's home namespace; the policy's
+// `metadata.namespace` is implicitly homeNS, so it doesn't appear in the name.
+func PolicyName(vnet, homeNS string) string {
+	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-%s",
+		vnet, policyHash("bare", homeNS, vnet)))
 }
 
 // PolicyNameFor returns the deterministic NetworkPolicy name for a given
-// (vnet, ns, key form). Preserves the legacy unsuffixed name
-// (`kube-vnet-<vnet>-<ns>`) for the bare-form case so existing installs
-// don't see policy renames. The home namespace's long-form variant gets a
-// `-prefixed` suffix.
+// (vnet, homeNS, key form). Shapes:
+//
+//	bare:     kube-vnet-<vnet>-<8hex>
+//	prefixed: kube-vnet-<homeNS>.<vnet>-<8hex>
+//
+// The prefixed shape mirrors the join-label key `kube-vnet/net.<homeNS>.<vnet>`,
+// using `.` as a separator (forbidden inside DNS-1123 labels, so unambiguous).
+// The hash disambiguates internal-component boundaries within either shape.
 //
 // All receiver-capable direction classes (`both` and `ingress`) share a
 // single self-policy per (ns, form). `egress`-only members produce no
 // self-policy. See ADR 0021 (Addendum) for the consolidation rationale.
-func PolicyNameFor(vnet, ns, homeNS string, form KeyForm) string {
-	suffix := ""
-	if ns == homeNS && form == KeyPrefixed {
-		suffix = "-prefixed"
+func PolicyNameFor(vnet, homeNS string, form KeyForm) string {
+	if form == KeyBare {
+		return PolicyName(vnet, homeNS)
 	}
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-%s%s", vnet, ns, suffix))
+	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s.%s-%s",
+		homeNS, vnet, policyHash("prefixed", homeNS, vnet)))
+}
+
+// policyHash returns an 8-hex-char identity hash for collision-safe naming.
+// Inputs are joined with `\x00` — forbidden in DNS-1123 labels and Kubernetes
+// resource names — so distinct (parts...) tuples always produce distinct
+// pre-hash strings. SHA-256 is overkill for collision avoidance at this size
+// but matches what `truncatePolicyName` already uses for overflow disambiguation.
+//
+// This is an *identity* hash (inputs are class + identifying fields), not a
+// content hash of the rendered NetworkPolicy spec. Names stay stable across
+// membership churn so the reconciler's server-side apply patches the existing
+// object instead of churning delete+create.
+func policyHash(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return hex.EncodeToString(sum[:4])
 }
 
 func truncatePolicyName(name string) string {
@@ -414,7 +436,7 @@ func Generate(in GenerateInput) GenerateOutput {
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: ns,
-					Name:      PolicyNameFor(vnet.Name, ns, homeNS, form),
+					Name:      PolicyNameFor(vnet.Name, homeNS, form),
 					Labels: map[string]string{
 						LabelManagedBy: LabelManagedByValue,
 						LabelNetwork:   netID,
@@ -471,7 +493,7 @@ func Generate(in GenerateInput) GenerateOutput {
 				},
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: ns,
-					Name:      BindingPolicyName(vnet.Name, b.Name),
+					Name:      BindingPolicyName(homeNS, vnet.Name, ns, b.Name),
 					Labels: map[string]string{
 						LabelManagedBy: LabelManagedByValue,
 						LabelNetwork:   netID,
@@ -500,9 +522,17 @@ func Generate(in GenerateInput) GenerateOutput {
 const LabelBinding = "kube-vnet/binding"
 
 // BindingPolicyName returns the deterministic policy name for a
-// VirtualNetworkBinding-driven membership policy.
-func BindingPolicyName(vnet, binding string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s-b-%s", vnet, binding))
+// VirtualNetworkBinding-driven membership policy. Shape:
+//
+//	kube-vnet-<homeNS>.<vnet>.b.<binding>-<8hex>
+//
+// The `.b.` marker distinguishes binding policies from prefixed-form
+// membership (`kube-vnet-<homeNS>.<vnet>-<hash>`). The hash disambiguates
+// against pathological inputs where `.` parsing could otherwise be ambiguous.
+func BindingPolicyName(homeNS, vnet, bindingNS, binding string) string {
+	return truncatePolicyName(fmt.Sprintf("kube-vnet-%s.%s.b.%s-%s",
+		homeNS, vnet, binding,
+		policyHash("binding", homeNS, vnet, bindingNS, binding)))
 }
 
 func ptrTrue() *bool { b := true; return &b }

@@ -32,7 +32,7 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	mustCreate(t, pod)
 
 	eventually(t, 10*time.Second, func() error {
-		p, err := findPolicy(ctx, ns, "kube-vnet-payments-"+ns)
+		p, err := findPolicy(ctx, ns, PolicyName("payments", ns))
 		if err != nil {
 			return err
 		}
@@ -67,7 +67,7 @@ func TestIntegration_Baseline_NoLongerImplicitOnMember(t *testing.T) {
 
 	// Wait long enough for the membership policy to be applied …
 	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
 	// … and verify the baseline was NOT installed (default isolation mode is none).
@@ -117,8 +117,8 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 	}))
 
 	eventually(t, 10*time.Second, func() error {
-		homeKey := "kube-vnet-shared-" + home
-		foreignKey := "kube-vnet-shared-" + foreign
+		homeKey := PolicyName("shared", home)
+		foreignKey := PolicyNameFor("shared", home, KeyPrefixed)
 		hp, err := findPolicy(ctx, home, homeKey)
 		if err != nil {
 			return err
@@ -195,10 +195,10 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 
 	// Wait for both policies to exist.
 	eventually(t, 10*time.Second, func() error {
-		if _, err := findPolicy(ctx, home, "kube-vnet-doomed-"+home); err != nil {
+		if _, err := findPolicy(ctx, home, PolicyName("doomed", home)); err != nil {
 			return err
 		}
-		if _, err := findPolicy(ctx, foreign, "kube-vnet-doomed-"+foreign); err != nil {
+		if _, err := findPolicy(ctx, foreign, PolicyNameFor("doomed", home, KeyPrefixed)); err != nil {
 			return err
 		}
 		return nil
@@ -210,10 +210,10 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 
 	// Both policies should disappear.
 	eventually(t, 10*time.Second, func() error {
-		if _, err := findPolicy(ctx, home, "kube-vnet-doomed-"+home); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, home, PolicyName("doomed", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("home policy still exists: err=%v", err)
 		}
-		if _, err := findPolicy(ctx, foreign, "kube-vnet-doomed-"+foreign); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, foreign, PolicyNameFor("doomed", home, KeyPrefixed)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("foreign policy still exists: err=%v", err)
 		}
 		return nil
@@ -229,7 +229,7 @@ func TestIntegration_DriftCorrection(t *testing.T) {
 	})
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
-	policyName := "kube-vnet-v-" + ns
+	policyName := PolicyName("v", ns)
 	eventually(t, 10*time.Second, func() error {
 		_, err := findPolicy(ctx, ns, policyName)
 		return err
@@ -274,7 +274,7 @@ func TestIntegration_DriftCorrection_Membership_DeleteRestores(t *testing.T) {
 	})
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
-	policyName := "kube-vnet-v-" + ns
+	policyName := PolicyName("v", ns)
 	eventually(t, 10*time.Second, func() error {
 		_, err := findPolicy(ctx, ns, policyName)
 		return err
@@ -365,7 +365,7 @@ func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 
 	// Wait long enough for several reconciles, then verify nothing was created.
 	time.Sleep(2 * time.Second)
-	if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns); !apierrors.IsNotFound(err) {
+	if _, err := findPolicy(ctx, ns, PolicyName("v", ns)); !apierrors.IsNotFound(err) {
 		t.Errorf("membership policy should not exist in disabled ns: err=%v", err)
 	}
 	bp := &networkingv1.NetworkPolicy{}
@@ -430,7 +430,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 
 	eventually(t, 10*time.Second, func() error {
 		// Prod produces a policy with the prefixed key.
-		pp, err := findPolicy(ctx, prod, "kube-vnet-selvnet-"+prod)
+		pp, err := findPolicy(ctx, prod, PolicyNameFor("selvnet", home, KeyPrefixed))
 		if err != nil {
 			return err
 		}
@@ -439,7 +439,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 			return fmt.Errorf("prod policy key=%s want %s", got, want)
 		}
 		// Dev does NOT produce a policy.
-		if _, err := findPolicy(ctx, dev, "kube-vnet-selvnet-"+dev); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, dev, PolicyNameFor("selvnet", home, KeyPrefixed)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("dev policy should not exist; err=%v", err)
 		}
 		// Vnet status: Degraded=True with reason InvalidJoiners (the dev pod).
@@ -469,7 +469,7 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 
 	// Wait for the policy to appear.
 	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
 	// And the vnet to record the member in status.
@@ -575,7 +575,7 @@ func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
 		t.Fatalf("delete vnet: %v", err)
 	}
 	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
@@ -601,7 +601,7 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 	})
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
 
-	policyName := "kube-vnet-v-" + ns
+	policyName := PolicyName("v", ns)
 	eventually(t, 10*time.Second, func() error {
 		_, err := findPolicy(ctx, ns, policyName)
 		return err
@@ -728,7 +728,7 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 		}
 		// And the policy in foreign uses the prefixed join key as its selector,
 		// which by construction won't match bystander's labels.
-		fp, err := findPolicy(ctx, foreign, "kube-vnet-shared-"+foreign)
+		fp, err := findPolicy(ctx, foreign, PolicyNameFor("shared", home, KeyPrefixed))
 		if err != nil {
 			return err
 		}
@@ -813,7 +813,7 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	// (ADR 0021 Addendum). Both `bidi` and `ingr` pods are covered; `egr`
 	// gets no self-policy.
 	eventually(t, 10*time.Second, func() error {
-		p, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		p, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		if err != nil {
 			return err
 		}
@@ -826,7 +826,7 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	})
 	// No -ingress / -egress suffixed self-policies after the merge.
 	for _, suffix := range []string{"-ingress", "-egress"} {
-		if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+suffix); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, ns, PolicyName("v", ns)+suffix); !apierrors.IsNotFound(err) {
 			t.Errorf("policy with suffix %q must not exist after the merge: err=%v", suffix, err)
 		}
 	}
@@ -844,11 +844,11 @@ func TestIntegration_DirectionEnum_TrueAliasIsBoth(t *testing.T) {
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
 
 	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
 	// And no -ingress / -egress suffixed variants.
-	if _, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-ingress"); !apierrors.IsNotFound(err) {
+	if _, err := findPolicy(ctx, ns, PolicyName("v", ns)+"-ingress"); !apierrors.IsNotFound(err) {
 		t.Errorf("ingress policy should not exist for true-only members: %v", err)
 	}
 }
@@ -897,7 +897,7 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 
 	eventually(t, 10*time.Second, func() error {
 		// The -prefixed policy is what matches this pod.
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns+"-prefixed")
+		_, err := findPolicy(ctx, ns, PolicyNameFor("v", ns, KeyPrefixed))
 		return err
 	})
 	// And status should list the pod as a member.
@@ -1258,7 +1258,7 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 
 	// Wait for the membership policy to land for the real member.
 	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, "kube-vnet-v-"+ns)
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
 
