@@ -142,3 +142,161 @@ func TestIntegration_Resolution_VirtualNetworkBindingStamped(t *testing.T) {
 		return nil
 	})
 }
+
+// TestIntegration_Resolution_BindingConflictTiebreaker: two
+// VirtualNetworkBindings in the same NS, with overlapping podSelectors and
+// disagreeing directions. The alphabetical-by-name winner stamps the
+// system label.
+func TestIntegration_Resolution_BindingConflictTiebreaker(t *testing.T) {
+	setOperatorDefaults(t, nil)
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-conflict")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+
+	// Both bindings select the same pod for the same vnet; "a-allow" wins
+	// alphabetically over "b-deny".
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "b-deny", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+			Direction:         "ingress",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "a-allow", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p"}))
+
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		// "a-allow" with direction=both wins alphabetically.
+		if got := p.Labels["kube-vnet.system/net.v"]; got != "both" {
+			return fmt.Errorf("v label = %q, want both (alphabetical winner from a-allow); labels=%v", got, p.Labels)
+		}
+		return nil
+	})
+}
+
+// TestIntegration_Resolution_ClusterBindingNamespaceSelector: a CVNB with a
+// namespaceSelector matches pods only in the matching namespaces.
+func TestIntegration_Resolution_ClusterBindingNamespaceSelector(t *testing.T) {
+	setOperatorDefaults(t, nil)
+
+	ctx := context.Background()
+	matched := uniqueNS(t, "res-cvnb-match")
+	unmatched := uniqueNS(t, "res-cvnb-skip")
+	mustCreate(t, makeNamespace(matched, nil, map[string]string{"tier": "prod"}))
+	mustCreate(t, makeNamespace(unmatched, nil, map[string]string{"tier": "dev"}))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: matched},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{All: true},
+		},
+	})
+	cvnb := &vnetv1alpha1.ClusterVirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: uniqueNS(t, "prod-only-cvnb")},
+		Spec: vnetv1alpha1.ClusterVirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "shared", Namespace: matched},
+			Direction:         "both",
+			NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
+			PodSelector:       metav1.LabelSelector{},
+		},
+	}
+	mustCreate(t, cvnb)
+	t.Cleanup(func() { _ = testClient.Delete(ctx, cvnb) })
+
+	mustCreate(t, makePod(matched, "p1", map[string]string{"app": "x"}))
+	mustCreate(t, makePod(unmatched, "p2", map[string]string{"app": "x"}))
+
+	// Matched-NS pod is bare-form because its namespace is the vnet's home.
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: matched, Name: "p1"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels["kube-vnet.system/net.shared"]; got != "both" {
+			return fmt.Errorf("matched-NS pod missing label: %v", p.Labels)
+		}
+		return nil
+	})
+
+	// Unmatched-NS pod must not get the system label (foreign-NS would use
+	// the prefixed form `<homeNS>.shared`; check both forms are absent).
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: unmatched, Name: "p2"}, p); err != nil {
+		t.Fatalf("get unmatched pod: %v", err)
+	}
+	prefixedKey := "kube-vnet.system/net." + matched + ".shared"
+	if _, ok := p.Labels["kube-vnet.system/net.shared"]; ok {
+		t.Errorf("unmatched-NS pod should not have bare label, got %v", p.Labels)
+	}
+	if _, ok := p.Labels[prefixedKey]; ok {
+		t.Errorf("unmatched-NS pod should not have prefixed label %q, got %v", prefixedKey, p.Labels)
+	}
+}
+
+// TestIntegration_Resolution_BindingDeletionStripsLabel: when a VNB is
+// deleted, the system labels it caused to be stamped are removed from the
+// affected pods.
+func TestIntegration_Resolution_BindingDeletionStripsLabel(t *testing.T) {
+	setOperatorDefaults(t, nil)
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-bdel")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	binding := &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "stamper", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	}
+	mustCreate(t, binding)
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p"}))
+
+	// Wait for the binding to stamp the label.
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels["kube-vnet.system/net.v"]; got != "both" {
+			return fmt.Errorf("not yet stamped: %v", p.Labels)
+		}
+		return nil
+	})
+
+	// Delete the binding; the label should be removed.
+	if err := testClient.Delete(ctx, binding); err != nil {
+		t.Fatalf("delete binding: %v", err)
+	}
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if _, ok := p.Labels["kube-vnet.system/net.v"]; ok {
+			return fmt.Errorf("label should have been stripped, got %v", p.Labels)
+		}
+		return nil
+	})
+}
