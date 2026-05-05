@@ -32,6 +32,16 @@ metadata:
   name: default
   annotations:
     helm.sh/resource-policy: keep
+    # Apply this CR in Helm's post-install / post-upgrade phase rather than
+    # alongside the main release manifest. Helm's discovery cache isn't
+    # always refreshed between installing the ClusterVirtualNetworkBaseline
+    # CRD (in the main phase) and applying CRs of that kind in the same
+    # release — fresh-install attempts (CI's e2e-helm lane and any first-
+    # time real install) hit "no matches for kind" otherwise. The hook
+    # runs after Helm refreshes discovery, guaranteeing the CRD exists.
+    # See ADR 0032 for the broader CRD-lifecycle reasoning.
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
   labels:
     {{- include "kube-vnet.labels" . | nindent 4 }}
 spec:

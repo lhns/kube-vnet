@@ -1,5 +1,5 @@
 # Generated from charts/kube-vnet/templates/system-vnet-vap.yaml by 'make render-kustomize-vaps'.
-# Do not edit by hand -- run the make target instead. ADR 0030.
+# Do not edit by hand -- run the make target instead. ADR 0031.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
