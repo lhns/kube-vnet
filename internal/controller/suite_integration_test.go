@@ -34,11 +34,13 @@ import (
 
 // Shared envtest fixture set up by TestMain. All integration tests share one apiserver.
 var (
-	testEnv         *envtest.Environment
-	testCfg         *rest.Config
-	testClient      client.Client
-	testScheme      = runtime.NewScheme()
-	testNSReconciler *NamespaceReconciler // exposed so tests can flip DefaultDenyEverywhere
+	testEnv                  *envtest.Environment
+	testCfg                  *rest.Config
+	testClient               client.Client
+	testScheme               = runtime.NewScheme()
+	testNSReconciler         *NamespaceReconciler // exposed so tests can flip DefaultDenyEverywhere
+	testResolutionReconciler *ResolutionReconciler
+	testResolutionDefaults   []OperatorMembership
 )
 
 func TestMain(m *testing.M) {
@@ -118,6 +120,20 @@ func TestMain(m *testing.M) {
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}
+
+	resReconciler := &ResolutionReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		NSFilter:         NewNamespaceFilter(nil),
+		LabelPrefix:      DefaultLabelPrefix,
+		OperatorDefaults: nil,
+	}
+	if err := resReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup resolution reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+	testResolutionReconciler = resReconciler
 
 	sysVnetReconciler := &SystemVnetReconciler{
 		Client:            mgr.GetClient(),

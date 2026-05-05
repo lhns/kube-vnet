@@ -184,6 +184,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	resReconciler := &controller.ResolutionReconciler{
+		Client:           mgr.GetClient(),
+		Scheme:           mgr.GetScheme(),
+		NSFilter:         nsFilter,
+		LabelPrefix:      labelPrefix,
+		OperatorDefaults: nil, // wired via --default-memberships in a later stage
+	}
+	if err := resReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up resolution reconciler")
+		os.Exit(1)
+	}
+
 	sysVnetReconciler := &controller.SystemVnetReconciler{
 		Client:            mgr.GetClient(),
 		APIReader:         mgr.GetAPIReader(),
