@@ -297,9 +297,18 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork,
 ) (members map[string]map[KeyForm]map[Direction][]string, invalid []InvalidJoiner, err error) {
 	members = map[string]map[KeyForm]map[Direction][]string{}
-	prefix := r.labelPrefix()
-	bareKey := prefix + "net." + vnet.Name
-	prefixedKey := prefix + "net." + vnet.Namespace + "." + vnet.Name
+	// Per ADR 0030, generator selectors read kube-vnet.system/net.<vnet>
+	// (operator-stamped by the resolution controller). User-authored
+	// kube-vnet/net.<vnet> labels are inputs to resolution.
+	// We additionally scan the USER-prefix labels here to surface invalid
+	// direction-value typos as InvalidJoiner — those don't propagate via
+	// resolution (the resolver silently skips invalid values).
+	bareKey := LabelSystemNetPrefix + vnet.Name
+	prefixedKey := LabelSystemNetPrefix + vnet.Namespace + "." + vnet.Name
+	userPrefix := r.labelPrefix()
+	userBareKey := userPrefix + "net." + vnet.Name
+	userPrefixedKey := userPrefix + "net." + vnet.Namespace + "." + vnet.Name
+	systemVnet := isSystemVnetName(vnet.Name)
 
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods); err != nil {
@@ -308,16 +317,89 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	for i := range pods.Items {
 		p := &pods.Items[i]
 
+		// Diagnostic scan on USER-prefix labels: typo / NS-excluded /
+		// NS-not-allowed surface here regardless of whether the resolution
+		// controller stamped system labels (in disabled namespaces it
+		// won't, so the only signal is the user-authored label).
+		userBareVal, hasUserBare := "", false
+		userPrefVal, hasUserPref := "", false
+		if p.Namespace == vnet.Namespace || systemVnet {
+			userBareVal, hasUserBare = p.Labels[userBareKey]
+		}
+		if !systemVnet {
+			if v, ok := p.Labels[userPrefixedKey]; ok {
+				userPrefVal, hasUserPref = v, true
+			}
+		}
+		if hasUserBare || hasUserPref {
+			// Typo check: any present user value must parse.
+			if hasUserBare {
+				if _, ok := ParseDirection(userBareVal); !ok {
+					invalid = append(invalid, InvalidJoiner{
+						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
+					})
+					continue
+				}
+			}
+			if hasUserPref {
+				if _, ok := ParseDirection(userPrefVal); !ok {
+					invalid = append(invalid, InvalidJoiner{
+						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
+					})
+					continue
+				}
+			}
+			// NS-excluded check: if the pod's namespace isn't managed,
+			// surface and don't proceed (resolution stripped the system
+			// labels there anyway).
+			ns, err := r.getNamespace(ctx, p.Namespace)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ns == nil || !r.NSFilter.IsManaged(ns) {
+				invalid = append(invalid, InvalidJoiner{
+					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceExcluded,
+				})
+				continue
+			}
+			// NS-not-allowed check for foreign namespaces.
+			if p.Namespace != vnet.Namespace && !systemVnet {
+				ok, err := r.permits(ctx, vnet, p.Namespace)
+				if err != nil {
+					return nil, nil, err
+				}
+				if !ok {
+					invalid = append(invalid, InvalidJoiner{
+						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceNotAllowed,
+					})
+					continue
+				}
+			}
+			// Diagnostic checks passed; fall through to system-label
+			// membership extraction below.
+		}
+
+		// Fail-closed during the resolution race window: a pod that has no
+		// resolved-generation annotation hasn't been processed by the
+		// resolution controller yet, so we exclude it from policy generation
+		// rather than risk emitting policies based on partial state.
+		if p.Annotations[AnnotationResolvedGeneration] == "" {
+			continue
+		}
+
 		// Find which forms the pod carries (and parse their direction values).
-		// The home namespace recognizes both forms; foreign namespaces only the
-		// prefixed form.
+		// User vnets: bare form valid only in the home namespace; prefixed
+		// form valid anywhere. System vnets ("namespace", "cluster"):
+		// resolution always stamps the bare form, regardless of namespace.
 		bareVal, hasBare := "", false
 		prefVal, hasPref := "", false
-		if p.Namespace == vnet.Namespace {
+		if p.Namespace == vnet.Namespace || systemVnet {
 			bareVal, hasBare = p.Labels[bareKey]
 		}
-		if v, ok := p.Labels[prefixedKey]; ok {
-			prefVal, hasPref = v, true
+		if !systemVnet {
+			if v, ok := p.Labels[prefixedKey]; ok {
+				prefVal, hasPref = v, true
+			}
 		}
 		if !hasBare && !hasPref {
 			continue
@@ -711,16 +793,19 @@ func summarizeInvalid(in []InvalidJoiner) string {
 }
 
 // HasJoinLabel reports whether obj carries at least one label key with the
-// kube-vnet join-label prefix `<labelPrefix>net.`. Used as the predicate
-// for both the VirtualNetworkReconciler's pod watch and the
-// JoinLabelDiagnosticReconciler's pod watch.
+// kube-vnet user-input prefix `<labelPrefix>net.` OR the operator-stamped
+// prefix `kube-vnet.system/net.`. Used as the predicate for the
+// VirtualNetworkReconciler's pod watch and the JoinLabelDiagnosticReconciler's
+// pod watch. The system prefix is included because the generator selects on
+// system-stamped labels (ADR 0030), so changes to them must enqueue the
+// affected vnet.
 func HasJoinLabel(obj client.Object, labelPrefix string) bool {
 	if obj == nil {
 		return false
 	}
-	keyPrefix := labelPrefix + "net."
+	userPrefix := labelPrefix + "net."
 	for k := range obj.GetLabels() {
-		if strings.HasPrefix(k, keyPrefix) {
+		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
 			return true
 		}
 	}
@@ -774,23 +859,38 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // podEventHandler returns a handler.Funcs that enqueues the union of vnets
 // referenced by a pod's old and new labels. This catches both adds and removes
 // of memberships without any in-memory cache.
+//
+// Two label prefixes are considered: the user-input prefix (`kube-vnet/net.`)
+// authored by users, and the operator-stamped prefix (`kube-vnet.system/net.`)
+// written by the resolution controller. The generator selects on the
+// system-prefixed labels, so changes to those must also re-enqueue the
+// affected vnet (per ADR 0030).
 func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.EventHandler {
+	enqueueOne := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS, suffix string) {
+		parts := strings.SplitN(suffix, ".", 2)
+		switch len(parts) {
+		case 1:
+			q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+				Namespace: podNS, Name: parts[0],
+			}})
+		case 2:
+			// System vnet `cluster` lives in the operator namespace, not in
+			// `parts[0]`. We enqueue the parsed namespace anyway — the
+			// reconciler tolerates "vnet doesn't exist" by returning early.
+			// Same for any prefixed-form key that happens to refer to a
+			// non-existent vnet.
+			q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+				Namespace: parts[0], Name: parts[1],
+			}})
+		}
+	}
 	enqueue := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS string, lbls map[string]string) {
 		for k := range lbls {
-			if !strings.HasPrefix(k, keyPrefix) {
-				continue
-			}
-			rest := strings.TrimPrefix(k, keyPrefix)
-			parts := strings.SplitN(rest, ".", 2)
-			switch len(parts) {
-			case 1:
-				q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-					Namespace: podNS, Name: parts[0],
-				}})
-			case 2:
-				q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
-					Namespace: parts[0], Name: parts[1],
-				}})
+			switch {
+			case strings.HasPrefix(k, keyPrefix):
+				enqueueOne(q, podNS, strings.TrimPrefix(k, keyPrefix))
+			case strings.HasPrefix(k, LabelSystemNetPrefix):
+				enqueueOne(q, podNS, strings.TrimPrefix(k, LabelSystemNetPrefix))
 			}
 		}
 	}

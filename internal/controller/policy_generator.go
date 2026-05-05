@@ -140,6 +140,9 @@ type GenerateOutput struct {
 // from inPodNS. For pods in the home namespace the bare form
 // "<prefix>net.<vnet>" works. The prefixed form
 // "<prefix>net.<homeNS>.<vnet>" works in any namespace including the home one.
+//
+// This is the user-facing input scheme. The resolution controller stamps the
+// equivalent under the operator-output prefix; see SystemLabelKey.
 func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
 	if inPodNS == homeNS {
 		return prefix + "net." + vnet
@@ -155,6 +158,20 @@ func JoinLabelKeyByForm(prefix, homeNS, vnet string, form KeyForm) string {
 		return prefix + "net." + vnet
 	}
 	return prefix + "net." + homeNS + "." + vnet
+}
+
+// SystemLabelKeyByForm is like JoinLabelKeyByForm but always emits keys under
+// the operator's `kube-vnet.system/net.` prefix. Used by the policy generator
+// to build NetworkPolicy podSelectors that match the labels stamped by the
+// resolution controller. See ADR 0030.
+//
+// System vnets ("namespace", "cluster") always use bare form regardless of
+// the form argument — resolution stamps them as bare for every pod.
+func SystemLabelKeyByForm(homeNS, vnet string, form KeyForm) string {
+	if isSystemVnetName(vnet) || form == KeyBare {
+		return LabelSystemNetPrefix + vnet
+	}
+	return LabelSystemNetPrefix + homeNS + "." + vnet
 }
 
 // PolicyName returns the deterministic NetworkPolicy name for the bare-form
@@ -341,7 +358,7 @@ func Generate(in GenerateInput) GenerateOutput {
 	}
 
 	makePeer := func(pk peerKey, values []string) networkingv1.NetworkPolicyPeer {
-		key := JoinLabelKeyByForm(prefix, homeNS, vnet.Name, pk.form)
+		key := SystemLabelKeyByForm(homeNS, vnet.Name, pk.form)
 		return networkingv1.NetworkPolicyPeer{
 			NamespaceSelector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{NamespaceMetadataNameLabel: pk.ns},
@@ -415,7 +432,7 @@ func Generate(in GenerateInput) GenerateOutput {
 			if !ok {
 				continue
 			}
-			selectorKey := JoinLabelKeyByForm(prefix, homeNS, vnet.Name, form)
+			selectorKey := SystemLabelKeyByForm(homeNS, vnet.Name, form)
 			// One self-policy per (ns, form), selecting all receiver-capable
 			// members (`both` and `ingress`, plus the legacy `true` alias).
 			// Direction `egress`-only members don't get a self-policy:

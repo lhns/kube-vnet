@@ -39,7 +39,7 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 		if p.Labels[LabelManagedBy] != LabelManagedByValue {
 			return fmt.Errorf("missing managed-by label")
 		}
-		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.payments" {
+		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.payments" {
 			return fmt.Errorf("podSelector key=%s", got)
 		}
 		// Membership policies are ingress-only (ADR 0025): one ingress allow
@@ -207,14 +207,14 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if got := hp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.shared" {
+		if got := hp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.shared" {
 			return fmt.Errorf("home key=%s", got)
 		}
 		fp, err := findPolicy(ctx, foreign, foreignKey)
 		if err != nil {
 			return err
 		}
-		if got := fp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net."+home+".shared" {
+		if got := fp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net."+home+".shared" {
 			return fmt.Errorf("foreign key=%s", got)
 		}
 		// Foreign policy must not have an owner ref (cross-namespace not supported).
@@ -518,7 +518,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := "kube-vnet/net." + home + ".selvnet"
+		want := "kube-vnet.system/net." + home + ".selvnet"
 		if got := pp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
 			return fmt.Errorf("prod policy key=%s want %s", got, want)
 		}
@@ -828,7 +828,7 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		want := "kube-vnet/net." + home + ".shared"
+		want := "kube-vnet.system/net." + home + ".shared"
 		if got := fp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
 			return fmt.Errorf("foreign policy selector key=%s want %s", got, want)
 		}

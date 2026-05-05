@@ -63,8 +63,8 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 	if len(p.OwnerReferences) != 1 || p.OwnerReferences[0].Name != "payments" {
 		t.Errorf("expected owner ref to payments")
 	}
-	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.payments" {
-		t.Errorf("podSelector key=%s want kube-vnet/net.payments", got)
+	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.payments" {
+		t.Errorf("podSelector key=%s want kube-vnet.system/net.payments", got)
 	}
 	if op := p.Spec.PodSelector.MatchExpressions[0].Operator; op != metav1.LabelSelectorOpIn {
 		t.Errorf("podSelector operator=%v want In", op)
@@ -96,7 +96,7 @@ func TestGenerate_TwoNamespaces(t *testing.T) {
 		t.Fatalf("expected 2 policies, got %d", len(out.Policies))
 	}
 	for _, p := range out.Policies {
-		want := "kube-vnet/net.monitoring.observability"
+		want := "kube-vnet.system/net.monitoring.observability"
 		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != want {
 			t.Errorf("ns=%s podSelector key=%s want %s", p.Namespace, got, want)
 		}
@@ -119,7 +119,7 @@ func TestGenerate_HomeAndForeignMixed(t *testing.T) {
 		p := &out.Policies[i]
 		switch p.Namespace {
 		case "monitoring":
-			if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.observability" {
+			if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.observability" {
 				t.Errorf("home selector key=%s want bare form", got)
 			}
 			if len(p.OwnerReferences) != 1 {
@@ -127,7 +127,7 @@ func TestGenerate_HomeAndForeignMixed(t *testing.T) {
 			}
 			sawHome = true
 		case "platform":
-			if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.monitoring.observability" {
+			if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.monitoring.observability" {
 				t.Errorf("foreign selector key=%s want prefixed form", got)
 			}
 			sawForeign = true
@@ -231,10 +231,10 @@ func TestGenerate_LongFormInHome(t *testing.T) {
 			pref = s
 		}
 	}
-	if bare == nil || bare.key != "kube-vnet/net.payments" {
+	if bare == nil || bare.key != "kube-vnet.system/net.payments" {
 		t.Errorf("bare policy missing or wrong key: %+v", bare)
 	}
-	if pref == nil || pref.key != "kube-vnet/net.platform.payments" {
+	if pref == nil || pref.key != "kube-vnet.system/net.platform.payments" {
 		t.Errorf("prefixed policy missing or wrong key: %+v", pref)
 	}
 }
@@ -256,7 +256,7 @@ func TestGenerate_LongFormInHome_OnlyPrefixed(t *testing.T) {
 	if p.Name != wantName {
 		t.Errorf("name=%s want %s", p.Name, wantName)
 	}
-	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet/net.platform.payments" {
+	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.platform.payments" {
 		t.Errorf("podSelector key=%s", got)
 	}
 }
