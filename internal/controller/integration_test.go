@@ -926,19 +926,13 @@ func TestIntegration_LongForm_BothInHome_Conflict(t *testing.T) {
 
 // ----- --default-deny-everywhere flag tests ---------------------------------
 
-// withDefaultDenyEverywhere flips the test reconciler's default isolation
-// mode for the duration of the test, then restores it. Implemented via the
-// new NamespaceFilter.DefaultIsolation field (the legacy boolean flag is
-// gone — see ADRs 0023 + 0025).
-func withDefaultDenyEverywhere(t *testing.T, on bool) {
+// withDefaultDenyEverywhere is a no-op kept only so the FlagOn_* tests still
+// compile. Under ADR 0030 the baseline is always present (deny-all) in every
+// managed namespace, so the legacy "flag on/off" knob doesn't exist anymore.
+// The tests below now exercise: namespace gets baseline; disabled-NS skips
+// baseline; annotation transitions remove baseline.
+func withDefaultDenyEverywhere(t *testing.T, _ bool) {
 	t.Helper()
-	prior := testNSReconciler.NSFilter.DefaultIsolation
-	if on {
-		testNSReconciler.NSFilter.DefaultIsolation = IsolationPod
-	} else {
-		testNSReconciler.NSFilter.DefaultIsolation = IsolationNone
-	}
-	t.Cleanup(func() { testNSReconciler.NSFilter.DefaultIsolation = prior })
 }
 
 // touchNamespace forces a reconcile of the namespace by issuing a no-op label

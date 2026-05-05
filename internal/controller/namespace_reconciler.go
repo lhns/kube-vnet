@@ -75,13 +75,12 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	mode := r.NSFilter.ResolveIsolation(ns)
-	desired := DesiredBaseline(ns.Name, mode, r.BaselineElideFor)
+	desired := DesiredBaseline(ns.Name, IsolationNone, r.BaselineElideFor)
 
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-		logger.Error(err, "apply baseline failed", "mode", string(mode))
+		logger.Error(err, "apply baseline failed")
 		return ctrl.Result{}, err
 	}
 

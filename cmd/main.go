@@ -116,35 +116,17 @@ func main() {
 	}
 	nsFilter := controller.NewNamespaceFilter(disabled)
 
-	if ingressIsolationMode == "" {
-		setupLog.Info("--ingress-isolation is required and was not set. " +
-			"Pick one of: none, namespace, pod. " +
-			"(Helm: set operator.ingressIsolation.mode in your values.)")
-		os.Exit(1)
-	}
-	mode, ok := controller.ParseIsolationMode(ingressIsolationMode)
-	if !ok {
-		setupLog.Info("invalid --ingress-isolation value, refusing to start", "value", ingressIsolationMode)
-		os.Exit(1)
-	}
-	nsFilter.DefaultIsolation = mode
-
-	// Populate the override lists. A namespace appearing in more than one
-	// list is a configuration error and we refuse to start.
-	for _, n := range splitAndTrim(ingressIsolationNone) {
-		nsFilter.OverrideIsolationNone[n] = true
-	}
-	for _, n := range splitAndTrim(ingressIsolationNS) {
-		nsFilter.OverrideIsolationNamespace[n] = true
-	}
-	for _, n := range splitAndTrim(ingressIsolationPod) {
-		nsFilter.OverrideIsolationPod[n] = true
-	}
-	if conflicts := isolationOverrideConflicts(nsFilter); len(conflicts) > 0 {
-		setupLog.Info("namespace appears in multiple --ingress-isolation-* override lists; refusing to start",
-			"namespaces", conflicts)
-		os.Exit(1)
-	}
+	// The --ingress-isolation* flags are parsed but ignored as of ADR 0030
+	// (per-mode baselines are gone; the baseline is always deny-all + the
+	// --elide-baseline-for exemption list). The flags are scheduled for
+	// removal in a follow-up commit; we keep them here so existing values
+	// don't cause "unknown flag" startup failures during the deprecation
+	// window. The required-mode startup gate is also dropped — there is
+	// no longer a meaningful default to require.
+	_ = ingressIsolationMode
+	_ = ingressIsolationNone
+	_ = ingressIsolationNS
+	_ = ingressIsolationPod
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
@@ -254,7 +236,8 @@ func main() {
 		"version", version, "commit", commit, "buildDate", date,
 		"labelPrefix", labelPrefix,
 		"disabled", fmt.Sprintf("%v", disabled),
-		"ingressIsolation", string(mode))
+		"defaultMemberships", defaultMemberships,
+		"elideBaselineFor", elideBaselineFor)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)
@@ -297,28 +280,6 @@ func parseDefaultMemberships(spec string) ([]controller.OperatorMembership, erro
 		})
 	}
 	return out, nil
-}
-
-// isolationOverrideConflicts returns any namespace name that appears in more
-// than one of the three --ingress-isolation-* override lists.
-func isolationOverrideConflicts(f *controller.NamespaceFilter) []string {
-	seen := map[string]int{}
-	for n := range f.OverrideIsolationNone {
-		seen[n]++
-	}
-	for n := range f.OverrideIsolationNamespace {
-		seen[n]++
-	}
-	for n := range f.OverrideIsolationPod {
-		seen[n]++
-	}
-	var conflicts []string
-	for n, count := range seen {
-		if count > 1 {
-			conflicts = append(conflicts, n)
-		}
-	}
-	return conflicts
 }
 
 func splitAndTrim(s string) []string {
