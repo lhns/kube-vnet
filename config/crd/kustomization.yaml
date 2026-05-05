@@ -4,3 +4,4 @@ kind: Kustomization
 resources:
   - bases/kube-vnet.lhns.de_virtualnetworks.yaml
   - bases/kube-vnet.lhns.de_virtualnetworkbindings.yaml
+  - bases/kube-vnet.lhns.de_clustervirtualnetworkbindings.yaml

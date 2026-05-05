@@ -45,6 +45,9 @@ type VirtualNetworkBindingReconciler struct {
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbindings,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbindings/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbindings/finalizers,verbs=update
 
 func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("binding", req.NamespacedName)
