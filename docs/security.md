@@ -50,7 +50,7 @@ The operator runs as `ServiceAccount/kube-vnet-controller` in the operator's nam
 | `kube-vnet.lhns.de` | `virtualnetworks/finalizers` | update | Standard kubebuilder pattern; not currently used at runtime but kept for forward compatibility. |
 | `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete | The operator's primary output. Cluster-wide because `Cluster`-extent vnets generate policies in foreign namespaces. |
 | `""` (core) | `pods` | get, list, watch | Membership discovery: which pods carry a join label. |
-| `""` (core) | `namespaces` | get, list, watch | Honoring `kube-vnet/disabled` annotation, `allowedNamespaces.selector` matching, ClusterVirtualNetworkBinding `namespaceSelector` matching. |
+| `""` (core) | `namespaces` | get, list, watch | Honoring `kube-vnet/disabled` annotation and `allowedNamespaces.selector` matching. |
 | `""` (core) | `pods` | patch | Resolution controller stamps `kube-vnet.system/net.<vnet>=<dir>` labels on managed pods (ADR 0030). |
 | `kube-vnet.lhns.de` | `virtualnetworkbindings` | get, list, watch | Watch for the `VirtualNetworkBinding` reconciler; bindings produce additional membership policies. |
 | `kube-vnet.lhns.de` | `virtualnetworkbindings/status` | get, update, patch | Writes the binding's `Ready` condition, `attachedPods`, `observedGeneration`. |

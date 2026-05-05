@@ -261,3 +261,102 @@ func TestIntegration_Resolution_BindingDeletionStripsLabel(t *testing.T) {
 		return nil
 	})
 }
+
+// TestIntegration_Resolution_NamespaceBaselineOverridesCluster: cluster
+// baseline says cluster=default-egress; namespace baseline overrides to
+// cluster=default-both. Pod ends up stamped `cluster=both` (override
+// permitted because cluster value was default-*).
+func TestIntegration_Resolution_NamespaceBaselineOverridesCluster(t *testing.T) {
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("cluster", "default-egress"),
+	})
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-nsoverride")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	nsBaseline := &vnetv1alpha1.VirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBaselineSpec{
+			Memberships: []vnetv1alpha1.BaselineMembership{
+				{
+					VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "cluster", Namespace: "kube-vnet-system-test"},
+					Direction:         "default-both",
+				},
+			},
+		},
+	}
+	mustCreate(t, nsBaseline)
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), nsBaseline) })
+
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "x"}))
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels["kube-vnet.system/net.cluster"]; got != "both" {
+			return fmt.Errorf("cluster label = %q, want both (NS baseline override of default-egress)", got)
+		}
+		return nil
+	})
+}
+
+// TestIntegration_Resolution_BareNoneBlocksLowerTiers: cluster baseline
+// pins cluster=none (bare); pod label tries cluster=both. Override is
+// rejected; no system label for cluster on the pod.
+func TestIntegration_Resolution_BareNoneBlocksLowerTiers(t *testing.T) {
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("cluster", "none"),
+	})
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-barenone")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.cluster": "both"}))
+
+	// Wait long enough for several reconciles, then assert the pod label
+	// did NOT take effect.
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net.cluster"]; ok {
+		t.Errorf("cluster system label should be absent (cluster baseline pinned bare none), got %q; labels=%v", got, p.Labels)
+	}
+}
+
+// TestIntegration_Resolution_BindingLabelConflictIntersection: a VNB and a
+// pod label disagree on direction for the same vnet — both at the pod
+// tier. Per ADR 0031 they intersect: ingress ∩ egress = none → no system
+// label stamped for that vnet.
+func TestIntegration_Resolution_BindingLabelConflictIntersection(t *testing.T) {
+	setClusterBaseline(t, nil)
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-bindinglabel")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "selects-p", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+			Direction:         "ingress",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	// Pod carries both the binding-selector label AND a kube-vnet/net.v
+	// label that disagrees on direction.
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p", "kube-vnet/net.v": "egress"}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net.v"]; ok {
+		t.Errorf("v system label should be absent (intersection of ingress + egress = none), got %q; labels=%v", got, p.Labels)
+	}
+}

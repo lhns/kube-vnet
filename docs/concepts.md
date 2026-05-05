@@ -217,7 +217,7 @@ The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) acc
 
 ### Operator default vnet memberships
 
-The `--default-memberships=<vnet>=<dir>,...` operator flag (Helm: `operator.defaultMemberships`) declares membership the operator stamps on every pod via the resolution controller. Only the system vnets (`namespace`, `cluster`) are accepted as keys; user vnets are joined per-pod via labels or `VirtualNetworkBinding`/`ClusterVirtualNetworkBinding`. Pod-authored labels and bindings can override these defaults, including via `direction=none` to opt the pod out of an inherited membership.
+A singleton `ClusterVirtualNetworkBaseline` named `default` declares membership every pod inherits, with per-vnet override-permission encoded in the eight-value `Direction` enum (bare = enforced, `default-*` = override-permitted by lower tiers). The chart seeds this CR from `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}` — pick a preset (`pod` / `namespace` / `cluster`) or supply an explicit memberships map. Per-namespace overrides go in a `VirtualNetworkBaseline` named `default` in the namespace; per-pod overrides go in a `VirtualNetworkBinding` (must select specific pods) or via the `kube-vnet/net.<vnet>=<dir>` label. Conflicts within a tier (or across siblings at the pod tier) resolve via intersection (fail-closed). See ADR 0031.
 
 ### Baseline ownership
 

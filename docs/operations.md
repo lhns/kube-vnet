@@ -286,7 +286,7 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 
 [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) removed the `--ingress-isolation*` flag family and the `kube-vnet/ingress-isolation` annotation. Read these before `helm upgrade`.
 
-**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all minus `--elide-baseline-for` exemptions; there's no per-namespace mode anymore. To get the previous "default-allow" posture cluster-wide, set `--default-memberships=cluster=both`. To get same-NS connectivity, set `--default-memberships=namespace=both,cluster=egress`. To get strict deny-all, leave `--default-memberships` empty.
+**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all minus `--elide-baseline-for` exemptions; there's no per-namespace mode anymore. To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
 
 **System namespaces are disabled by default again.** `operator.disabledNamespaces` defaults to `[kube-system, kube-public, kube-node-lease]`; the operator stays out of those entirely.
 
@@ -296,17 +296,20 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 |---|---|
 | `operator.excludedNamespaces` | `operator.disabledNamespaces` |
 | CLI `--excluded-namespaces` | CLI `--disabled-namespaces` |
-| `operator.ingressIsolation.mode` | `operator.defaultMemberships` (different semantic; see [`concepts.md`](concepts.md)) |
-| `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}` | (removed; use the per-namespace `kube-vnet/disabled` annotation or per-pod vnet membership) |
+| `operator.ingressIsolation.mode` | `operator.clusterBaseline.ingressIsolationLevel` (different semantic; see [`concepts.md`](concepts.md) and [ADR 0031](adr/0031-baseline-tier-resolution.md)) |
+| `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}` | (removed; use the per-namespace `kube-vnet/disabled` annotation, a per-NS `VirtualNetworkBaseline`, or per-pod vnet membership) |
 | `operator.ingressIsolation.force{None,Namespace,Pod}` | (removed; same migration as above) |
-| CLI `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}` | (removed; see `--default-memberships` and `--elide-baseline-for`) |
+| CLI `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}` | (removed) |
+| CLI `--default-memberships` / `operator.defaultMemberships` | (removed in 0.4 ADR-0031 cleanup; use `operator.clusterBaseline.{ingressIsolationLevel, memberships}` instead) |
+| `ClusterVirtualNetworkBinding` CRD | (removed in 0.4 ADR-0031 cleanup; broad-selector usage migrates to `ClusterVirtualNetworkBaseline`, narrow-selector to `VirtualNetworkBinding` in the target NS) |
+| `VirtualNetworkBinding` with empty `podSelector` | (rejected at admission; namespace-wide defaults move to `VirtualNetworkBaseline`) |
 | CLI `--default-deny-everywhere` and `operator.defaultDenyEverywhere` | (removed) |
 | `kube-vnet/ingress-isolation` namespace annotation | (removed) |
 
 Two related behavior reminders:
 
 - **Egress is not restricted** by the baseline ([ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
-- **Vnet membership is the only ingress-allow mechanism**, including for "open up a namespace" cases. To allow same-NS ingress without joining a user vnet, default-join every pod to the system `namespace` vnet via `--default-memberships=namespace=both`.
+- **Vnet membership is the only ingress-allow mechanism**, including for "open up a namespace" cases. To allow same-NS ingress without joining a user vnet, set `operator.clusterBaseline.ingressIsolationLevel=namespace` (chart) or write an explicit `ClusterVirtualNetworkBaseline` with `namespace=default-both`.
 
 ### "Pods I expect to be isolated can talk to each other"
 

@@ -17,7 +17,6 @@ The operator binary (`/manager` in the container) accepts these flags. They map 
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--label-prefix` | string | `kube-vnet/` | Label-key prefix for join labels. Must end with `/`. Changing this is rare; mostly useful if you already have an unrelated `kube-vnet/` namespace in your cluster's labels. |
 | `--disabled-namespaces` | string (comma-separated) | `kube-system,kube-public,kube-node-lease` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
-| `--default-memberships` | string (`<vnet>=<dir>` CSV) | `""` | Comma-separated `<vnet>=<direction>` pairs the resolution controller stamps onto every pod in every managed namespace as default vnet memberships. Only the system vnet keys `namespace` and `cluster` are accepted. Pod labels and `(Cluster)VirtualNetworkBinding` rules can override these defaults; `direction=none` opts a pod out. Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
 | `--elide-baseline-for` | string (CSV) | `cluster` | Vnet names whose receivers (`In: [both, ingress]`) are excluded from the deny-all baseline. The default `cluster` matches the convention that pods on the cluster system-vnet are reachable from anywhere and don't need a redundant baseline. ADR 0030. |
 | `--version` | bool | `false` | Print version info and exit. |
 
@@ -25,27 +24,23 @@ Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/z
 
 ### Inheritance order for vnet membership (per pod)
 
-Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), the resolution controller computes effective `(vnet, direction)` per pod by walking layers from lowest to highest priority:
+Per [ADR 0031](../adr/0031-baseline-tier-resolution.md), the resolution controller computes effective `(vnet, direction)` per pod by walking three tiers from lowest to highest priority:
 
-1. Operator defaults (from `--default-memberships`).
-2. Matching `ClusterVirtualNetworkBinding` rules (cluster scope).
-3. Matching `VirtualNetworkBinding` rules in the pod's namespace.
-4. The pod's own `kube-vnet/net.<vnet>=<direction>` labels.
+1. `ClusterVirtualNetworkBaseline` named `default` (cluster-scoped singleton; chart-seeded from `operator.clusterBaseline`).
+2. `VirtualNetworkBaseline` named `default` in the pod's namespace (singleton).
+3. **Pod tier**: `VirtualNetworkBinding` CRs that match the pod (must use a non-empty selector) plus the pod's own `kube-vnet/net.<vnet>=<direction>` labels. Sources within this tier intersect on conflict (fail-closed).
 
-Each layer can add a vnet, override an inherited direction, or remove one via `direction=none`. Within a single layer, multiple matching rules are tied alphabetically by source name.
+Cross-tier override-permission is encoded in the eight-value `Direction` enum: bare values (`both`, `ingress`, `egress`, `none`) are enforced — lower tiers cannot override; `default-*` variants (only valid at baseline tiers) are advisory. The reserved-name VAP from the previous PR pins the system-vnet names (`namespace`, `cluster`) for the operator's exclusive use.
 
 `kube-vnet/disabled=true` and `--disabled-namespaces` membership override everything: the operator does nothing in those namespaces.
 
-### Example: cluster-wide ingress-deny posture
+### Example: configuring the cluster baseline via Helm
+
+The chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` from `operator.clusterBaseline`. When `create=true`, exactly one of `ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) or `memberships` (explicit map of `<vnet-key>: <direction>`) must be set.
 
 ```bash
-manager \
-  --leader-elect \
-  --metrics-bind-address=:8080 \
-  --health-probe-bind-address=:8081 \
-  --default-memberships=                 # empty = no auto-memberships → pods hit the deny-all baseline \
-  --elide-baseline-for=cluster \
-  --disabled-namespaces=kube-system,kube-public,kube-node-lease,my-legacy-ns
+# Same-NS reachable, cross-NS egress only (the historical "namespace" mode).
+helm install ... --set operator.clusterBaseline.ingressIsolationLevel=namespace
 ```
 
 ---
@@ -95,8 +90,10 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 |---|---|---|---|
 | `operator.labelPrefix` | string | `kube-vnet/` | → `--label-prefix`. |
 | `operator.disabledNamespaces` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. |
-| `operator.defaultMemberships` | string (`<vnet>=<dir>` CSV) | `""` | → `--default-memberships`. Operator-default vnet memberships the resolution controller stamps onto every pod. Only the system vnet keys `namespace` and `cluster` are accepted. |
 | `operator.elideBaselineFor` | string (CSV) | `cluster` | → `--elide-baseline-for`. Vnet names whose receivers are excluded from the deny-all baseline. ADR 0030. |
+| `operator.clusterBaseline.create` | bool | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default`. Set to `false` to manage that CR outside Helm. ADR 0031. |
+| `operator.clusterBaseline.ingressIsolationLevel` | string (`pod` / `namespace` / `cluster`) | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset that maps to a system-vnet membership pair. Mutually exclusive with `memberships`. |
+| `operator.clusterBaseline.memberships` | map `<vnet-key>: <direction>` | `null` | Explicit override map. Keys: bare for system vnets (resolves to release-namespace), `<namespace>.<name>` for user vnets. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.leaderElect` | bool | `true` | → `--leader-elect`. Recommended on; harmless with one replica and required for safe multi-replica HA. |
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |

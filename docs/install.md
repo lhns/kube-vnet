@@ -50,13 +50,13 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
 
-Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a uniform deny-all baseline by default; there's no per-namespace mode setting anymore. To get the previous "pod-strict" or "same-NS" postures, configure `operator.defaultMemberships` on the chart (see below).
+Per [ADR 0031](adr/0031-baseline-tier-resolution.md), `operator.clusterBaseline.ingressIsolationLevel` is **required** at install time — pick `pod`, `namespace`, or `cluster` (see below). The chart fails fast if neither it nor `operator.clusterBaseline.memberships` is set when `create=true`. Every managed namespace gets a uniform deny-all baseline; vnet membership (driven by the seeded `ClusterVirtualNetworkBaseline`, plus per-NS `VirtualNetworkBaseline`s and per-pod bindings/labels) is the only thing that opens ingress.
 
 The chart's default `operator.disabledNamespaces` lists `[kube-system, kube-public, kube-node-lease]`, so the operator stays out of those control-plane namespaces entirely (no baseline, no system vnets, no resolution stamping).
 
 #### What the default install means for new namespaces
 
-With no extra flags, every managed namespace gets the deny-all baseline. Pods that opt in via vnet membership (the `kube-vnet/net.<vnet>` label, or a `(Cluster)VirtualNetworkBinding`) get additive ingress allows from vnet peers; everything else is denied. To opt a namespace out entirely:
+Every managed namespace gets the deny-all baseline. Pods opt in via the seeded `ClusterVirtualNetworkBaseline` (chart-managed; one of three presets via `ingressIsolationLevel`), per-NS `VirtualNetworkBaseline`, per-workload `VirtualNetworkBinding`, or the `kube-vnet/net.<vnet>` pod label — additive ingress allows from vnet peers; everything else is denied. To opt a namespace out entirely:
 
 ```yaml
 apiVersion: v1
@@ -73,11 +73,15 @@ metadata:
 # Pin a specific image tag (default: chart appVersion)
 helm install ... --set image.tag=v0.1.0
 
-# Auto-join every pod to the namespace system-vnet (same-NS connectivity by default)
-helm install ... --set operator.defaultMemberships=namespace=both,cluster=egress
+# Same-NS connectivity by default (every pod auto-joins the per-NS `namespace` system vnet
+# at default-both; can egress to anything cluster-wide).
+helm install ... --set operator.clusterBaseline.ingressIsolationLevel=namespace
 
-# Auto-join every pod to the cluster system-vnet (allow-from-anywhere) — equivalent of mode=none
-helm install ... --set operator.defaultMemberships=cluster=both
+# No isolation (allow-all) — every pod is on the `cluster` system vnet at default-both.
+helm install ... --set operator.clusterBaseline.ingressIsolationLevel=cluster
+
+# Strict pod-level isolation — ingress only via explicit binding/label.
+helm install ... --set operator.clusterBaseline.ingressIsolationLevel=pod
 
 # Customize the operator-level disabled-namespaces list (operator's own ns is auto-added)
 helm install ... --set 'operator.disabledNamespaces={kube-system,kube-public,kube-node-lease,my-legacy-ns}'

@@ -105,7 +105,30 @@ See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md) (now sup
 
 ### ~~`kube-vnet/ingress-isolation`~~ — *removed*
 
-Previously a namespace annotation that selected one of three baseline shapes (`none`/`namespace`/`pod`). Removed under [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md): the baseline is now uniformly deny-all minus `--elide-baseline-for` exemptions, with no per-namespace shape knob. Tune behaviour via `--default-memberships` (operator-level), `(Cluster)VirtualNetworkBinding` (per-NS / cluster-scoped), or `kube-vnet/net.<vnet>` labels (per-pod). To opt a namespace out entirely, use `kube-vnet/disabled=true` above.
+Previously a namespace annotation that selected one of three baseline shapes (`none`/`namespace`/`pod`). Removed under [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md): the baseline is now uniformly deny-all minus `--elide-baseline-for` exemptions, with no per-namespace shape knob. Tune behaviour via `ClusterVirtualNetworkBaseline` (cluster scope; chart-seeded from `operator.clusterBaseline.ingressIsolationLevel`), `VirtualNetworkBaseline` (per-NS), `VirtualNetworkBinding` (per-workload), or `kube-vnet/net.<vnet>` labels (per-pod). See [ADR 0031](../adr/0031-baseline-tier-resolution.md). To opt a namespace out entirely, use `kube-vnet/disabled=true` above.
+
+### `kube-vnet/net.<vnet>=<direction>` (pod label) — direction values
+
+Pod-tier sources (the `kube-vnet/net.<vnet>` pod label and `VirtualNetworkBinding.spec.direction`) accept four bare values:
+
+- `both` — pod is both an ingress receiver and an egress sender for that vnet.
+- `ingress` — pod accepts ingress from vnet members.
+- `egress` — pod can send egress to vnet members.
+- `none` — pod is explicitly NOT on this vnet (overrides any inherited default).
+
+Baseline tiers (`ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`) accept the same four bare values **plus** four `default-*` variants (`default-both`, `default-ingress`, `default-egress`, `default-none`). The `default-*` prefix marks the value as **override-permitted by lower tiers**. Bare values at a baseline are **enforced**; lower tiers attempting to override are rejected and the upstream value remains effective. The final stamped pod label is always one of the bare four — the `default-*` prefix is consumed during resolution. See [ADR 0031](../adr/0031-baseline-tier-resolution.md).
+
+### Vnet-key forms in baselines
+
+Pod labels admit two forms for the vnet suffix in `kube-vnet/net.<key>`: bare (`<name>`, "vnet of this name in this pod's namespace") and prefixed (`<homeNS>.<name>`, an explicit cross-namespace reference). Baselines use the same syntax in their `memberships` (the chart's `operator.clusterBaseline.memberships` map shorthand mirrors it), but the semantics are subtly different at the baseline tier:
+
+- A **bare key** in a baseline names a *scope-relative* vnet — only meaningful for the system vnets `namespace` and `cluster`. The reserved-name VAP guarantees no user vnet can collide. Bare-keyed entries expand to the matching bare pod label at resolution time, so a single baseline entry produces a per-pod-namespace effect for the per-NS `namespace` system vnet.
+- A **prefixed key** (`<namespace>.<name>`) is fully resolved at the baseline level. Use this for user vnets you want to attach via a baseline rather than per-workload bindings.
+- Specifying the `cluster` system vnet with a `kube-vnet-system.cluster` (release-namespace-prefixed) form technically works but is discouraged because it couples user-facing config to the operator's release namespace.
+
+### Validation limits on baseline references
+
+CRD CEL on baseline kinds cannot validate that the referenced vnets exist — admission-time CEL only sees the document being admitted, and a webhook that read other resources would race with vnet creation/deletion. A reference to a non-existent vnet is accepted at admission and silently becomes a no-op at pod-resolution time (no `kube-vnet.system/net.<vnet>` label is stamped for that membership). Bare-keyed entries are even more dynamic — the effective vnet differs per pod's namespace, so a single baseline entry can be valid for some pods and a no-op for others. Validation surfaces at pod-resolution: status conditions, the `kube_vnet_resolution_conflicts_total` metric, and missing system labels on pods that should have inherited them. Use `kubectl get vnet -A` to confirm references resolve.
 
 ---
 

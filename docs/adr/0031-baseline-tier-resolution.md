@@ -156,17 +156,17 @@ A namespace-admin attempting to override this with a `VirtualNetworkBaseline` re
 
 ### Migration
 
-The chart seeds a `ClusterVirtualNetworkBaseline` from `operator.isolationLevel` (new, replacing the implicit empty `defaultMemberships`). Three values map to three baselines:
+The chart seeds a `ClusterVirtualNetworkBaseline` from `operator.clusterBaseline` (new). When `create: true`, exactly one of `ingressIsolationLevel` or `memberships` must be set; both → `helm install` fails (XOR), neither → fails with a "no default" message. Three preset values map to three baselines:
 
-| `isolationLevel` | Seeded `ClusterVirtualNetworkBaseline.spec.memberships`                                     |
-|------------------|----------------------------------------------------------------------------------------------|
-| `pod`            | `[{namespace, default-egress}, {cluster, default-egress}]` — strict; ingress only via explicit binding/label |
-| `namespace`      | `[{namespace, default-both}, {cluster, default-egress}]` — same-NS reachable, cross-NS egress-only           |
-| `cluster`        | `[{namespace, default-both}, {cluster, default-both}]`   — no isolation                                       |
+| `ingressIsolationLevel` | Seeded `ClusterVirtualNetworkBaseline.spec.memberships`                                     |
+|-------------------------|----------------------------------------------------------------------------------------------|
+| `pod`                   | `[{namespace, default-egress}, {cluster, default-egress}]` — strict; ingress only via explicit binding/label |
+| `namespace`             | `[{namespace, default-both}, {cluster, default-egress}]` — same-NS reachable, cross-NS egress-only           |
+| `cluster`               | `[{namespace, default-both}, {cluster, default-both}]`   — no isolation                                       |
 
-The `--default-memberships` flag is preserved through 0.4 with a deprecation warning at startup. If both the flag and a `ClusterVirtualNetworkBaseline` exist, the CR wins. In 0.5 the flag is removed.
+For configurations the presets don't cover, set `operator.clusterBaseline.memberships` instead — a map of `<vnet-key>: <direction>` where the key is a bare system-vnet name (resolves to `{name: <key>, namespace: {{ .Release.Namespace }}}`) or `<namespace>.<name>` for user vnets.
 
-`ClusterVirtualNetworkBinding` is deprecated through 0.4 with a backwards-compat shim: existing CRs are read as if they were entries in the cluster baseline (with bare directions, since CVNB never carried `default-*`). Migration recipe lives in `CHANGELOG.md`. In 0.5 the CRD and code paths are removed.
+The `--default-memberships` operator flag (and `operator.defaultMemberships` chart value) and the `ClusterVirtualNetworkBinding` CRD are removed. Pre-1.0 cleanup; no deprecation window.
 
 `VirtualNetworkBinding` with empty `podSelector` is rejected at admission going forward (CEL validation). Existing CRs continue to read-back; any `kubectl edit` requires migrating the empty-selector case to a `VirtualNetworkBaseline`.
 
@@ -184,7 +184,23 @@ This is the authority-respects-specificity model the resolution lattice was alwa
 
 - The `kube-vnet/inherit=false`-shaped per-pod opt-out label, considered briefly during planning, is unnecessary under this model. Per-vnet `kube-vnet/net.<vnet>=none` remains the per-pod escape hatch, and the cluster-admin's `default-*` choice controls whether it can take effect.
 - The within-scope alphabetical tiebreaker is removed.
-- `ScopeOperatorDefault` is removed (the flag is deprecated; the chart-seeded `ClusterVirtualNetworkBaseline` plays its role).
+- `ScopeOperatorDefault` is removed (the chart-seeded `ClusterVirtualNetworkBaseline` plays its role).
+
+## Addenda
+
+### Vnet-key form in baselines
+
+Baseline `memberships` reference vnets by `(name, namespace)`. The chart's `operator.clusterBaseline.memberships` map shorthand admits two key forms — bare (`namespace`, `cluster`) and dotted (`<namespace>.<name>`) — that mirror the bare/prefixed pod-label convention from earlier ADRs, but with subtly different semantics at the baseline tier:
+
+- **Pod labels** admit both forms: bare = "this vnet in my own namespace"; prefixed = explicit cross-NS reference. The form is fully resolved at the time the label is read.
+- **Baselines** also admit both forms, but a bare key is only meaningful for the system vnets (`namespace`, `cluster`). The reserved-name VAP from the ADR-0030 follow-up guarantees no user vnet can collide with those names, so the dispatch is unambiguous in practice. A bare-keyed entry in a baseline names a *scope-relative* vnet — it expands to the matching bare pod label at resolution time, which means a single baseline entry produces a per-pod-namespace effect for the per-NS `namespace` system vnet. Conceptually a partially-applied function: the baseline carries the unparameterized membership, the pod-resolution step parameterizes it.
+- Specifying the `cluster` system vnet with a `kube-vnet-system.cluster` (release-namespace-prefixed) form technically works but is discouraged because it couples user-facing config to the operator's release namespace.
+
+### Validation limits on baseline references
+
+Baseline references cannot be validated for vnet existence at admission time. CRD CEL only sees the baseline document being admitted, never the cluster's set of `VirtualNetwork` CRs; a webhook that read other resources would race with vnet creation/deletion (vnet exists at admission, gets deleted moments later — false-positive validation that doesn't reflect reality). A reference to a non-existent vnet is accepted at admission and silently becomes a no-op at pod-resolution time: the resolver simply doesn't emit a `kube-vnet.system/net.<vnet>` label for that membership.
+
+Bare-keyed entries are even more dynamic — the effective vnet differs per pod's namespace, so the same baseline entry could be valid for some pods and a no-op for others. Validation surfaces at pod-resolution time (status conditions, the `kube_vnet_resolution_conflicts_total` metric, missing system labels on pods that should have inherited them); operators wanting tighter feedback should `kubectl get vnet -A` to confirm references resolve.
 
 ## Out of scope
 

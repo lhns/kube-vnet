@@ -209,7 +209,7 @@ Most common case. Walk through these in order:
 
 ## I labeled my pod and the vnet is Ready, but external pods can still reach it
 
-The deny-all baseline excludes pods that are *receivers* on any vnet listed in `--elide-baseline-for` (default `cluster`). If your pod is on the cluster system-vnet as `both`/`ingress` (e.g. via `--default-memberships=cluster=both`), the baseline doesn't apply to it — the cluster-vnet membership policy alone governs its ingress, which by convention allows from anywhere on the cluster.
+The deny-all baseline excludes pods that are *receivers* on any vnet listed in `--elide-baseline-for` (default `cluster`). If your pod is on the cluster system-vnet as `both`/`ingress` (e.g. because `operator.clusterBaseline.ingressIsolationLevel=cluster` seeds `cluster=default-both`), the baseline doesn't apply to it — the cluster-vnet membership policy alone governs its ingress, which by convention allows from anywhere on the cluster.
 
 To enforce stricter ingress on a specific pod:
 
