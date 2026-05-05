@@ -49,6 +49,7 @@ func main() {
 		ingressIsolationNS   string
 		ingressIsolationPod  string
 		elideBaselineFor     string
+		defaultMemberships   string
 		showVersion          bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
@@ -85,6 +86,13 @@ func main() {
 	flag.StringVar(&ingressIsolationPod, "ingress-isolation-pod", "",
 		"comma-separated namespaces overridden to ingress-isolation mode `pod` "+
 			"(baseline denies all ingress).",
+	)
+	flag.StringVar(&defaultMemberships, "default-memberships", "",
+		"comma-separated <vnet>=<direction> pairs that every pod in every "+
+			"managed namespace joins by default. The two recognized vnet keys "+
+			"are the system vnets `namespace` and `cluster`. Per-pod labels and "+
+			"VirtualNetworkBinding rules can add to or override these defaults. "+
+			"Per ADR 0030. Example: `namespace=both,cluster=egress`.",
 	)
 	flag.StringVar(&elideBaselineFor, "elide-baseline-for", "cluster",
 		"comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet> "+
@@ -192,12 +200,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	parsedDefaults, err := parseDefaultMemberships(defaultMemberships)
+	if err != nil {
+		setupLog.Error(err, "invalid --default-memberships")
+		os.Exit(1)
+	}
 	resReconciler := &controller.ResolutionReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		NSFilter:         nsFilter,
 		LabelPrefix:      labelPrefix,
-		OperatorDefaults: nil, // wired via --default-memberships in a later stage
+		OperatorDefaults: parsedDefaults,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")
@@ -246,6 +259,44 @@ func main() {
 		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
+}
+
+// parseDefaultMemberships parses the --default-memberships flag value
+// (e.g. `namespace=both,cluster=egress`) into the operator-default-memberships
+// list the resolution controller consumes. Empty input → nil. Whitespace
+// around tokens is tolerated. Per ADR 0030, only the system vnets `namespace`
+// and `cluster` are accepted as keys; user vnets are joined via labels or
+// VirtualNetworkBindings.
+func parseDefaultMemberships(spec string) ([]controller.OperatorMembership, error) {
+	if strings.TrimSpace(spec) == "" {
+		return nil, nil
+	}
+	var out []controller.OperatorMembership
+	for _, pair := range strings.Split(spec, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("--default-memberships entry %q must be of the form <vnet>=<direction>", pair)
+		}
+		vnet := strings.TrimSpace(parts[0])
+		dirStr := strings.TrimSpace(parts[1])
+		if vnet != controller.SystemVnetNamespace && vnet != controller.SystemVnetCluster {
+			return nil, fmt.Errorf("--default-memberships vnet %q is not a system vnet name (must be %q or %q)",
+				vnet, controller.SystemVnetNamespace, controller.SystemVnetCluster)
+		}
+		dir, ok := controller.ParseDirection(dirStr)
+		if !ok {
+			return nil, fmt.Errorf("--default-memberships direction %q is not valid (one of: both, ingress, egress, none)", dirStr)
+		}
+		out = append(out, controller.OperatorMembership{
+			Vnet:      controller.VnetKey(vnet),
+			Direction: dir,
+		})
+	}
+	return out, nil
 }
 
 // isolationOverrideConflicts returns any namespace name that appears in more

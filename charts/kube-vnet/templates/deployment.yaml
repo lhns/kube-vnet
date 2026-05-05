@@ -58,6 +58,9 @@ spec:
             {{- with .Values.operator.elideBaselineFor }}
             - --elide-baseline-for={{ . }}
             {{- end }}
+            {{- with .Values.operator.defaultMemberships }}
+            - --default-memberships={{ . }}
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom:

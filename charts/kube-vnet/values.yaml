@@ -63,6 +63,13 @@ operator:
   # `cluster` so pods on the cluster system-vnet (allow-all by convention)
   # don't get a redundant baseline policy. ADR 0030.
   elideBaselineFor: cluster
+
+  # Comma-separated <vnet>=<direction> pairs that every pod in every managed
+  # namespace joins by default. The two recognized vnet keys are the system
+  # vnets `namespace` and `cluster`. Pod labels and VirtualNetworkBindings
+  # add to or override these defaults. Default empty (no auto-memberships).
+  # Per ADR 0030. Example: `namespace=both,cluster=egress`.
+  defaultMemberships: ""
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.
   leaderElect: true

@@ -12,6 +12,25 @@ release. Pinning to an exact version is recommended.
 
 ### Breaking
 
+- **New `--default-memberships` flag (ADR 0030 stage 7) and `--elide-baseline-for`
+  flag (stage 5).** Operator-default vnet memberships are now declared as
+  `namespace=<dir>,cluster=<dir>` pairs the resolution controller stamps onto
+  every pod. The `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}`
+  flags still exist but are deprecated — they no longer drive baseline shape
+  (the baseline is unconditionally deny-all minus `--elide-baseline-for`
+  exemptions). Plan to remove them in a follow-up cleanup pass. Helm chart
+  values: `operator.defaultMemberships` and `operator.elideBaselineFor`.
+- **Baseline shape changed.** Per-mode baselines (allow-all/same-NS/deny-all)
+  are gone. The baseline is always deny-all with `podSelector` excluding
+  receivers on the elide-list. ADR 0029's mode=none allow-all and ADR 0023's
+  mode-specific baselines are both superseded by ADR 0030.
+- **NetworkPolicy podSelectors now key on `kube-vnet.system/net.<vnet>`**
+  (operator-stamped by the resolution controller) rather than the user-input
+  `kube-vnet/net.<vnet>`. The user-input scheme remains the authoring surface.
+- **System VirtualNetworks `namespace` (per-NS) and `cluster` (cluster-wide)**
+  exist as managed CRs in every managed namespace and the operator namespace.
+  Marked `kube-vnet/system=true`; protected against user mutation by a
+  ValidatingAdmissionPolicy.
 - **Direction enum pruned.** Join-label values are now exactly `both` /
   `ingress` / `egress` / `none`. The legacy aliases `true` and `false`,
   and the empty-string value, are dropped. The chart's
