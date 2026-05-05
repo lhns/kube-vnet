@@ -1,9 +1,18 @@
+{{- /*
+CRD shipped as a templated resource (not under `charts/kube-vnet/crds/`) so
+`helm upgrade` updates it on chart bumps. Helm's special crds/ directory is
+install-once-only and does not propagate updates -- see
+https://helm.sh/docs/chart_best_practices/custom_resource_definitions/.
+The `helm.sh/resource-policy: keep` annotation prevents `helm uninstall`
+from cascading-deleting every existing CR alongside the CRD. ADR 0030.
+*/ -}}
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.16.5
+    helm.sh/resource-policy: keep
   name: virtualnetworkbindings.kube-vnet.lhns.de
 spec:
   group: kube-vnet.lhns.de

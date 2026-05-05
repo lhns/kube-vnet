@@ -10,6 +10,39 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Helm chart's `ClusterRole` was missing verbs added by ADR 0030.** The
+  resolution controller's `pods/patch+update` and the system-vnet
+  controller's `virtualnetworks/create+update+patch` were never mirrored
+  into `charts/kube-vnet/templates/clusterrole.yaml`, and the new
+  `clustervirtualnetworkbindings` group was absent entirely. Helm-installed
+  operators failed to stamp `kube-vnet.system/*` labels and never created
+  the `namespace` or `cluster` system vnets. A new drift gate
+  (`internal/controller/chart_rbac_test.go`) now compares the rendered
+  chart ClusterRole against the kubebuilder-generated `config/rbac/role.yaml`
+  on every CI run; future divergence fails the chart-manifest job.
+- **CRDs now update on `helm upgrade`.** Previously the CRDs lived under
+  `charts/kube-vnet/crds/`, which Helm only applies on first install — so
+  upgrading a previously-installed chart to a version that introduced a new
+  CRD (e.g. `ClusterVirtualNetworkBinding` from ADR 0030) silently skipped
+  the new CRD, and the operator looped on `no matches for kind`. The CRDs
+  are now templated under `charts/kube-vnet/templates/crd-*.yaml` with
+  `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete
+  user-authored CRs.
+
+  **Migration for users on the broken intermediate version**: install the
+  missing `ClusterVirtualNetworkBinding` CRD by hand once, then upgrade:
+
+  ```bash
+  kubectl apply -f https://raw.githubusercontent.com/lhns/kube-vnet/main/charts/kube-vnet/templates/crd-clustervirtualnetworkbindings.yaml
+  helm upgrade --install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
+    --namespace kube-vnet-system
+  kubectl rollout restart deploy -n kube-vnet-system kube-vnet
+  ```
+
+  After this fix lands, future upgrades self-heal — no manual step needed.
+
 ### Breaking
 
 - **CLI flags reworked under ADR 0030.** Operator-default vnet memberships
