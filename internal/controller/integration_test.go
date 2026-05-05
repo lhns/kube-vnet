@@ -69,15 +69,13 @@ func assertAllowAllBaseline(t *testing.T, p *networkingv1.NetworkPolicy) {
 	}
 }
 
-// TestIntegration_Baseline_AnnotationCreates verifies that setting the
-// per-namespace ingress-isolation annotation brings the baseline into
-// existence regardless of vnet membership presence.
-func TestIntegration_Baseline_AnnotationCreates(t *testing.T) {
+// TestIntegration_Baseline_LandsForManagedNamespace verifies the deny-all
+// baseline is installed in every managed namespace (ADR 0030: uniform
+// baseline shape, no per-namespace mode).
+func TestIntegration_Baseline_LandsForManagedNamespace(t *testing.T) {
 	ctx := context.Background()
-	ns := uniqueNS(t, "ann-iso")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
+	ns := uniqueNS(t, "managed-baseline")
+	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	bp := &networkingv1.NetworkPolicy{}
 	eventually(t, 10*time.Second, func() error {
@@ -87,70 +85,6 @@ func TestIntegration_Baseline_AnnotationCreates(t *testing.T) {
 	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress], got %v", bp.Spec.PolicyTypes)
 	}
-}
-
-// TestIntegration_Baseline_SweepStaleLegacyName verifies the migration sweep:
-// a NetworkPolicy labelled as a kube-vnet baseline but with a name from a
-// previous release (e.g. `kube-vnet-default-deny`) gets deleted on next
-// reconcile, leaving only the current `BaselinePolicyName`.
-func TestIntegration_Baseline_SweepStaleLegacyName(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "stale-baseline")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
-
-	// Wait for the current baseline to land first.
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-
-	// Inject a legacy-named baseline by hand. Same labels the operator sets
-	// (so the sweep will find it via the label selector).
-	const legacyName = "kube-vnet-default-deny"
-	mustCreate(t, &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns,
-			Name:      legacyName,
-			Labels: map[string]string{
-				LabelManagedBy: LabelManagedByValue,
-				LabelRole:      LabelRoleBaseline,
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-		},
-	})
-
-	// Touch the namespace to force a reconcile (the watch on baseline
-	// policies fires too, but a label change is a quicker enqueue).
-	nsObj := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-		t.Fatalf("get ns: %v", err)
-	}
-	if nsObj.Labels == nil {
-		nsObj.Labels = map[string]string{}
-	}
-	nsObj.Labels["kube-vnet-test/touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
-	if err := testClient.Update(ctx, nsObj); err != nil {
-		t.Fatalf("touch ns: %v", err)
-	}
-
-	// The legacy-named baseline should be swept; the current one stays.
-	eventually(t, 10*time.Second, func() error {
-		stale := &networkingv1.NetworkPolicy{}
-		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: legacyName}, stale)
-		if !apierrors.IsNotFound(err) {
-			return fmt.Errorf("legacy baseline still exists: err=%v", err)
-		}
-		current := &networkingv1.NetworkPolicy{}
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, current); err != nil {
-			return fmt.Errorf("current baseline missing: %v", err)
-		}
-		return nil
-	})
 }
 
 func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
@@ -362,16 +296,14 @@ func TestIntegration_DriftCorrection_Membership_DeleteRestores(t *testing.T) {
 }
 
 // TestIntegration_DriftCorrection_Baseline_DeleteRestores: deleting the
-// kube-vnet-default-deny baseline should be detected and the policy
-// re-applied. Without the NetworkPolicy watch on NamespaceReconciler this
-// test fails — the namespace itself isn't touched, so no Namespace event
-// fires and the baseline stays gone.
+// baseline NetworkPolicy should be detected and the policy re-applied.
+// Without the NetworkPolicy watch on NamespaceReconciler this test fails —
+// the namespace itself isn't touched, so no Namespace event fires and the
+// baseline stays gone.
 func TestIntegration_DriftCorrection_Baseline_DeleteRestores(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "drift-base-del")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
+	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	// Wait for the operator to install the baseline.
 	eventually(t, 10*time.Second, func() error {
@@ -758,16 +690,14 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
-// ----- ingress-isolation mode tests ---------------------------------------
+// ----- baseline-shape tests ----------------------------------------------
 
-// TestIntegration_IngressIsolation_NoEgressInBaseline: regardless of mode,
-// the baseline never restricts egress (ADR 0025).
-func TestIntegration_IngressIsolation_NoEgressInBaseline(t *testing.T) {
+// TestIntegration_Baseline_NeverRestrictsEgress: the baseline never has
+// Egress in policyTypes (ADR 0025); the deny-all only applies to ingress.
+func TestIntegration_Baseline_NeverRestrictsEgress(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "no-egress")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
+	mustCreate(t, makeNamespace(ns, nil, nil))
 	bp := &networkingv1.NetworkPolicy{}
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)

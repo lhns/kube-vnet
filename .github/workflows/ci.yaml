@@ -107,12 +107,16 @@ jobs:
           version: v3.16.3
       - name: helm lint
         run: helm lint charts/kube-vnet
-      - name: helm template (defaults — deny-all baseline, no auto-memberships)
+      - name: helm template (each isolationLevel preset)
         run: |
-          helm template testrelease charts/kube-vnet --kube-version 1.31.0 > /dev/null
-      - name: helm template (full options on, with default-memberships)
+          for level in pod namespace cluster; do
+            helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+              --set operator.clusterBaseline.ingressIsolationLevel=$level > /dev/null
+          done
+      - name: helm template (full options on, explicit memberships override)
         run: |
           helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
-            --set operator.defaultMemberships=namespace=both,cluster=egress \
+            --set operator.clusterBaseline.memberships.namespace=default-both \
+            --set operator.clusterBaseline.memberships.cluster=default-egress \
             --set podMonitor.enabled=true \
             --set metricsService.enabled=true > /dev/null

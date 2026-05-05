@@ -127,7 +127,7 @@ The Pod watch uses **`handler.Funcs`** instead of `handler.EnqueueRequestsFromMa
 
 The NetworkPolicy watch is what gives us drift correction: a delete or a hand-edit fires an event, the policy's `kube-vnet/network` label maps it back to a VirtualNetwork, and the reconciler re-applies. See [ADR 0019](adr/0019-baseline-durability.md).
 
-The `NamespaceReconciler` watches `Namespace` only; every event is potentially relevant because the resolved `ingress-isolation` mode can change with annotations or operator-level config.
+The `NamespaceReconciler` watches `Namespace` plus the deny-all baseline `NetworkPolicy` (label-filtered to managed-by=kube-vnet, role=baseline) for drift correction. The baseline shape is uniform across namespaces (deny-all minus `--elide-baseline-for` exemptions), so namespace-level events only matter for managed/disabled transitions.
 
 The Manager's `SyncPeriod` defaults to 10 minutes — every controller resyncs all primary objects after that interval. For us, `Reconcile` returns `RequeueAfter: 10 * time.Minute` explicitly to keep the cadence predictable.
 

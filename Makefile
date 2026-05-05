@@ -90,7 +90,7 @@ render-kustomize-vaps: ## Render the chart's system-* VAPs into config/admission
 	  out=config/admission/$${tpl}.yaml; \
 	  { \
 	    echo "# Generated from charts/kube-vnet/templates/$${tpl}.yaml by 'make render-kustomize-vaps'."; \
-	    echo "# Do not edit by hand -- run the make target instead. ADR 0030."; \
+	    echo "# Do not edit by hand -- run the make target instead. ADR 0031."; \
 	    helm template kube-vnet-controller charts/kube-vnet \
 	      --namespace kube-vnet-system \
 	      --kube-version 1.31.0 \

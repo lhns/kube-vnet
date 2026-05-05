@@ -1,6 +1,6 @@
 # 0025 — `ingress-isolation` rename + ingress-only scope
 
-Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The `ingress-isolation` annotation and flags are gone; baseline shapes are uniformly deny-all under ADR 0030.
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05) and further refined by [ADR 0031](0031-baseline-tier-resolution.md). The `ingress-isolation` annotation and flags are gone; baseline shapes are uniformly deny-all under ADR 0030. The egress-unrestricted decision (this ADR's central claim) is preserved.
 
 ## Context
 

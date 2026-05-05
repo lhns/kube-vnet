@@ -1,6 +1,6 @@
 # 0024 — Operator ingress-isolation default + per-mode override lists
 
-Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The `--ingress-isolation*` flags and per-mode override lists are gone, replaced by `--default-memberships=…` (operator-wide default vnet memberships) and `--elide-baseline-for=…` (cosmetic optimization for the always-deny-all baseline). The three modes (`none`/`namespace`/`pod`) map to specific `--default-memberships` settings under the new model.
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05) and further refined by [ADR 0031](0031-baseline-tier-resolution.md). The `--ingress-isolation*` flags and per-mode override lists are gone; baseline contents are now expressed via the singleton `ClusterVirtualNetworkBaseline` CR (chart-seeded from `operator.clusterBaseline.ingressIsolationLevel`). The three modes (`none`/`namespace`/`pod`) map to specific `ingressIsolationLevel` presets — see ADR 0031 for the table. The transitional `--default-memberships` flag mentioned in ADR 0030 was removed in the ADR-0031 cleanup.
 
 ## Context
 

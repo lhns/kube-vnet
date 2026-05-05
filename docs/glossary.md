@@ -32,7 +32,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Home namespace** — the namespace a `VirtualNetwork` resource lives in. Pods in the home namespace can join with either the bare or the prefixed label form; the home namespace is always implicitly in `allowedNamespaces`.
 
-**Ingress isolation** *(historical)* — under earlier ADRs the per-namespace baseline shape was selected by a `kube-vnet/ingress-isolation` annotation with values `none`/`namespace`/`pod`. [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) replaced that with a uniform deny-all baseline plus a configurable `--elide-baseline-for` exemption list driven by per-pod system-vnet membership. The annotation, the `IsolationMode` enum, and the `--ingress-isolation*` flags are gone.
+**Ingress isolation** *(historical)* — under earlier ADRs the per-namespace baseline shape was selected by a `kube-vnet/ingress-isolation` annotation with values `none`/`namespace`/`pod`. [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) replaced that with a uniform deny-all baseline plus a configurable `--elide-baseline-for` exemption list driven by per-pod system-vnet membership. The annotation, the `IsolationMode` enum, and the `--ingress-isolation*` flags are gone. The three modes survive as presets in [ADR 0031](adr/0031-baseline-tier-resolution.md)'s `operator.clusterBaseline.ingressIsolationLevel` chart value.
 
 **InvalidJoiner** — a pod that carries the prefixed join label but lives in a non-permitted namespace (excluded, disabled-annotated, or not in `allowedNamespaces`). Surfaced on the VirtualNetwork's `Degraded` condition with reason `InvalidJoiners` and a per-pod sub-reason (`NamespaceExcluded`, `NamespaceNotAllowed`).
 

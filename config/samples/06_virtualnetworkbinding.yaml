@@ -2,22 +2,20 @@
 # a VirtualNetwork — useful when the pod template is owned by an upstream
 # Helm chart, third-party manifests, or another operator and you can't add
 # the join label directly. The binding lives in the same namespace as the
-# pods it selects (selector is implicitly scoped to metadata.namespace).
+# pods it selects via a non-empty podSelector (ADR 0031).
 #
-# Direction has the same enum semantics as the join label value:
-# both | ingress | egress | none. Defaults to "both".
+# Direction is one of the four bare values: both | ingress | egress | none.
+# Defaults to "both". (default-* values are baseline-tier only.)
 #
-# The binding's namespace is set to ingress-isolation `pod` so the binding's
-# effect is observable: only the pods matched by the binding's podSelector
-# accept ingress from the target vnet's peers; everything else in the
-# namespace stays isolated. Apply alongside config/samples/02_two_namespaces.yaml
-# (which creates the `platform/payments` vnet that this binding references).
+# The deny-all baseline lands automatically in every managed namespace, so
+# only the pods matched by the binding's podSelector accept ingress from the
+# target vnet's peers; everything else in the namespace stays isolated.
+# Apply alongside config/samples/02_two_namespaces.yaml (which creates the
+# `platform/payments` vnet that this binding references).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetworkBinding
