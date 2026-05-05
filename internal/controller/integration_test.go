@@ -52,36 +52,6 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	})
 }
 
-// TestIntegration_Baseline_NoLongerImplicitOnMember verifies the
-// behavior change introduced in ADR 0023: adding a vnet member to a
-// namespace no longer implicitly creates the baseline. The baseline is
-// now decided by the resolved ingress-isolation mode (default: none).
-func TestIntegration_Baseline_NoLongerImplicitOnMember(t *testing.T) {
-	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed; see baseline_test.go")
-	ctx := context.Background()
-	ns := uniqueNS(t, "no-implicit")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
-	})
-	mustCreate(t, makePod(ns, "p1", map[string]string{"kube-vnet/net.v": "both"}))
-
-	// Wait long enough for the membership policy to be applied …
-	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
-		return err
-	})
-	// … and verify the baseline IS installed but as an allow-all (mode=none
-	// materializes an allow-from-everywhere baseline, ADR 0029). Traffic
-	// outcome is identical to "no baseline" but the policy object exists so
-	// the namespace's mode is visible.
-	bp := &networkingv1.NetworkPolicy{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-		t.Fatalf("baseline should exist with mode=none (allow-all), got err=%v", err)
-	}
-	assertAllowAllBaseline(t, bp)
-}
-
 // assertAllowAllBaseline checks the policy is the mode=none allow-all shape:
 // policyTypes=[Ingress], one empty ingress rule (no From, no Ports). Per
 // the K8s NetworkPolicy spec, an empty rule matches all sources on all ports.
@@ -602,53 +572,6 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 	})
 }
 
-// TestIntegration_Baseline_AnnotationRemovalRevertsBaseline: removing the
-// per-namespace ingress-isolation annotation reverts to the operator default
-// (`none` in tests). With ADR 0029, mode=none materializes an allow-all
-// baseline rather than no baseline, so the baseline transitions from
-// deny-all (mode=pod) to allow-all (mode=none) — same name, different shape.
-func TestIntegration_Baseline_AnnotationRemovalRevertsBaseline(t *testing.T) {
-	t.Skip("obsolete under ADR 0030 — baseline is always deny-all")
-	ctx := context.Background()
-	ns := uniqueNS(t, "ann-revert")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
-
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-			return err
-		}
-		// pod mode → deny-all (no Ingress rules).
-		if len(bp.Spec.Ingress) != 0 {
-			return fmt.Errorf("expected deny-all baseline, got %+v", bp.Spec.Ingress)
-		}
-		return nil
-	})
-
-	// Strip the annotation.
-	current := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, current); err != nil {
-		t.Fatalf("get namespace: %v", err)
-	}
-	delete(current.Annotations, "kube-vnet/ingress-isolation")
-	if err := testClient.Update(ctx, current); err != nil {
-		t.Fatalf("update namespace: %v", err)
-	}
-
-	eventually(t, 10*time.Second, func() error {
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-			return err
-		}
-		// Default (none) → one empty ingress rule (allow-all).
-		if len(bp.Spec.Ingress) != 1 || len(bp.Spec.Ingress[0].From) != 0 {
-			return fmt.Errorf("expected allow-all baseline after annotation removed, got %+v", bp.Spec.Ingress)
-		}
-		return nil
-	})
-}
-
 // TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline: under the new
 // decoupled model (ADR 0023), deleting a vnet does not affect the baseline
 // — the baseline is owned by NamespaceReconciler and reacts only to the
@@ -839,34 +762,6 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 }
 
 // ----- ingress-isolation mode tests ---------------------------------------
-
-// TestIntegration_IngressIsolation_Namespace_BaselineAllowsSameNS:
-// kube-vnet/ingress-isolation=namespace puts a baseline that allows ingress
-// only from same-namespace pods.
-func TestIntegration_IngressIsolation_Namespace_BaselineAllowsSameNS(t *testing.T) {
-	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed")
-	ctx := context.Background()
-	ns := uniqueNS(t, "ns-iso")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "namespace",
-	}, nil))
-
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Errorf("policyTypes should be [Ingress] only, got %v", bp.Spec.PolicyTypes)
-	}
-	if len(bp.Spec.Ingress) != 1 {
-		t.Fatalf("expected one ingress rule, got %d", len(bp.Spec.Ingress))
-	}
-	from := bp.Spec.Ingress[0].From[0]
-	if from.NamespaceSelector == nil ||
-		from.NamespaceSelector.MatchLabels[NamespaceMetadataNameLabel] != ns {
-		t.Errorf("ingress peer should select same namespace, got %+v", from)
-	}
-}
 
 // TestIntegration_IngressIsolation_NoEgressInBaseline: regardless of mode,
 // the baseline never restricts egress (ADR 0025).
@@ -1062,68 +957,6 @@ func touchNamespace(t *testing.T, name string) {
 	if err := testClient.Update(context.Background(), ns); err != nil {
 		t.Fatalf("touch namespace %s: %v", name, err)
 	}
-}
-
-// TestIntegration_NamespaceOverride_ShieldsFromClusterMode verifies that a
-// namespace listed in OverrideIsolationNone gets the allow-all baseline
-// (mode=none) instead of the deny-all baseline (mode=pod) even when the
-// cluster-wide default is `pod`. ADR 0029: mode=none materializes an
-// allow-all baseline rather than no baseline.
-func TestIntegration_NamespaceOverride_ShieldsFromClusterMode(t *testing.T) {
-	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed")
-	ctx := context.Background()
-	shielded := uniqueNS(t, "shielded")
-	mustCreate(t, makeNamespace(shielded, nil, nil))
-
-	priorMode := testNSReconciler.NSFilter.DefaultIsolation
-	testNSReconciler.NSFilter.DefaultIsolation = IsolationPod
-	testNSReconciler.NSFilter.OverrideIsolationNone[shielded] = true
-	t.Cleanup(func() {
-		testNSReconciler.NSFilter.DefaultIsolation = priorMode
-		delete(testNSReconciler.NSFilter.OverrideIsolationNone, shielded)
-	})
-
-	touchNamespace(t, shielded)
-
-	// The shielded namespace gets the allow-all (mode=none) baseline, NOT the
-	// deny-all (mode=pod) one that the cluster-wide default would dictate.
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 5*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: shielded, Name: BaselinePolicyName}, bp)
-	})
-	assertAllowAllBaseline(t, bp)
-
-	// Sanity: a sibling namespace WITHOUT the override gets the deny-all
-	// (mode=pod) baseline — empty Ingress rules, not allow-all.
-	control := uniqueNS(t, "control")
-	mustCreate(t, makeNamespace(control, nil, nil))
-	eventually(t, 5*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: control, Name: BaselinePolicyName}, bp)
-	})
-	if len(bp.Spec.Ingress) != 0 {
-		t.Errorf("control namespace should have deny-all baseline (no Ingress rules), got %+v", bp.Spec.Ingress)
-	}
-	t.Cleanup(func() {
-		_ = testClient.Delete(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: control}})
-	})
-}
-
-// TestIntegration_DefaultDenyAll_FlagOff_AllowAllBaselineInEmptyNS: with the
-// cluster-wide default at none, every managed namespace gets the allow-all
-// baseline (ADR 0029). Functionally invisible to traffic; visible to
-// `kubectl get netpol`.
-func TestIntegration_DefaultDenyAll_FlagOff_AllowAllBaselineInEmptyNS(t *testing.T) {
-	t.Skip("obsolete under ADR 0030 — baseline is always deny-all")
-	ctx := context.Background()
-	withDefaultDenyEverywhere(t, false)
-	ns := uniqueNS(t, "ddaoff")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 5*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-	assertAllowAllBaseline(t, bp)
 }
 
 // TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere: flag on, fresh
