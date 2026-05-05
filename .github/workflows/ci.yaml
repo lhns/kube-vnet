@@ -21,12 +21,17 @@ jobs:
         run: go build ./...
       - name: go test (unit)
         run: go test ./... -count=1
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.3
       - name: verify generated code is up to date
         run: |
           go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5
           $(go env GOPATH)/bin/controller-gen object paths="./api/v1alpha1/..."
           $(go env GOPATH)/bin/controller-gen crd paths="./api/v1alpha1/..." output:crd:dir=config/crd/bases
           $(go env GOPATH)/bin/controller-gen rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
+          # Re-render the chart-derived kustomize VAPs (Stage D / ADR 0030).
+          make render-kustomize-vaps
           git diff --exit-code
 
   integration:

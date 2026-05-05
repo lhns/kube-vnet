@@ -61,18 +61,23 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 		})
 	}
 
-	// Also exercise the kustomize-shipped VAP directly. It's a single static
-	// file (no kustomize patches), so we read it raw — avoids needing kubectl
-	// on PATH in the integration job.
-	t.Run("kustomize-vap", func(t *testing.T) {
-		path := filepath.Join("..", "..", "config", "admission", "policy.yaml")
-		f, err := os.Open(path)
-		if err != nil {
-			t.Fatalf("open %s: %v", path, err)
-		}
-		defer f.Close()
-		applyAllDryRun(t, f)
-	})
+	// Also exercise each kustomize-shipped VAP directly. The direction-VAP
+	// is hand-written in config/admission/policy.yaml; the system-labels and
+	// system-vnet VAPs are generated from the chart templates by
+	// `make render-kustomize-vaps`. Reading them as static files avoids
+	// needing kubectl on PATH in the integration job.
+	for _, p := range []string{"policy.yaml", "system-labels-vap.yaml", "system-vnet-vap.yaml"} {
+		p := p
+		t.Run("kustomize-vap-"+p, func(t *testing.T) {
+			path := filepath.Join("..", "..", "config", "admission", p)
+			f, err := os.Open(path)
+			if err != nil {
+				t.Fatalf("open %s: %v", path, err)
+			}
+			defer f.Close()
+			applyAllDryRun(t, f)
+		})
+	}
 }
 
 // applyAllDryRun decodes every YAML document in `in` and applies it with

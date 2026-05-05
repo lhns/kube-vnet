@@ -1,0 +1,69 @@
+# Generated from charts/kube-vnet/templates/system-labels-vap.yaml by 'make render-kustomize-vaps'.
+# Do not edit by hand -- run the make target instead. ADR 0030.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kube-vnet-controller-system-labels-protected
+  labels:
+    helm.sh/chart: kube-vnet-0.1.0
+    app.kubernetes.io/name: kube-vnet
+    app.kubernetes.io/instance: kube-vnet-controller
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: controller
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+  variables:
+    # The system-label prefix kube-vnet.system/ is reserved for operator output.
+    - name: systemPrefix
+      expression: '"kube-vnet.system/"'
+    # The operator's ServiceAccount username is exempted from this VAP.
+    # Templated from Helm release values so a non-default install lines up.
+    - name: operatorUser
+      expression: "\"system:serviceaccount:kube-vnet-system:kube-vnet-controller\""
+    # System labels in the new object.
+    - name: newSystemLabels
+      expression: 'object.metadata.?labels.orValue({}).filter(k, k.startsWith(variables.systemPrefix))'
+    # System labels in the old object (empty for CREATE).
+    - name: oldSystemLabels
+      expression: 'oldObject == null ? [] : oldObject.metadata.?labels.orValue({}).filter(k, k.startsWith(variables.systemPrefix))'
+  validations:
+    # Allow if the requester is the operator's ServiceAccount.
+    # Otherwise require that no kube-vnet.system/* labels are added, removed,
+    # or changed: the set of (key, value) pairs in oldObject and object must
+    # be identical for system-prefixed keys.
+    - expression: |
+        request.userInfo.username == variables.operatorUser ||
+        (
+          variables.newSystemLabels.all(k,
+            oldObject != null &&
+            (k in oldObject.metadata.?labels.orValue({})) &&
+            object.metadata.labels[k] == oldObject.metadata.labels[k]
+          ) &&
+          variables.oldSystemLabels.all(k,
+            (k in object.metadata.?labels.orValue({}))
+          )
+        )
+      message: "kube-vnet.system/* labels are operator-managed; users must not set, change, or remove them. See ADR 0030."
+---
+# Source: kube-vnet/templates/system-labels-vap.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kube-vnet-controller-system-labels-protected
+  labels:
+    helm.sh/chart: kube-vnet-0.1.0
+    app.kubernetes.io/name: kube-vnet
+    app.kubernetes.io/instance: kube-vnet-controller
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: controller
+spec:
+  policyName: kube-vnet-controller-system-labels-protected
+  validationActions: [Deny]
