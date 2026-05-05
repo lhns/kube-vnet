@@ -113,8 +113,8 @@ func TestE2E_SameVNet_Connectivity(t *testing.T) {
 	defer cleanupNamespace(t, ns)
 
 	applyYAML(t, vnetSpec("net1", ns, ""))
-	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "true"}))
-	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "true"}))
+	applyYAML(t, httpServerPod(ns, "server", map[string]string{"kube-vnet/net.net1": "both"}))
+	applyYAML(t, clientPod(ns, "client", map[string]string{"kube-vnet/net.net1": "both"}))
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "client", 90*time.Second)
 
@@ -180,7 +180,7 @@ func TestE2E_AllowedNamespaces_All(t *testing.T) {
 		"kube-vnet/net.observability": "both",
 	}))
 	applyYAML(t, clientPod(foreignNS, "client", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.observability", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.observability", homeNS): "both",
 	}))
 	waitForPod(t, homeNS, "server", 90*time.Second)
 	waitForPod(t, foreignNS, "client", 90*time.Second)
@@ -211,10 +211,10 @@ func TestE2E_AllowedNamespaces_Names_PositiveAndNegative(t *testing.T) {
 		"kube-vnet/net.svc": "both",
 	}))
 	applyYAML(t, clientPod(listedNS, "ok", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	applyYAML(t, clientPod(unlistedNS, "denied", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	waitForPod(t, homeNS, "server", 90*time.Second)
 	waitForPod(t, listedNS, "ok", 90*time.Second)
@@ -248,7 +248,7 @@ func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
 	}))
 	// labeled-and-listed: should reach.
 	applyYAML(t, clientPod(listedNS, "labeled", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	// unlabeled-but-listed: even though its namespace is allowedNamespaces,
 	// without the join label it's NOT a member → must not reach.
@@ -289,10 +289,10 @@ func TestE2E_AllowedNamespaces_Selector_PositiveAndNegative(t *testing.T) {
 		"kube-vnet/net.svc": "both",
 	}))
 	applyYAML(t, clientPod(prodNS, "ok", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	applyYAML(t, clientPod(devNS, "denied", map[string]string{
-		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "true",
+		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	waitForPod(t, homeNS, "server", 90*time.Second)
 	waitForPod(t, prodNS, "ok", 90*time.Second)
