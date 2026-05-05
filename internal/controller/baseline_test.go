@@ -9,7 +9,7 @@ import (
 )
 
 func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationNone, nil)
+	p := DesiredBaseline("platform", nil)
 	if p == nil {
 		t.Fatalf("DesiredBaseline returned nil")
 	}
@@ -37,7 +37,7 @@ func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
 }
 
 func TestDesiredBaseline_ElideForCluster(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationNone, []string{"cluster"})
+	p := DesiredBaseline("platform", []string{"cluster"})
 	// Deny-all + one matchExpression excluding cluster receivers.
 	if len(p.Spec.Ingress) != 0 {
 		t.Errorf("expected deny-all, got %+v", p.Spec.Ingress)
@@ -60,31 +60,9 @@ func TestDesiredBaseline_ElideForCluster(t *testing.T) {
 }
 
 func TestDesiredBaseline_ElideMultipleVnets(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationNone, []string{"cluster", "public"})
+	p := DesiredBaseline("platform", []string{"cluster", "public"})
 	if len(p.Spec.PodSelector.MatchExpressions) != 2 {
 		t.Errorf("expected two matchExpressions, got %d", len(p.Spec.PodSelector.MatchExpressions))
-	}
-}
-
-func TestParseIsolationMode(t *testing.T) {
-	type tc struct {
-		in   string
-		want IsolationMode
-		ok   bool
-	}
-	cases := []tc{
-		{"none", IsolationNone, true},
-		{"", IsolationNone, true},
-		{"namespace", IsolationNamespace, true},
-		{"pod", IsolationPod, true},
-		{"strict", IsolationNone, false},
-		{"NONE", IsolationNone, false}, // case-sensitive
-	}
-	for _, c := range cases {
-		got, ok := ParseIsolationMode(c.in)
-		if got != c.want || ok != c.ok {
-			t.Errorf("ParseIsolationMode(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
-		}
 	}
 }
 

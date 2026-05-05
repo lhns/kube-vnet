@@ -75,7 +75,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	desired := DesiredBaseline(ns.Name, IsolationNone, r.BaselineElideFor)
+	desired := DesiredBaseline(ns.Name, r.BaselineElideFor)
 
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,
