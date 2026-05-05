@@ -12,14 +12,17 @@ release. Pinning to an exact version is recommended.
 
 ### Breaking
 
-- **New `--default-memberships` flag (ADR 0030 stage 7) and `--elide-baseline-for`
-  flag (stage 5).** Operator-default vnet memberships are now declared as
-  `namespace=<dir>,cluster=<dir>` pairs the resolution controller stamps onto
-  every pod. The `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}`
-  flags still exist but are deprecated — they no longer drive baseline shape
-  (the baseline is unconditionally deny-all minus `--elide-baseline-for`
-  exemptions). Plan to remove them in a follow-up cleanup pass. Helm chart
-  values: `operator.defaultMemberships` and `operator.elideBaselineFor`.
+- **CLI flags reworked under ADR 0030.** Operator-default vnet memberships
+  are declared via the new `--default-memberships=<vnet>=<dir>,...` flag
+  (the resolution controller stamps `kube-vnet.system/net.<vnet>` labels
+  on every pod accordingly). Pods that should be excluded from the
+  always-deny-all baseline are listed via `--elide-baseline-for=<csv>`.
+  **The `--ingress-isolation`, `--ingress-isolation-{none,namespace,pod}`
+  flags are removed** along with the `kube-vnet/ingress-isolation`
+  per-namespace annotation; the cluster-wide-isolation knob's job is
+  done by `--default-memberships` now. Helm chart values: replace
+  `operator.ingressIsolation.*` with `operator.defaultMemberships` and
+  `operator.elideBaselineFor`.
 - **Baseline shape changed.** Per-mode baselines (allow-all/same-NS/deny-all)
   are gone. The baseline is always deny-all with `podSelector` excluding
   receivers on the elide-list. ADR 0029's mode=none allow-all and ADR 0023's
