@@ -1,0 +1,199 @@
+{{- /*
+CRD shipped as a templated resource (not under `charts/kube-vnet/crds/`) so
+`helm upgrade` updates it on chart bumps. Helm's special crds/ directory is
+install-once-only and does not propagate updates -- see
+https://helm.sh/docs/chart_best_practices/custom_resource_definitions/.
+The `helm.sh/resource-policy: keep` annotation prevents `helm uninstall`
+from cascading-deleting every existing CR alongside the CRD. ADR 0031.
+*/ -}}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    helm.sh/resource-policy: keep
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: virtualnetworkbaselines.kube-vnet.lhns.de
+spec:
+  group: kube-vnet.lhns.de
+  names:
+    kind: VirtualNetworkBaseline
+    listKind: VirtualNetworkBaselineList
+    plural: virtualnetworkbaselines
+    shortNames:
+    - vnbl
+    - vnbls
+    singular: virtualnetworkbaseline
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.memberships
+      name: Memberships
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          VirtualNetworkBaseline is the namespace-wide tier-default for vnet
+          memberships. Singleton per namespace, named `default`. See ADR 0031.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              VirtualNetworkBaselineSpec is the namespace-wide tier-default.
+
+              One singleton CR named `default` per namespace. Inherits from
+              ClusterVirtualNetworkBaseline (overriding only entries the cluster
+              baseline marked as default-*). See ADR 0031.
+            properties:
+              memberships:
+                description: Memberships every pod in this namespace inherits.
+                items:
+                  description: |-
+                    BaselineMembership is one (vnet, direction) entry inside a baseline's
+                    memberships list. Directions accept the full eight-value enum (the four
+                    bare values plus the four `default-*` variants); see ADR 0031.
+                  properties:
+                    direction:
+                      description: |-
+                        Direction the selected pods participate in for this vnet.
+                        Bare values (both/ingress/egress/none) are enforced — lower tiers cannot
+                        override. The `default-*` variants are advisory — lower tiers may
+                        override. See ADR 0031 for the override-permission semantics.
+                      enum:
+                      - both
+                      - ingress
+                      - egress
+                      - none
+                      - default-both
+                      - default-ingress
+                      - default-egress
+                      - default-none
+                      type: string
+                    virtualNetworkRef:
+                      description: VirtualNetworkRef is the target VirtualNetwork.
+                      properties:
+                        name:
+                          description: Name of the target VirtualNetwork.
+                          type: string
+                        namespace:
+                          description: Namespace is the home namespace of the target
+                            VirtualNetwork.
+                          type: string
+                      required:
+                      - name
+                      - namespace
+                      type: object
+                  required:
+                  - direction
+                  - virtualNetworkRef
+                  type: object
+                type: array
+                x-kubernetes-list-type: atomic
+            type: object
+          status:
+            description: VirtualNetworkBaselineStatus is the observed state.
+            properties:
+              conditions:
+                description: |-
+                  Conditions follow the standard Kubernetes condition pattern.
+                  Known types: Ready, Conflicts, OverrideRejected.
+
+                  OverrideRejected fires when this baseline tries to override a vnet
+                  that the cluster baseline pinned with a bare (non-default-*) direction;
+                  the cluster value remains in effect and this baseline's entry is
+                  ignored for that vnet. The condition message names the affected vnet.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation last reconciled.
+                format: int64
+                type: integer
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: VirtualNetworkBaseline must be named 'default' (singleton per namespace;
+            ADR 0031)
+          rule: self.metadata.name == 'default'
+    served: true
+    storage: true
+    subresources:
+      status: {}
