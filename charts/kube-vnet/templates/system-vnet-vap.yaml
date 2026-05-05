@@ -3,18 +3,26 @@ Validating admission for operator-managed system VirtualNetworks.
 
 The two system vnets `namespace` (one per managed namespace) and `cluster`
 (one cluster-wide) are operator-managed: created and drift-corrected by
-the SystemVnetReconciler, marked with `kube-vnet/system=true`. Users must
-not edit or delete them. The operator's ServiceAccount is exempted via a
-username-prefix check.
+the SystemVnetReconciler, marked with `kube-vnet/system=true`. This VAP
+reserves both the names and the system label for the operator.
 
-Note: the SystemVnetReconciler will undo unauthorized edits within a
+Three CREATE/UPDATE/DELETE attempts get rejected unless the requester is
+the operator's ServiceAccount:
+
+  1. CREATE/UPDATE/DELETE of any vnet whose name is `namespace` or `cluster`
+     (the reserved names — see SystemVnetNamespace/SystemVnetCluster in
+     internal/controller/system_vnet_controller.go).
+  2. CREATE of a vnet carrying `kube-vnet/system=true` (label spoofing).
+  3. UPDATE/DELETE of a vnet that already carries `kube-vnet/system=true`.
+
+The operator's ServiceAccount is exempted via username equality.
+
+The SystemVnetReconciler will also undo unauthorized edits within a
 reconcile cycle anyway — this VAP is defense-in-depth that surfaces the
-error to the user immediately rather than silently reverting it.
-
-CREATE is intentionally not gated: a user creating their own VirtualNetwork
-that doesn't carry kube-vnet/system=true is fine. The label can only be
-applied by the operator (no separate VAP enforces label immutability;
-SystemVnetReconciler treats unlabeled vnets as user-owned).
+error to the user immediately rather than silently reverting it. The
+controller-side short-circuit at virtualnetwork_controller.go (skipping
+the home-namespace excluded check on system-labeled vnets) trusts that
+this VAP keeps the label honest.
 
 Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
 older clusters this template renders nothing; SystemVnetReconciler's
@@ -37,26 +45,30 @@ spec:
     resourceRules:
       - apiGroups:   ["kube-vnet.lhns.de"]
         apiVersions: ["v1alpha1"]
-        operations:  ["UPDATE", "DELETE"]
+        operations:  ["CREATE", "UPDATE", "DELETE"]
         resources:   ["virtualnetworks"]
   variables:
     - name: operatorUser
       expression: {{ printf "\"system:serviceaccount:%s:%s\""
         (.Release.Namespace)
         (include "kube-vnet.serviceAccountName" .) | quote }}
-    # Whether the affected object carries kube-vnet/system=true.
-    # On DELETE the apiserver evaluates `oldObject` (the object being
-    # deleted); on UPDATE both `object` (new) and `oldObject` are populated.
-    # We check oldObject so DELETE works correctly; UPDATE also looks at
-    # oldObject which matches as long as the user isn't trying to remove
-    # the system label (which would itself need to pass this check).
+    # Whether the affected object carries kube-vnet/system=true. On CREATE
+    # only `object` is populated, on DELETE only `oldObject`, on UPDATE both;
+    # we OR them so any of the three operations matches an attempt to either
+    # set or carry the system label.
     - name: isSystemVnet
-      expression: 'oldObject.metadata.?labels["kube-vnet/system"].orValue("") == "true"'
+      expression: |
+        (object != null && object.metadata.?labels["kube-vnet/system"].orValue("") == "true") ||
+        (oldObject != null && oldObject.metadata.?labels["kube-vnet/system"].orValue("") == "true")
+    # The two reserved names. `request.name` is uniform across CREATE/UPDATE/
+    # DELETE (object.metadata.name is empty on DELETE).
+    - name: isReservedName
+      expression: 'request.name == "namespace" || request.name == "cluster"'
   validations:
     - expression: |
         request.userInfo.username == variables.operatorUser ||
-        !variables.isSystemVnet
-      message: "VirtualNetworks labeled kube-vnet/system=true are operator-managed; users must not update or delete them. See ADR 0030."
+        (!variables.isSystemVnet && !variables.isReservedName)
+      message: "VirtualNetwork names `namespace` and `cluster` are reserved for operator-managed system vnets, as is the `kube-vnet/system=true` label. Only the operator may create, update, or delete these. See ADR 0030."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

@@ -83,11 +83,12 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Cluster system vnet: only when reconciling the operator's namespace.
 	// (Reconciling on every namespace event would be redundant; we want the
-	// trigger to come from the operator's namespace specifically. If the
-	// cluster vnet's home namespace is unmanaged for some reason — e.g.
-	// the operator runs in kube-system, which is in disabledNamespaces by
-	// default — we still create it; the system vnet itself is not subject
-	// to the disabled-namespaces filter.)
+	// trigger to come from the operator's namespace specifically.) The
+	// cluster vnet's home namespace is the operator namespace, which is
+	// implicitly added to disabledNamespaces by cmd/main.go as a privilege
+	// boundary; VirtualNetworkReconciler.Reconcile short-circuits the
+	// home-namespace-excluded check on the kube-vnet/system label so the
+	// vnet still reconciles to Ready.
 	if ns.Name == r.OperatorNamespace {
 		if err := r.ensureClusterSystemVnet(ctx); err != nil {
 			logger.Error(err, "ensure cluster system vnet failed")

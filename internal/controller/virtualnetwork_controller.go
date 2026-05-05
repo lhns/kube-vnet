@@ -117,12 +117,18 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Reject home namespace if it is unmanaged (operator-level exclusion or
-	// per-namespace kube-vnet/disabled annotation).
+	// per-namespace kube-vnet/disabled annotation). System vnets are exempt:
+	// the cluster system vnet's home is the operator namespace, which is
+	// implicitly disabled in cmd/main.go as a privilege boundary, and per-
+	// namespace system vnets in user-disabled namespaces still need to exist
+	// so resolution works the moment the namespace becomes managed again.
+	// The system-vnet VAP keeps the kube-vnet/system label honest.
+	isSystem := vnet.Labels[LabelSystem] == LabelSystemValue
 	homeNS, err := r.getNamespace(ctx, vnet.Namespace)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if homeNS == nil || !r.NSFilter.IsManaged(homeNS) {
+	if !isSystem && (homeNS == nil || !r.NSFilter.IsManaged(homeNS)) {
 		setReady(vnet, metav1.ConditionFalse, ReasonHomeNamespaceExcluded,
 			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
 		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,

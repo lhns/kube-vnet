@@ -12,6 +12,16 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
+- **Cluster system vnet was rejected as `HomeNamespaceExcluded` on every
+  install.** The cluster system vnet's home namespace is the operator
+  namespace, which `cmd/main.go` implicitly adds to `disabledNamespaces` as
+  a privilege-boundary safety measure. `VirtualNetworkReconciler` then
+  rejected any vnet whose home namespace was disabled, so the cluster vnet
+  reconciled to `Ready=False, Reason=HomeNamespaceExcluded` and the
+  `kube-vnet.system/net.cluster` membership policy never materialized.
+  System-labeled vnets (`kube-vnet/system=true`) are now exempt from the
+  home-namespace check; the new admission gate below keeps the label
+  honest.
 - **Helm chart's `ClusterRole` was missing verbs added by ADR 0030.** The
   resolution controller's `pods/patch+update` and the system-vnet
   controller's `virtualnetworks/create+update+patch` were never mirrored
@@ -31,17 +41,61 @@ release. Pinning to an exact version is recommended.
   `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete
   user-authored CRs.
 
-  **Migration for users on the broken intermediate version**: install the
-  missing `ClusterVirtualNetworkBinding` CRD by hand once, then upgrade:
+  **Migration for users on the broken intermediate version**: the previously
+  installed CRDs were created by Helm via the special `crds/` directory,
+  which does not stamp Helm ownership metadata. Now that CRDs are
+  templated, Helm refuses to adopt them with `invalid ownership metadata;
+  ... must be set to "Helm"`. Stamp the labels/annotations once, then
+  upgrade — substitute your release name/namespace if different:
 
   ```bash
-  kubectl apply -f https://raw.githubusercontent.com/lhns/kube-vnet/main/charts/kube-vnet/templates/crd-clustervirtualnetworkbindings.yaml
-  helm upgrade --install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-    --namespace kube-vnet-system
-  kubectl rollout restart deploy -n kube-vnet-system kube-vnet
+  RELEASE=kube-vnet
+  NS=kube-vnet-system
+  for crd in virtualnetworks.kube-vnet.lhns.de \
+             virtualnetworkbindings.kube-vnet.lhns.de \
+             clustervirtualnetworkbindings.kube-vnet.lhns.de; do
+    kubectl get crd "$crd" >/dev/null 2>&1 || continue
+    kubectl label    crd "$crd" app.kubernetes.io/managed-by=Helm --overwrite
+    kubectl annotate crd "$crd" meta.helm.sh/release-name="$RELEASE" --overwrite
+    kubectl annotate crd "$crd" meta.helm.sh/release-namespace="$NS" --overwrite
+  done
+
+  helm upgrade --install "$RELEASE" oci://ghcr.io/lhns/charts/kube-vnet \
+    --namespace "$NS"
+  kubectl rollout restart deploy -n "$NS" "$RELEASE"
+  ```
+
+  Helm will create the missing `ClusterVirtualNetworkBinding` CRD itself
+  on the next upgrade now that CRDs are templated.
+
+  **k0s users (helm extension):** the `helm upgrade` step is replaced by
+  editing `k0sctl.yaml` to pin the new chart version and `k0sctl apply`.
+  The k0s helm reconciler does not re-trigger on `.metadata.annotations`
+  changes, so if it has already cached the old error, force a re-reconcile
+  by bumping `.spec` on the chart CR:
+
+  ```bash
+  kubectl -n kube-system patch chart k0s-addon-chart-kube-vnet \
+    --type=merge -p '{"spec":{"timeout":"5m0s"}}'
   ```
 
   After this fix lands, future upgrades self-heal — no manual step needed.
+
+### Changed
+
+- **VirtualNetwork admission now reserves the names `namespace` and
+  `cluster` and the `kube-vnet/system=true` label for the operator.** The
+  `system-vnet-protected` ValidatingAdmissionPolicy, previously gating only
+  UPDATE/DELETE, now also gates CREATE: a non-operator request to create a
+  vnet named `namespace`, named `cluster`, or carrying the system label is
+  rejected at admission. The operator's ServiceAccount is exempted via a
+  username equality check. Existing user-owned vnets with these shapes
+  continue to function (the policy only fires on new CREATE/UPDATE/DELETE
+  attempts), but new attempts will be rejected — rename to a non-reserved
+  name. There is no automated migration; auto-deletion would risk losing
+  user data. Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy
+  is GA); on older clusters the SystemVnetReconciler's drift-correction
+  remains the fallback as before.
 
 ### Breaking
 

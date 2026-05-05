@@ -17,24 +17,28 @@ spec:
     resourceRules:
       - apiGroups:   ["kube-vnet.lhns.de"]
         apiVersions: ["v1alpha1"]
-        operations:  ["UPDATE", "DELETE"]
+        operations:  ["CREATE", "UPDATE", "DELETE"]
         resources:   ["virtualnetworks"]
   variables:
     - name: operatorUser
       expression: "\"system:serviceaccount:kube-vnet-system:kube-vnet-controller\""
-    # Whether the affected object carries kube-vnet/system=true.
-    # On DELETE the apiserver evaluates `oldObject` (the object being
-    # deleted); on UPDATE both `object` (new) and `oldObject` are populated.
-    # We check oldObject so DELETE works correctly; UPDATE also looks at
-    # oldObject which matches as long as the user isn't trying to remove
-    # the system label (which would itself need to pass this check).
+    # Whether the affected object carries kube-vnet/system=true. On CREATE
+    # only `object` is populated, on DELETE only `oldObject`, on UPDATE both;
+    # we OR them so any of the three operations matches an attempt to either
+    # set or carry the system label.
     - name: isSystemVnet
-      expression: 'oldObject.metadata.?labels["kube-vnet/system"].orValue("") == "true"'
+      expression: |
+        (object != null && object.metadata.?labels["kube-vnet/system"].orValue("") == "true") ||
+        (oldObject != null && oldObject.metadata.?labels["kube-vnet/system"].orValue("") == "true")
+    # The two reserved names. `request.name` is uniform across CREATE/UPDATE/
+    # DELETE (object.metadata.name is empty on DELETE).
+    - name: isReservedName
+      expression: 'request.name == "namespace" || request.name == "cluster"'
   validations:
     - expression: |
         request.userInfo.username == variables.operatorUser ||
-        !variables.isSystemVnet
-      message: "VirtualNetworks labeled kube-vnet/system=true are operator-managed; users must not update or delete them. See ADR 0030."
+        (!variables.isSystemVnet && !variables.isReservedName)
+      message: "VirtualNetwork names `namespace` and `cluster` are reserved for operator-managed system vnets, as is the `kube-vnet/system=true` label. Only the operator may create, update, or delete these. See ADR 0030."
 ---
 # Source: kube-vnet/templates/system-vnet-vap.yaml
 apiVersion: admissionregistration.k8s.io/v1
