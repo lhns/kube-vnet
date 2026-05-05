@@ -75,7 +75,11 @@ func renderChart(t *testing.T) ([]byte, error) {
 	t.Helper()
 	chartDir := filepath.Join("..", "..", "charts", "kube-vnet")
 	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("helm", "template", "testrelease", chartDir, "--kube-version", "1.31.0")
+	// operator.clusterBaseline.ingressIsolationLevel has no default per ADR
+	// 0031; pass any valid value so the chart renders without erroring.
+	cmd := exec.Command("helm", "template", "testrelease", chartDir,
+		"--kube-version", "1.31.0",
+		"--set", "operator.clusterBaseline.ingressIsolationLevel=namespace")
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

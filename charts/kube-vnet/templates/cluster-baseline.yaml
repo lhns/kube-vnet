@@ -1,21 +1,31 @@
 {{- /*
 Seeded ClusterVirtualNetworkBaseline (ADR 0031). The chart populates the
-singleton named `default` from the chosen `operator.isolationLevel`. The
-helm.sh/resource-policy: keep annotation prevents `helm uninstall` from
-deleting it (which would also clear the conditions cluster-admins use to
-pin enforced bare directions). Subsequent `helm upgrade` will reconcile
-this template's values; if you've edited the CR by hand to use bare
-(enforced) directions, your edits are overwritten on upgrade — see ADR
-0031's "chart upgrade idempotency" verification step. To prevent overwrite,
-either set isolationLevel to match your hand-edits, or unset the chart
-template by setting `operator.isolationLevel: ""`.
+singleton named `default` from operator.clusterBaseline.
 
-System-vnet keys ("namespace", "cluster") are bare by convention — the
-SystemVnetReconciler creates the corresponding VirtualNetwork CRs in the
-operator's own namespace.
+XOR validation: when create=true, exactly one of `ingressIsolationLevel`
+or `memberships` must be set. Both → fail (ambiguous). Neither → fail
+(no default; force a deliberate security choice). When create=false the
+chart emits nothing — the user manages the CR elsewhere.
+
+The `helm.sh/resource-policy: keep` annotation prevents `helm uninstall`
+from deleting the CR. Subsequent `helm upgrade` re-renders this template;
+hand-edits via kubectl are overwritten unless you also update the chart
+values to match.
+
+System-vnet keys (`namespace`, `cluster`) live in the operator's release
+namespace by convention. The SystemVnetReconciler creates the
+corresponding VirtualNetwork CRs there.
 */ -}}
-{{- $level := default "namespace" .Values.operator.isolationLevel -}}
-{{- if $level }}
+{{- $cb := .Values.operator.clusterBaseline -}}
+{{- if $cb.create -}}
+{{- $hasLevel := and $cb.ingressIsolationLevel (ne $cb.ingressIsolationLevel "") -}}
+{{- $hasMemberships := and $cb.memberships (gt (len $cb.memberships) 0) -}}
+{{- if and $hasLevel $hasMemberships -}}
+{{- fail "operator.clusterBaseline: set EXACTLY ONE of ingressIsolationLevel or memberships, not both" -}}
+{{- end -}}
+{{- if and (not $hasLevel) (not $hasMemberships) -}}
+{{- fail "operator.clusterBaseline: set ingressIsolationLevel (pod|namespace|cluster) OR memberships (explicit map). No default — pick deliberately." -}}
+{{- end -}}
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: ClusterVirtualNetworkBaseline
 metadata:
@@ -26,7 +36,22 @@ metadata:
     {{- include "kube-vnet.labels" . | nindent 4 }}
 spec:
   memberships:
-{{- if eq $level "pod" }}
+{{- if $hasMemberships }}
+  {{- range $key, $direction := $cb.memberships }}
+    {{- $parts := splitList "." $key }}
+    {{- if eq (len $parts) 1 }}
+    - virtualNetworkRef:
+        name: {{ $key }}
+        namespace: {{ $.Release.Namespace }}
+      direction: {{ $direction }}
+    {{- else }}
+    - virtualNetworkRef:
+        name: {{ index $parts 1 }}
+        namespace: {{ index $parts 0 }}
+      direction: {{ $direction }}
+    {{- end }}
+  {{- end }}
+{{- else if eq $cb.ingressIsolationLevel "pod" }}
     - virtualNetworkRef:
         name: namespace
         namespace: {{ .Release.Namespace }}
@@ -35,7 +60,7 @@ spec:
         name: cluster
         namespace: {{ .Release.Namespace }}
       direction: default-egress
-{{- else if eq $level "namespace" }}
+{{- else if eq $cb.ingressIsolationLevel "namespace" }}
     - virtualNetworkRef:
         name: namespace
         namespace: {{ .Release.Namespace }}
@@ -44,7 +69,7 @@ spec:
         name: cluster
         namespace: {{ .Release.Namespace }}
       direction: default-egress
-{{- else if eq $level "cluster" }}
+{{- else if eq $cb.ingressIsolationLevel "cluster" }}
     - virtualNetworkRef:
         name: namespace
         namespace: {{ .Release.Namespace }}
@@ -54,6 +79,6 @@ spec:
         namespace: {{ .Release.Namespace }}
       direction: default-both
 {{- else }}
-    {{- fail (printf "operator.isolationLevel must be one of: pod, namespace, cluster (got %q)" $level) }}
+    {{- fail (printf "operator.clusterBaseline.ingressIsolationLevel must be one of: pod, namespace, cluster (got %q)" $cb.ingressIsolationLevel) }}
 {{- end }}
 {{- end }}

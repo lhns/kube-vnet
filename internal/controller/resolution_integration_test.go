@@ -15,25 +15,49 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-func setOperatorDefaults(t *testing.T, defs []OperatorMembership) {
+// setClusterBaseline creates the singleton ClusterVirtualNetworkBaseline
+// named `default` with the given memberships and registers a t.Cleanup to
+// delete it. nil/empty deletes any existing baseline (no-op if absent).
+// Replaces the legacy setOperatorDefaults helper from the pre-ADR-0031 era.
+func setClusterBaseline(t *testing.T, memberships []vnetv1alpha1.BaselineMembership) {
 	t.Helper()
-	prior := append([]OperatorMembership(nil), testResolutionDefaults...)
-	testResolutionReconciler.OperatorDefaults = defs
-	testResolutionDefaults = defs
-	t.Cleanup(func() {
-		testResolutionReconciler.OperatorDefaults = prior
-		testResolutionDefaults = prior
-	})
+	ctx := context.Background()
+	existing := &vnetv1alpha1.ClusterVirtualNetworkBaseline{}
+	_ = testClient.Get(ctx, client.ObjectKey{Name: "default"}, existing)
+	if existing.Name != "" {
+		_ = testClient.Delete(ctx, existing)
+	}
+	if len(memberships) == 0 {
+		return
+	}
+	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec:       vnetv1alpha1.ClusterVirtualNetworkBaselineSpec{Memberships: memberships},
+	}
+	if err := testClient.Create(ctx, cb); err != nil {
+		t.Fatalf("create cluster baseline: %v", err)
+	}
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), cb) })
 }
 
-// TestIntegration_Resolution_OperatorDefaultsStamped: with operator defaults
-// `[namespace=both, cluster=egress]`, a pod in a managed namespace gets
-// kube-vnet.system/net.namespace=both and kube-vnet.system/net.cluster=egress
-// stamped, plus the resolved-generation annotation.
-func TestIntegration_Resolution_OperatorDefaultsStamped(t *testing.T) {
-	setOperatorDefaults(t, []OperatorMembership{
-		{Vnet: "namespace", Direction: DirectionBoth},
-		{Vnet: "cluster", Direction: DirectionEgress},
+// sysVnetRef builds a BaselineMembership entry for a system vnet (lives in
+// the test operator namespace). Convenience wrapper for the common case.
+func sysVnetRef(name, dir string) vnetv1alpha1.BaselineMembership {
+	return vnetv1alpha1.BaselineMembership{
+		VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: name, Namespace: "kube-vnet-system-test"},
+		Direction:         dir,
+	}
+}
+
+// TestIntegration_Resolution_ClusterBaselineStamped: with a cluster baseline
+// of `[namespace=default-both, cluster=default-egress]`, a pod in a managed
+// namespace gets kube-vnet.system/net.namespace=both and net.cluster=egress
+// stamped (default-* prefix consumed during resolution), plus the
+// resolved-generation annotation.
+func TestIntegration_Resolution_ClusterBaselineStamped(t *testing.T) {
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("namespace", "default-both"),
+		sysVnetRef("cluster", "default-egress"),
 	})
 
 	ctx := context.Background()
@@ -60,10 +84,10 @@ func TestIntegration_Resolution_OperatorDefaultsStamped(t *testing.T) {
 }
 
 // TestIntegration_Resolution_PodLabelOverridesDefault: pod-authored
-// kube-vnet/net.cluster=both wins over operator default cluster=egress.
+// kube-vnet/net.cluster=both wins over a default-egress cluster baseline.
 func TestIntegration_Resolution_PodLabelOverridesDefault(t *testing.T) {
-	setOperatorDefaults(t, []OperatorMembership{
-		{Vnet: "cluster", Direction: DirectionEgress},
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("cluster", "default-egress"),
 	})
 
 	ctx := context.Background()
@@ -84,11 +108,11 @@ func TestIntegration_Resolution_PodLabelOverridesDefault(t *testing.T) {
 }
 
 // TestIntegration_Resolution_NoneOptsOut: pod-authored kube-vnet/net.namespace=none
-// strips the inherited operator-default membership; no kube-vnet.system label
+// strips the inherited cluster-baseline membership; no kube-vnet.system label
 // for `namespace` ends up on the pod.
 func TestIntegration_Resolution_NoneOptsOut(t *testing.T) {
-	setOperatorDefaults(t, []OperatorMembership{
-		{Vnet: "namespace", Direction: DirectionBoth},
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("namespace", "default-both"),
 	})
 
 	ctx := context.Background()
@@ -111,7 +135,7 @@ func TestIntegration_Resolution_NoneOptsOut(t *testing.T) {
 // TestIntegration_Resolution_VirtualNetworkBindingStamped: a VNB with
 // podSelector matching this pod stamps the system label.
 func TestIntegration_Resolution_VirtualNetworkBindingStamped(t *testing.T) {
-	setOperatorDefaults(t, nil)
+	setClusterBaseline(t, nil)
 
 	ctx := context.Background()
 	ns := uniqueNS(t, "res-vnb")
@@ -148,7 +172,7 @@ func TestIntegration_Resolution_VirtualNetworkBindingStamped(t *testing.T) {
 // disagreeing directions. Per ADR 0031 the conflict resolves via
 // intersection (fail-closed): both ∩ ingress = ingress.
 func TestIntegration_Resolution_BindingConflictIntersection(t *testing.T) {
-	setOperatorDefaults(t, nil)
+	setClusterBaseline(t, nil)
 
 	ctx := context.Background()
 	ns := uniqueNS(t, "res-conflict")
@@ -187,71 +211,11 @@ func TestIntegration_Resolution_BindingConflictIntersection(t *testing.T) {
 	})
 }
 
-// TestIntegration_Resolution_ClusterBindingNamespaceSelector: a CVNB with a
-// namespaceSelector matches pods only in the matching namespaces.
-func TestIntegration_Resolution_ClusterBindingNamespaceSelector(t *testing.T) {
-	setOperatorDefaults(t, nil)
-
-	ctx := context.Background()
-	matched := uniqueNS(t, "res-cvnb-match")
-	unmatched := uniqueNS(t, "res-cvnb-skip")
-	mustCreate(t, makeNamespace(matched, nil, map[string]string{"tier": "prod"}))
-	mustCreate(t, makeNamespace(unmatched, nil, map[string]string{"tier": "dev"}))
-
-	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: matched},
-		Spec: vnetv1alpha1.VirtualNetworkSpec{
-			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{All: true},
-		},
-	})
-	cvnb := &vnetv1alpha1.ClusterVirtualNetworkBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: uniqueNS(t, "prod-only-cvnb")},
-		Spec: vnetv1alpha1.ClusterVirtualNetworkBindingSpec{
-			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "shared", Namespace: matched},
-			Direction:         "both",
-			NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"tier": "prod"}},
-			PodSelector:       metav1.LabelSelector{},
-		},
-	}
-	mustCreate(t, cvnb)
-	t.Cleanup(func() { _ = testClient.Delete(ctx, cvnb) })
-
-	mustCreate(t, makePod(matched, "p1", map[string]string{"app": "x"}))
-	mustCreate(t, makePod(unmatched, "p2", map[string]string{"app": "x"}))
-
-	// Matched-NS pod is bare-form because its namespace is the vnet's home.
-	eventually(t, 10*time.Second, func() error {
-		p := &corev1.Pod{}
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: matched, Name: "p1"}, p); err != nil {
-			return err
-		}
-		if got := p.Labels["kube-vnet.system/net.shared"]; got != "both" {
-			return fmt.Errorf("matched-NS pod missing label: %v", p.Labels)
-		}
-		return nil
-	})
-
-	// Unmatched-NS pod must not get the system label (foreign-NS would use
-	// the prefixed form `<homeNS>.shared`; check both forms are absent).
-	time.Sleep(2 * time.Second)
-	p := &corev1.Pod{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: unmatched, Name: "p2"}, p); err != nil {
-		t.Fatalf("get unmatched pod: %v", err)
-	}
-	prefixedKey := "kube-vnet.system/net." + matched + ".shared"
-	if _, ok := p.Labels["kube-vnet.system/net.shared"]; ok {
-		t.Errorf("unmatched-NS pod should not have bare label, got %v", p.Labels)
-	}
-	if _, ok := p.Labels[prefixedKey]; ok {
-		t.Errorf("unmatched-NS pod should not have prefixed label %q, got %v", prefixedKey, p.Labels)
-	}
-}
-
 // TestIntegration_Resolution_BindingDeletionStripsLabel: when a VNB is
 // deleted, the system labels it caused to be stamped are removed from the
 // affected pods.
 func TestIntegration_Resolution_BindingDeletionStripsLabel(t *testing.T) {
-	setOperatorDefaults(t, nil)
+	setClusterBaseline(t, nil)
 
 	ctx := context.Background()
 	ns := uniqueNS(t, "res-bdel")

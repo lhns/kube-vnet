@@ -44,7 +44,9 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `replicaCount` | `1` | Operator replicas (scale to 2+ for HA; leader election always on) |
 | `operator.labelPrefix` | `kube-vnet/` | Label-key prefix for join labels |
 | `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
-| `operator.defaultMemberships` | `""` | Comma-separated `<vnet>=<dir>` pairs (system vnets `namespace`/`cluster` only) the resolution controller stamps onto every pod |
+| `operator.clusterBaseline.create` | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` |
+| `operator.clusterBaseline.ingressIsolationLevel` | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
+| `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.elideBaselineFor` | `cluster` | Comma-separated vnet names whose receivers are excluded from the deny-all baseline |
 | `operator.leaderElect` | `true` | Enable leader election |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |

@@ -32,7 +32,8 @@ rules:
 - apiGroups:
   - kube-vnet.lhns.de
   resources:
-  - clustervirtualnetworkbindings
+  - clustervirtualnetworkbaselines
+  - virtualnetworkbaselines
   - virtualnetworkbindings
   verbs:
   - get
@@ -41,20 +42,20 @@ rules:
 - apiGroups:
   - kube-vnet.lhns.de
   resources:
-  - clustervirtualnetworkbindings/finalizers
-  - virtualnetworkbindings/finalizers
-  - virtualnetworks/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - kube-vnet.lhns.de
-  resources:
-  - clustervirtualnetworkbindings/status
+  - clustervirtualnetworkbaselines/status
+  - virtualnetworkbaselines/status
   - virtualnetworkbindings/status
   - virtualnetworks/status
   verbs:
   - get
   - patch
+  - update
+- apiGroups:
+  - kube-vnet.lhns.de
+  resources:
+  - virtualnetworkbindings/finalizers
+  - virtualnetworks/finalizers
+  verbs:
   - update
 - apiGroups:
   - kube-vnet.lhns.de

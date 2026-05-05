@@ -44,9 +44,8 @@ func main() {
 		enableLeaderElect    bool
 		labelPrefix          string
 		disabledNamespaces   string
-		elideBaselineFor   string
-		defaultMemberships string
-		showVersion        bool
+		elideBaselineFor string
+		showVersion      bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -61,13 +60,6 @@ func main() {
 			"Default protects the system namespaces from kube-vnet objects "+
 			"entirely; remove a namespace from this list to enroll its pods in "+
 			"a vnet.",
-	)
-	flag.StringVar(&defaultMemberships, "default-memberships", "",
-		"comma-separated <vnet>=<direction> pairs that every pod in every "+
-			"managed namespace joins by default. The two recognized vnet keys "+
-			"are the system vnets `namespace` and `cluster`. Per-pod labels and "+
-			"VirtualNetworkBinding rules can add to or override these defaults. "+
-			"Per ADR 0030. Example: `namespace=both,cluster=egress`.",
 	)
 	flag.StringVar(&elideBaselineFor, "elide-baseline-for", "cluster",
 		"comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet> "+
@@ -146,25 +138,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	parsedDefaults, err := parseDefaultMemberships(defaultMemberships)
-	if err != nil {
-		setupLog.Error(err, "invalid --default-memberships")
-		os.Exit(1)
-	}
-	if len(parsedDefaults) > 0 {
-		setupLog.Info(
-			"DEPRECATED: --default-memberships will be removed in 0.5; "+
-				"use ClusterVirtualNetworkBaseline (or the chart's "+
-				"operator.isolationLevel) instead. ADR 0031.",
-			"value", defaultMemberships,
-		)
-	}
 	resReconciler := &controller.ResolutionReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		NSFilter:         nsFilter,
-		LabelPrefix:      labelPrefix,
-		OperatorDefaults: parsedDefaults,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		NSFilter:    nsFilter,
+		LabelPrefix: labelPrefix,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")
@@ -208,50 +186,11 @@ func main() {
 		"version", version, "commit", commit, "buildDate", date,
 		"labelPrefix", labelPrefix,
 		"disabled", fmt.Sprintf("%v", disabled),
-		"defaultMemberships", defaultMemberships,
 		"elideBaselineFor", elideBaselineFor)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)
 	}
-}
-
-// parseDefaultMemberships parses the --default-memberships flag value
-// (e.g. `namespace=both,cluster=egress`) into the operator-default-memberships
-// list the resolution controller consumes. Empty input → nil. Whitespace
-// around tokens is tolerated. Per ADR 0030, only the system vnets `namespace`
-// and `cluster` are accepted as keys; user vnets are joined via labels or
-// VirtualNetworkBindings.
-func parseDefaultMemberships(spec string) ([]controller.OperatorMembership, error) {
-	if strings.TrimSpace(spec) == "" {
-		return nil, nil
-	}
-	var out []controller.OperatorMembership
-	for _, pair := range strings.Split(spec, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("--default-memberships entry %q must be of the form <vnet>=<direction>", pair)
-		}
-		vnet := strings.TrimSpace(parts[0])
-		dirStr := strings.TrimSpace(parts[1])
-		if vnet != controller.SystemVnetNamespace && vnet != controller.SystemVnetCluster {
-			return nil, fmt.Errorf("--default-memberships vnet %q is not a system vnet name (must be %q or %q)",
-				vnet, controller.SystemVnetNamespace, controller.SystemVnetCluster)
-		}
-		dir, ok := controller.ParseDirection(dirStr)
-		if !ok {
-			return nil, fmt.Errorf("--default-memberships direction %q is not valid (one of: both, ingress, egress, none)", dirStr)
-		}
-		out = append(out, controller.OperatorMembership{
-			Vnet:      controller.VnetKey(vnet),
-			Direction: dir,
-		})
-	}
-	return out, nil
 }
 
 func splitAndTrim(s string) []string {

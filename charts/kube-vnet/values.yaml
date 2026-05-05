@@ -37,31 +37,43 @@ operator:
   # don't get a redundant baseline policy. ADR 0030.
   elideBaselineFor: cluster
 
-  # Isolation level (ADR 0031). Seeds a ClusterVirtualNetworkBaseline named
-  # `default` with the corresponding system-vnet memberships. One of:
-  #
-  #   pod        — namespace=default-egress, cluster=default-egress
-  #                Strict: ingress only via explicit binding/label; egress
-  #                permitted (DNS, image pulls, etc.).
-  #   namespace  — namespace=default-both,   cluster=default-egress
-  #                Same-NS pods reachable; cross-NS egress only.
-  #   cluster    — namespace=default-both,   cluster=default-both
-  #                No isolation (allow-all); equivalent to the legacy
-  #                `mode=none`.
-  #
-  # All directions are default-* so namespace baselines, bindings, and pod
-  # labels can override per-vnet. To enforce a value cluster-wide (no
-  # override), edit the rendered ClusterVirtualNetworkBaseline directly
-  # post-install — the chart annotates it with helm.sh/resource-policy: keep
-  # so subsequent `helm upgrade` runs don't stomp your edits.
-  # +kubebuilder:validation:Enum=pod;namespace;cluster
-  isolationLevel: namespace
+  # ClusterVirtualNetworkBaseline seeded by the chart (ADR 0031). The CR is
+  # named `default` (singleton) and is annotated `helm.sh/resource-policy:
+  # keep` so `helm uninstall` doesn't drop it. Subsequent `helm upgrade`
+  # re-renders it from this block; if you've hand-edited the CR via
+  # kubectl, your edits are overwritten.
+  clusterBaseline:
+    # Whether the chart creates the seeded ClusterVirtualNetworkBaseline.
+    # Set to false if you manage that CR outside Helm (Argo, GitOps, kubectl).
+    create: true
 
-  # DEPRECATED in 0.4 (ADR 0031), removed in 0.5. Comma-separated
-  # <vnet>=<direction> pairs that every pod joins by default — equivalent to
-  # an inline ClusterVirtualNetworkBaseline. Use `isolationLevel` instead.
-  # Setting both: the CR wins; this flag's value is ignored with a warning.
-  defaultMemberships: ""
+    # When create=true: set EXACTLY ONE of `ingressIsolationLevel` or
+    # `memberships`. Both → install fails (ambiguous). Neither → install
+    # fails (no default; force a deliberate security choice).
+    #
+    # ingressIsolationLevel — preset for the common cases. One of:
+    #   pod       — namespace=default-egress, cluster=default-egress
+    #               Strict: ingress only via explicit binding/label; egress
+    #               permitted (DNS, image pulls, etc.).
+    #   namespace — namespace=default-both,   cluster=default-egress
+    #               Same-NS pods reachable; cross-NS egress only.
+    #   cluster   — namespace=default-both,   cluster=default-both
+    #               No isolation (allow-all).
+    ingressIsolationLevel: ""
+
+    # memberships — explicit override for users whose desired baseline
+    # doesn't match any preset. Map of <vnet-key> → <direction>:
+    #   bare name (e.g. `namespace`, `cluster`) → system vnet, lives in the
+    #     operator's release namespace.
+    #   <namespace>.<name>                       → user vnet in that NS.
+    # Direction is the eight-value enum (bare or default-*).
+    # Bare directions are enforced; default-* are override-able by lower tiers.
+    memberships: null
+    # Example:
+    # memberships:
+    #   namespace: default-both
+    #   cluster: default-egress
+    #   platform.payments: ingress
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.
   leaderElect: true

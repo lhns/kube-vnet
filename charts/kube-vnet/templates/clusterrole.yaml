@@ -31,12 +31,16 @@ rules:
     resources: [pods]
     verbs: [get, list, patch, update, watch]
   - apiGroups: [kube-vnet.lhns.de]
-    resources: [clustervirtualnetworkbindings, virtualnetworkbindings]
+    resources:
+      [
+        clustervirtualnetworkbaselines,
+        virtualnetworkbaselines,
+        virtualnetworkbindings,
+      ]
     verbs: [get, list, watch]
   - apiGroups: [kube-vnet.lhns.de]
     resources:
       [
-        clustervirtualnetworkbindings/finalizers,
         virtualnetworkbindings/finalizers,
         virtualnetworks/finalizers,
       ]
@@ -44,7 +48,8 @@ rules:
   - apiGroups: [kube-vnet.lhns.de]
     resources:
       [
-        clustervirtualnetworkbindings/status,
+        clustervirtualnetworkbaselines/status,
+        virtualnetworkbaselines/status,
         virtualnetworkbindings/status,
         virtualnetworks/status,
       ]

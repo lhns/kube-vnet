@@ -34,14 +34,26 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 		name string
 		sets []string
 	}{
-		{"defaults", nil},
+		// All three isolation level presets, plus an explicit-memberships
+		// override case. operator.clusterBaseline.ingressIsolationLevel has
+		// no default per ADR 0031 — set it explicitly for every case.
+		{"isolation-pod", []string{
+			"--set", "operator.clusterBaseline.ingressIsolationLevel=pod",
+		}},
+		{"isolation-namespace", []string{
+			"--set", "operator.clusterBaseline.ingressIsolationLevel=namespace",
+		}},
+		{"isolation-cluster", []string{
+			"--set", "operator.clusterBaseline.ingressIsolationLevel=cluster",
+		}},
 		// podMonitor.enabled=true is intentionally left out: it renders a
 		// PodMonitor (prometheus-operator CRD) the envtest apiserver doesn't
 		// know about — a real cluster would have it from the operator install.
 		// metricsService is a plain Service, fine to validate.
-		{"with-metrics-svc-and-defaults", []string{
+		{"with-metrics-svc-and-explicit-memberships", []string{
 			"--set", "metricsService.enabled=true",
-			"--set", "operator.defaultMemberships=namespace=both,cluster=egress",
+			"--set", "operator.clusterBaseline.memberships.namespace=default-both",
+			"--set", "operator.clusterBaseline.memberships.cluster=default-egress",
 		}},
 	}
 	for _, tc := range cases {
