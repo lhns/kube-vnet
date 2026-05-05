@@ -1,0 +1,76 @@
+{{- /*
+Validating admission for kube-vnet.system/* labels on Pods.
+
+These labels are operator-managed (stamped by the resolution controller per
+ADR 0030). Users must not set, change, or delete them. The operator's
+ServiceAccount is exempted via a username-prefix check so the resolution
+controller's PATCH calls go through.
+
+Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
+older clusters this template renders nothing; the resolution controller
+will overwrite any user-set value within one reconcile cycle anyway.
+
+See ADR 0030.
+*/}}
+{{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
+{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
+{{- if or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30)) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "kube-vnet.fullname" . }}-system-labels-protected
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+  variables:
+    # The system-label prefix kube-vnet.system/ is reserved for operator output.
+    - name: systemPrefix
+      expression: '"kube-vnet.system/"'
+    # The operator's ServiceAccount username is exempted from this VAP.
+    # Templated from Helm release values so a non-default install lines up.
+    - name: operatorUser
+      expression: {{ printf "\"system:serviceaccount:%s:%s\""
+        (.Release.Namespace)
+        (include "kube-vnet.serviceAccountName" .) | quote }}
+    # System labels in the new object.
+    - name: newSystemLabels
+      expression: 'object.metadata.?labels.orValue({}).filter(k, k.startsWith(variables.systemPrefix))'
+    # System labels in the old object (empty for CREATE).
+    - name: oldSystemLabels
+      expression: 'oldObject == null ? [] : oldObject.metadata.?labels.orValue({}).filter(k, k.startsWith(variables.systemPrefix))'
+  validations:
+    # Allow if the requester is the operator's ServiceAccount.
+    # Otherwise require that no kube-vnet.system/* labels are added, removed,
+    # or changed: the set of (key, value) pairs in oldObject and object must
+    # be identical for system-prefixed keys.
+    - expression: |
+        request.userInfo.username == variables.operatorUser ||
+        (
+          variables.newSystemLabels.all(k,
+            oldObject != null &&
+            (k in oldObject.metadata.?labels.orValue({})) &&
+            object.metadata.labels[k] == oldObject.metadata.labels[k]
+          ) &&
+          variables.oldSystemLabels.all(k,
+            (k in object.metadata.?labels.orValue({}))
+          )
+        )
+      message: "kube-vnet.system/* labels are operator-managed; users must not set, change, or remove them. See ADR 0030."
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "kube-vnet.fullname" . }}-system-labels-protected
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "kube-vnet.fullname" . }}-system-labels-protected
+  validationActions: [Deny]
+{{- end }}
