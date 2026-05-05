@@ -44,13 +44,9 @@ func main() {
 		enableLeaderElect    bool
 		labelPrefix          string
 		disabledNamespaces   string
-		ingressIsolationMode string
-		ingressIsolationNone string
-		ingressIsolationNS   string
-		ingressIsolationPod  string
-		elideBaselineFor     string
-		defaultMemberships   string
-		showVersion          bool
+		elideBaselineFor   string
+		defaultMemberships string
+		showVersion        bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -65,27 +61,6 @@ func main() {
 			"Default protects the system namespaces from kube-vnet objects "+
 			"entirely; remove a namespace from this list to enroll its pods in "+
 			"a vnet.",
-	)
-	flag.StringVar(&ingressIsolationMode, "ingress-isolation", "",
-		"REQUIRED. Cluster-wide default ingress-isolation mode (none|namespace|pod). "+
-			"Per-namespace annotation kube-vnet/ingress-isolation overrides this; "+
-			"the --ingress-isolation-{none,namespace,pod} override flags also win over this default. "+
-			"No default — pick deliberately. (Helm: operator.ingressIsolation.mode)",
-	)
-	flag.StringVar(&ingressIsolationNone, "ingress-isolation-none", "",
-		"comma-separated namespaces overridden to ingress-isolation mode `none` "+
-			"(allow-all baseline). Wins over --ingress-isolation; the per-namespace "+
-			"annotation still wins over this. Default empty — system namespaces "+
-			"are kept out of kube-vnet entirely via --disabled-namespaces, not via "+
-			"this override (which would still create an allow-all baseline).",
-	)
-	flag.StringVar(&ingressIsolationNS, "ingress-isolation-namespace", "",
-		"comma-separated namespaces overridden to ingress-isolation mode `namespace` "+
-			"(baseline allows ingress from same-namespace pods).",
-	)
-	flag.StringVar(&ingressIsolationPod, "ingress-isolation-pod", "",
-		"comma-separated namespaces overridden to ingress-isolation mode `pod` "+
-			"(baseline denies all ingress).",
 	)
 	flag.StringVar(&defaultMemberships, "default-memberships", "",
 		"comma-separated <vnet>=<direction> pairs that every pod in every "+
@@ -116,17 +91,6 @@ func main() {
 	}
 	nsFilter := controller.NewNamespaceFilter(disabled)
 
-	// The --ingress-isolation* flags are parsed but ignored as of ADR 0030
-	// (per-mode baselines are gone; the baseline is always deny-all + the
-	// --elide-baseline-for exemption list). The flags are scheduled for
-	// removal in a follow-up commit; we keep them here so existing values
-	// don't cause "unknown flag" startup failures during the deprecation
-	// window. The required-mode startup gate is also dropped — there is
-	// no longer a meaningful default to require.
-	_ = ingressIsolationMode
-	_ = ingressIsolationNone
-	_ = ingressIsolationNS
-	_ = ingressIsolationPod
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,

@@ -43,18 +43,6 @@ spec:
             {{- with .Values.operator.disabledNamespaces }}
             - --disabled-namespaces={{ join "," . }}
             {{- end }}
-            {{- with .Values.operator.ingressIsolation }}
-            - --ingress-isolation={{ required "operator.ingressIsolation.mode is required (one of: none, namespace, pod)" .mode }}
-            {{- with (default (dict) .namespaceOverrides).none }}
-            - --ingress-isolation-none={{ join "," . }}
-            {{- end }}
-            {{- with (default (dict) .namespaceOverrides).namespace }}
-            - --ingress-isolation-namespace={{ join "," . }}
-            {{- end }}
-            {{- with (default (dict) .namespaceOverrides).pod }}
-            - --ingress-isolation-pod={{ join "," . }}
-            {{- end }}
-            {{- end }}
             {{- with .Values.operator.elideBaselineFor }}
             - --elide-baseline-for={{ . }}
             {{- end }}

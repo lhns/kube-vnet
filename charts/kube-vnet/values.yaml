@@ -24,39 +24,12 @@ operator:
   #
   # Default lists the system namespaces (kube-system, kube-public,
   # kube-node-lease). The operator stays out entirely there — no policies,
-  # not even an allow-all baseline. To enroll a system-namespace pod in a
-  # vnet, remove the namespace from this list (and consider whether you
-  # want it in ingressIsolation.namespaceOverrides.none or .namespace
-  # instead, since membership requires the operator to manage the NS).
+  # no system vnets, no resolution stamping. To enroll a system-namespace
+  # pod in a vnet, remove the namespace from this list.
   disabledNamespaces:
     - kube-system
     - kube-public
     - kube-node-lease
-
-  ingressIsolation:
-    # REQUIRED. One of: none | namespace | pod.
-    #   none      — baseline allows ingress from anywhere; ingress
-    #               effectively unrestricted by kube-vnet (the baseline is
-    #               functionally invisible but its presence makes the mode
-    #               visible in `kubectl get netpol`).
-    #   namespace — baseline allows ingress from same-namespace pods.
-    #   pod       — baseline denies all ingress; only vnet membership policies
-    #               grant allows.
-    # No default — `helm install/upgrade` fails fast if this is left unset.
-    # Pick deliberately.
-    mode: ""
-
-    # Per-namespace overrides of `mode`. The per-namespace
-    # `kube-vnet/ingress-isolation` annotation still takes precedence over
-    # both `mode` and these lists.
-    #
-    # All three lists default to empty. System namespaces are kept out via
-    # `disabledNamespaces` above (operator stays out entirely), not via the
-    # `none` override here (which would still create an allow-all baseline).
-    namespaceOverrides:
-      none: []
-      namespace: []
-      pod: []
 
   # Comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet>
   # In [both,ingress]) are excluded from the deny-all baseline. Default
