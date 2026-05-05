@@ -75,3 +75,15 @@ Vnet-existence and `allowedNamespaces` are *stateful* — they depend on a `Virt
 - ADR 0021 — Direction modes on join labels. The VAP value-set mirrors the parser's accepted enum; the empty-string semantic shift is recorded as an addendum on ADR 0021.
 - ADR 0022 — Long-form join label in the home namespace. Foreign-namespace bare-form misuse is now surfaced via `BareJoinLabelVnetNotFound` (recorded as an addendum on ADR 0022).
 - ADR 0023 — Decoupled `disabled` and `ingress-isolation`. The diagnostic controller skips disabled/excluded namespaces by design — explicit opt-out trumps diagnostic noise.
+
+## Addendum 2026-05-05 — VAP allow-list pruned; new sibling VAP for `kube-vnet.system/` labels
+
+[ADR 0030](0030-unified-vnet-membership-with-resolution.md) requires two changes here:
+
+1. **Direction-value VAP allow-list pruned.** The `validValues` list in the join-label-direction VAP becomes `[both, ingress, egress, none]`. The legacy `true`, `false`, and empty-string values are dropped (see also the [ADR 0021 addendum](0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)).
+
+2. **New sibling VAP: `kube-vnet-system-labels-protected`.** Rejects user attempts to set, change, or delete labels with the `kube-vnet.system/` prefix on Pod CREATE/UPDATE. The operator's ServiceAccount (`system:serviceaccount:<operator-ns>:<operator-sa>`) is exempted via a `request.userInfo.username` check, so the resolution controller's PATCH calls go through. Failure mode `Fail` — same posture as the direction-value VAP.
+
+Together: the `kube-vnet/` label namespace is for user-authored input (validated by the existing direction-value VAP); the `kube-vnet.system/` namespace is for operator-managed output (locked down by the new VAP). Two complementary admission gates.
+
+Both VAPs render via Helm and ship in the same chart template. Both are covered by the chart-manifest dry-run integration test (`chart_manifests_integration_test.go`), so a CEL syntax bug fails CI before a release ever ships.

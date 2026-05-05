@@ -77,3 +77,13 @@ Follows the `RoleBinding` pattern: a binding ties some subjects (selected pods) 
 - ADR 0021 — Direction modes on join labels. The `direction` field on the binding uses the same enum.
 - ADR 0022 — Long-form join label in home namespace; explicit no-mutation stance that motivates this ADR.
 - ADR 0005 — Namespaced CRD with `allowedNamespaces`. Bindings are subject to the same allow rule.
+
+## Addendum 2026-05-05 — `ClusterVirtualNetworkBinding` and resolution-driven semantics
+
+[ADR 0030](0030-unified-vnet-membership-with-resolution.md) extends bindings in two ways:
+
+1. **New cluster-scoped sibling: `ClusterVirtualNetworkBinding`.** Same shape as `VirtualNetworkBinding` but cluster-scoped, with a `namespaceSelector` field added so a single cluster-wide binding can target pods across all (or a subset of) managed namespaces. Naming follows K8s convention (`ClusterRole` vs `Role`).
+
+2. **Bindings stop being a parallel mechanism.** Previously the policy generator handled bindings specially, generating per-binding NetworkPolicies that lived alongside label-driven membership policies. Under ADR 0030, both `VirtualNetworkBinding` and `ClusterVirtualNetworkBinding` are inputs to the resolution controller, which translates them into `kube-vnet.system/net.<vnet>=<direction>` labels stamped on the matched pods. The generator only ever sees labels.
+
+Empty `podSelector: {}` in a namespaced `VirtualNetworkBinding` selects all pods in the binding's namespace — this is the canonical pattern for "namespace-default membership in vnet X" under the new model.

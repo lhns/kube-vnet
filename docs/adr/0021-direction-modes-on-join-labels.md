@@ -1,6 +1,6 @@
 # 0021 — Direction modes on join labels
 
-Status: Accepted
+Status: Accepted (with [2026-05-05 addendum](#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped) below)
 
 ## Context
 
@@ -107,3 +107,11 @@ The compat table above should now read:
 | `"true"` | `both` |
 | `""` (empty) | `none` |
 | `"false"` | `none` |
+
+## Addendum 2026-05-05 — Legacy `true`/`false`/empty aliases dropped
+
+[ADR 0030](0030-unified-vnet-membership-with-resolution.md) prunes the direction enum to exactly four values: `both`, `ingress`, `egress`, `none`. The legacy aliases `true`, `false`, and the empty-string value are removed.
+
+Rationale: alpha lets us simplify; one set of values is easier to teach, parse, and validate than four with three aliases. The direction-value `ValidatingAdmissionPolicy` from [ADR 0027](0027-pod-scoped-join-label-events.md) updates its allow-list to `[both, ingress, egress, none]` so manifests carrying legacy values are rejected at admission. The generator's selectors drop the `true` value: receivers `In: [both, ingress]`, initiators `In: [both, egress]`.
+
+Users on `=true` migrate to `=both`. Users on `=false` or `=""` migrate to `=none`. Documented in CHANGELOG as a breaking change.

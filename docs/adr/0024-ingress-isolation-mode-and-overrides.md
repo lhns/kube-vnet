@@ -1,6 +1,6 @@
 # 0024 — Operator ingress-isolation default + per-mode override lists
 
-Status: Accepted
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The `--ingress-isolation*` flags and per-mode override lists are gone, replaced by `--default-memberships=…` (operator-wide default vnet memberships) and `--elide-baseline-for=…` (cosmetic optimization for the always-deny-all baseline). The three modes (`none`/`namespace`/`pod`) map to specific `--default-memberships` settings under the new model.
 
 ## Context
 

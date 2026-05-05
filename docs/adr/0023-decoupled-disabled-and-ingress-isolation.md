@@ -1,6 +1,6 @@
 # 0023 — Decoupled `disabled` and `ingress-isolation` namespace annotations
 
-Status: Accepted
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The decoupling principle (separate "operator stays out entirely" from "operator manages but doesn't isolate") is preserved in the new model: `--disabled-namespaces` survives as a privilege-boundary allowlist; the per-namespace `kube-vnet/disabled=true` annotation also survives. What changed is that the per-namespace `kube-vnet/ingress-isolation` annotation is gone — its job is now done by the inheritance lattice over system vnet defaults.
 
 ## Context
 

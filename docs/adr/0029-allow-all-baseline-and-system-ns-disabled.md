@@ -1,6 +1,6 @@
 # 0029 — Allow-all baseline in mode=none, and system namespaces disabled by default
 
-Status: Accepted
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The "baseline always emitted for visibility" rule is replaced by "deny-all baseline + `--elide-baseline-for`" — visibility now comes from the system vnet membership labels rather than from a baseline placeholder. The "system namespaces disabled by default" decision is preserved unchanged in the new model.
 
 Date: 2026-05-04
 
