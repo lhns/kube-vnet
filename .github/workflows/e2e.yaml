@@ -207,7 +207,7 @@ jobs:
           helm install kube-vnet charts/kube-vnet \
             --namespace kube-vnet-system --create-namespace \
             --set fullnameOverride=kube-vnet-controller \
-            --set operator.clusterBaseline.ingressIsolationLevel=namespace \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
             --set image.repository=kube-vnet \
             --set image.tag=e2e \
             --set image.pullPolicy=Never \
