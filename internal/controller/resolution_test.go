@@ -4,59 +4,97 @@ import (
 	"testing"
 )
 
-func TestResolve_OperatorDefaultsOnly(t *testing.T) {
+// Three-tier baseline lattice (ADR 0031): ClusterBaseline → NamespaceBaseline
+// → Pod (bindings + labels). Bare directions are enforced; default-* are
+// override-able. Within-tier conflicts intersect.
+
+func TestResolve_BaselinesOnly(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopeOperatorDefault,
+			Scope: ScopeClusterBaseline,
 			Rules: []ResolutionRule{
-				{Vnet: "namespace", Direction: DirectionBoth, Source: "operator"},
-				{Vnet: "cluster", Direction: DirectionEgress, Source: "operator"},
+				{Vnet: "namespace", Direction: DirectionDefaultBoth, Source: "ClusterVirtualNetworkBaseline/default"},
+				{Vnet: "cluster", Direction: DirectionDefaultEgress, Source: "ClusterVirtualNetworkBaseline/default"},
 			},
 		},
 	})
 	if got := res.Effective["namespace"]; got != DirectionBoth {
-		t.Errorf("namespace = %q, want both", got)
+		t.Errorf("namespace = %q, want both (default-* stripped)", got)
 	}
 	if got := res.Effective["cluster"]; got != DirectionEgress {
 		t.Errorf("cluster = %q, want egress", got)
 	}
-	if len(res.Conflicts) != 0 {
-		t.Errorf("conflicts = %v, want none", res.Conflicts)
+	if len(res.Conflicts) != 0 || len(res.OverrideRejected) != 0 {
+		t.Errorf("expected no conflicts/rejections, got %+v / %+v", res.Conflicts, res.OverrideRejected)
 	}
 }
 
-func TestResolve_HigherScopeOverridesLower(t *testing.T) {
+func TestResolve_NamespaceBaselineOverridesCluster(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopeOperatorDefault,
-			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionEgress, Source: "operator"}},
+			Scope: ScopeClusterBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionDefaultEgress, Source: "cb"}},
 		},
 		{
-			Scope: ScopeClusterBinding,
-			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionBoth, Source: "cvnb-x"}},
-		},
-		{
-			Scope: ScopeNamespaceBinding,
-			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionIngress, Source: "vnb-y"}},
-		},
-		{
-			Scope: ScopePodLabel,
-			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionEgress, Source: "<pod-label>"}},
+			Scope: ScopeNamespaceBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionDefaultBoth, Source: "nb"}},
 		},
 	})
-	if got := res.Effective["cluster"]; got != DirectionEgress {
-		t.Errorf("highest-scope wins: cluster = %q, want egress", got)
+	if got := res.Effective["cluster"]; got != DirectionBoth {
+		t.Errorf("cluster = %q, want both (NS baseline overrode default-egress)", got)
+	}
+	if len(res.OverrideRejected) != 0 {
+		t.Errorf("override should be permitted (cluster used default-*); got rejections %+v", res.OverrideRejected)
+	}
+}
+
+func TestResolve_OverrideRejectedWhenClusterBare(t *testing.T) {
+	res := Resolve([]ResolutionLayer{
+		{
+			Scope: ScopeClusterBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionBoth, Source: "cb"}}, // BARE
+		},
+		{
+			Scope: ScopeNamespaceBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionEgress, Source: "nb"}}, // try to narrow
+		},
+	})
+	if got := res.Effective["cluster"]; got != DirectionBoth {
+		t.Errorf("cluster = %q, want both (cluster baseline pinned bare)", got)
+	}
+	if len(res.OverrideRejected) != 1 {
+		t.Fatalf("expected 1 override-rejected, got %d: %+v", len(res.OverrideRejected), res.OverrideRejected)
+	}
+	rj := res.OverrideRejected[0]
+	if rj.Vnet != "cluster" || rj.AttemptedScope != ScopeNamespaceBaseline || rj.BlockingScope != ScopeClusterBaseline {
+		t.Errorf("rejection shape unexpected: %+v", rj)
+	}
+}
+
+func TestResolve_BindingOverridesNamespaceBaseline(t *testing.T) {
+	res := Resolve([]ResolutionLayer{
+		{
+			Scope: ScopeNamespaceBaseline,
+			Rules: []ResolutionRule{{Vnet: "x", Direction: DirectionDefaultEgress, Source: "nb"}},
+		},
+		{
+			Scope: ScopePod,
+			Rules: []ResolutionRule{{Vnet: "x", Direction: DirectionBoth, Source: "VirtualNetworkBinding/y"}},
+		},
+	})
+	if got := res.Effective["x"]; got != DirectionBoth {
+		t.Errorf("x = %q, want both (binding overrode default-egress)", got)
 	}
 }
 
 func TestResolve_NoneOptsOutOfInherited(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopeOperatorDefault,
-			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionBoth, Source: "operator"}},
+			Scope: ScopeClusterBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionDefaultBoth, Source: "cb"}},
 		},
 		{
-			Scope: ScopePodLabel,
+			Scope: ScopePod,
 			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionNone, Source: "<pod-label>"}},
 		},
 	})
@@ -65,32 +103,111 @@ func TestResolve_NoneOptsOutOfInherited(t *testing.T) {
 	}
 }
 
-func TestResolve_ConflictAlphabeticalTiebreaker(t *testing.T) {
+func TestResolve_BareNoneIsHardOptOut(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopeNamespaceBinding,
+			Scope: ScopeClusterBaseline,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionNone, Source: "cb"}}, // bare none
+		},
+		{
+			Scope: ScopePod,
+			Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionBoth, Source: "<pod-label>"}},
+		},
+	})
+	if _, ok := res.Effective["cluster"]; ok {
+		t.Errorf("cluster should remain off (bare none); got %q", res.Effective["cluster"])
+	}
+	if len(res.OverrideRejected) != 1 {
+		t.Fatalf("expected pod's override to be rejected, got %+v", res.OverrideRejected)
+	}
+}
+
+func TestResolve_LabelBindingConflictIntersection(t *testing.T) {
+	// Pod has a binding setting ingress and a label setting egress for the
+	// same vnet. Per ADR 0031, both are pod-tier siblings; intersection
+	// gives effective=none → vnet is dropped.
+	res := Resolve([]ResolutionLayer{
+		{
+			Scope: ScopePod,
 			Rules: []ResolutionRule{
-				{Vnet: "payments", Direction: DirectionIngress, Source: "b-deny"},
-				{Vnet: "payments", Direction: DirectionBoth, Source: "a-allow"},
+				{Vnet: "x", Direction: DirectionIngress, Source: "VirtualNetworkBinding/b"},
+				{Vnet: "x", Direction: DirectionEgress, Source: "<pod-label>"},
 			},
 		},
 	})
-	if got := res.Effective["payments"]; got != DirectionBoth {
-		t.Errorf("alphabetical winner: payments = %q, want both (from a-allow)", got)
+	if _, ok := res.Effective["x"]; ok {
+		t.Errorf("x should drop out (intersection of ingress + egress = none); got %q", res.Effective["x"])
 	}
 	if len(res.Conflicts) != 1 {
 		t.Fatalf("expected 1 conflict, got %d: %+v", len(res.Conflicts), res.Conflicts)
 	}
 	c := res.Conflicts[0]
-	if c.Vnet != "payments" || c.Winner.Source != "a-allow" || len(c.Losers) != 1 || c.Losers[0].Source != "b-deny" {
+	if c.Vnet != "x" || c.Scope != ScopePod || c.Effective != DirectionNone {
 		t.Errorf("conflict shape unexpected: %+v", c)
+	}
+	if len(c.Participants) != 2 {
+		t.Errorf("expected 2 participants, got %d", len(c.Participants))
+	}
+}
+
+func TestResolve_TwoBindingsSamePodConflictIntersection(t *testing.T) {
+	res := Resolve([]ResolutionLayer{
+		{
+			Scope: ScopePod,
+			Rules: []ResolutionRule{
+				{Vnet: "x", Direction: DirectionBoth, Source: "VirtualNetworkBinding/a"},
+				{Vnet: "x", Direction: DirectionEgress, Source: "VirtualNetworkBinding/b"},
+			},
+		},
+	})
+	if got := res.Effective["x"]; got != DirectionEgress {
+		t.Errorf("x = %q, want egress (intersection of both + egress)", got)
+	}
+	if len(res.Conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(res.Conflicts))
+	}
+}
+
+func TestResolve_IntersectionTruthTable(t *testing.T) {
+	cases := []struct {
+		a, b Direction
+		want Direction
+	}{
+		{DirectionBoth, DirectionBoth, DirectionBoth},
+		{DirectionBoth, DirectionIngress, DirectionIngress},
+		{DirectionBoth, DirectionEgress, DirectionEgress},
+		{DirectionBoth, DirectionNone, DirectionNone},
+		{DirectionIngress, DirectionIngress, DirectionIngress},
+		{DirectionIngress, DirectionEgress, DirectionNone},
+		{DirectionIngress, DirectionNone, DirectionNone},
+		{DirectionEgress, DirectionEgress, DirectionEgress},
+		{DirectionEgress, DirectionNone, DirectionNone},
+		{DirectionNone, DirectionNone, DirectionNone},
+		// default-* inputs strip to bare equivalents.
+		{DirectionDefaultBoth, DirectionEgress, DirectionEgress},
+		{DirectionDefaultIngress, DirectionDefaultEgress, DirectionNone},
+	}
+	for _, tc := range cases {
+		if got := intersect(tc.a, tc.b); got != tc.want {
+			t.Errorf("intersect(%s, %s) = %s, want %s", tc.a, tc.b, got, tc.want)
+		}
+		if got := intersect(tc.b, tc.a); got != tc.want {
+			t.Errorf("intersect(%s, %s) = %s, want %s (symmetry)", tc.b, tc.a, got, tc.want)
+		}
+	}
+}
+
+func TestResolve_EmptyInputs(t *testing.T) {
+	res := Resolve(nil)
+	if len(res.Effective) != 0 || len(res.Conflicts) != 0 || len(res.OverrideRejected) != 0 {
+		t.Errorf("empty input should produce empty output, got %+v", res)
 	}
 }
 
 func TestResolve_NoConflictWhenSameDirection(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopeNamespaceBinding,
+			Scope: ScopePod,
 			Rules: []ResolutionRule{
 				{Vnet: "x", Direction: DirectionBoth, Source: "a"},
 				{Vnet: "x", Direction: DirectionBoth, Source: "b"},
@@ -105,59 +222,31 @@ func TestResolve_NoConflictWhenSameDirection(t *testing.T) {
 	}
 }
 
-func TestResolve_PodLabelOverridesBindingSameScope(t *testing.T) {
-	// Pod label is its own scope — it always wins over bindings in any
-	// other scope. Within the pod-label scope, conflicts can't really
-	// happen because labels are key-unique on a pod.
-	res := Resolve([]ResolutionLayer{
-		{
-			Scope: ScopeNamespaceBinding,
-			Rules: []ResolutionRule{{Vnet: "x", Direction: DirectionBoth, Source: "vnb"}},
-		},
-		{
-			Scope: ScopePodLabel,
-			Rules: []ResolutionRule{{Vnet: "x", Direction: DirectionEgress, Source: "<pod-label>"}},
-		},
-	})
-	if got := res.Effective["x"]; got != DirectionEgress {
-		t.Errorf("x = %q, want egress (pod label wins)", got)
-	}
-}
-
-func TestResolve_EmptyInputs(t *testing.T) {
-	res := Resolve(nil)
-	if len(res.Effective) != 0 || len(res.Conflicts) != 0 {
-		t.Errorf("empty input should produce empty output, got %+v", res)
-	}
-}
-
 func TestResolve_DeterministicConflictOrder(t *testing.T) {
-	// Two conflicts, in two different scopes. Output should be sorted by
-	// scope first, then by Vnet alphabetically.
 	res := Resolve([]ResolutionLayer{
 		{
-			Scope: ScopePodLabel,
+			Scope: ScopePod,
 			Rules: []ResolutionRule{
 				{Vnet: "z", Direction: DirectionBoth, Source: "a"},
 				{Vnet: "z", Direction: DirectionEgress, Source: "b"},
 			},
 		},
 		{
-			Scope: ScopeNamespaceBinding,
+			Scope: ScopeNamespaceBaseline,
 			Rules: []ResolutionRule{
-				{Vnet: "y", Direction: DirectionBoth, Source: "a"},
-				{Vnet: "y", Direction: DirectionIngress, Source: "b"},
+				{Vnet: "y", Direction: DirectionDefaultBoth, Source: "a"},
+				{Vnet: "y", Direction: DirectionDefaultIngress, Source: "b"},
 			},
 		},
 	})
 	if len(res.Conflicts) != 2 {
 		t.Fatalf("expected 2 conflicts, got %d", len(res.Conflicts))
 	}
-	// Lower scope (NamespaceBinding) sorts first.
-	if res.Conflicts[0].Scope != ScopeNamespaceBinding || res.Conflicts[0].Vnet != "y" {
-		t.Errorf("first conflict = %+v, want NamespaceBinding/y", res.Conflicts[0])
+	// Lower scope (NamespaceBaseline) sorts first.
+	if res.Conflicts[0].Scope != ScopeNamespaceBaseline || res.Conflicts[0].Vnet != "y" {
+		t.Errorf("first conflict = %+v, want NamespaceBaseline/y", res.Conflicts[0])
 	}
-	if res.Conflicts[1].Scope != ScopePodLabel || res.Conflicts[1].Vnet != "z" {
-		t.Errorf("second conflict = %+v, want PodLabel/z", res.Conflicts[1])
+	if res.Conflicts[1].Scope != ScopePod || res.Conflicts[1].Vnet != "z" {
+		t.Errorf("second conflict = %+v, want Pod/z", res.Conflicts[1])
 	}
 }

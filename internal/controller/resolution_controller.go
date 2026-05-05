@@ -42,24 +42,32 @@ type OperatorMembership struct {
 }
 
 // ResolutionReconciler resolves the inheritance lattice for each pod and
-// stamps `kube-vnet.system/net.<vnet>=<direction>` labels accordingly. Reads:
-// operator defaults (struct field), ClusterVirtualNetworkBindings (cluster
-// scope), VirtualNetworkBindings (pod's namespace scope), and pod's own
-// `kube-vnet/net.<vnet>=<direction>` labels (highest priority).
+// stamps `kube-vnet.system/net.<vnet>=<direction>` labels accordingly. Three
+// scopes per ADR 0031:
+//   - ScopeClusterBaseline: the ClusterVirtualNetworkBaseline named `default`
+//     (plus the deprecated --default-memberships flag and any surviving
+//     ClusterVirtualNetworkBindings as legacy contributors through 0.5).
+//   - ScopeNamespaceBaseline: the VirtualNetworkBaseline named `default` in
+//     the pod's namespace (if present).
+//   - ScopePod: VirtualNetworkBindings matching the pod, plus the pod's own
+//     `kube-vnet/net.<vnet>=<direction>` labels. All sources within this
+//     scope intersect on conflict (fail-closed).
 //
-// On change to any of those four input sources, the affected pod(s) get
-// re-resolved. Disabled namespaces are skipped entirely (operator stays out).
-//
-// See ADR 0030.
+// On change to any of those input sources, the affected pod(s) get
+// re-resolved. Disabled namespaces are skipped entirely.
 type ResolutionReconciler struct {
 	client.Client
 	Scheme           *runtime.Scheme
 	NSFilter         *NamespaceFilter
-	OperatorDefaults []OperatorMembership
+	OperatorDefaults []OperatorMembership // DEPRECATED (ADR 0031); seeded from --default-memberships, removed in 0.5
 	LabelPrefix      string
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbaselines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbaselines/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbaselines,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbaselines/status,verbs=get;update;patch
 
 func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
@@ -109,25 +117,121 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod, ns *corev1.Namespace) ([]ResolutionLayer, error) {
 	var layers []ResolutionLayer
 
-	// 1. Operator defaults.
-	if len(r.OperatorDefaults) > 0 {
-		rules := make([]ResolutionRule, 0, len(r.OperatorDefaults))
-		for _, d := range r.OperatorDefaults {
-			rules = append(rules, ResolutionRule{
-				Vnet:      d.Vnet,
-				Direction: d.Direction,
-				Source:    "operator-default",
-			})
-		}
-		layers = append(layers, ResolutionLayer{Scope: ScopeOperatorDefault, Rules: rules})
+	// 1. Cluster baseline (ScopeClusterBaseline).
+	//
+	// Sources, in order, all merged into one layer (within-layer intersection
+	// applies if they disagree):
+	//   a. The ClusterVirtualNetworkBaseline singleton named `default`.
+	//   b. The deprecated --default-memberships flag (ScopeOperatorDefault
+	//      from ADR 0030 collapses into ScopeClusterBaseline). Removed in 0.5.
+	//   c. Any ClusterVirtualNetworkBindings that match the pod (deprecated
+	//      backwards-compat shim per ADR 0031 Stage 8). Removed in 0.5.
+	var clusterRules []ResolutionRule
+	clusterRules = append(clusterRules, r.clusterBaselineRules(ctx, pod)...)
+	for _, d := range r.OperatorDefaults {
+		// The deprecated --default-memberships flag uses bare values, but
+		// historically pod labels could override them (ADR 0030 specificity-
+		// wins). Translate to default-* so pod overrides keep working through
+		// the deprecation window. Removed in 0.5 along with the flag.
+		clusterRules = append(clusterRules, ResolutionRule{
+			Vnet:      d.Vnet,
+			Direction: defaultPrefixed(d.Direction),
+			Source:    "--default-memberships",
+		})
+	}
+	clusterRules = append(clusterRules, r.cvnbLegacyRules(ctx, pod, ns)...)
+	if len(clusterRules) > 0 {
+		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: clusterRules})
 	}
 
-	// 2. ClusterVirtualNetworkBindings — match on namespaceSelector + podSelector.
+	// 2. Namespace baseline (ScopeNamespaceBaseline).
+	if nsBaselineRules := r.namespaceBaselineRules(ctx, pod); len(nsBaselineRules) > 0 {
+		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBaseline, Rules: nsBaselineRules})
+	}
+
+	// 3. Pod tier (ScopePod): VirtualNetworkBindings + pod labels merged into
+	// a single layer. Within-layer intersection applies on conflict.
+	var podRules []ResolutionRule
+	podRules = append(podRules, r.bindingRules(ctx, pod)...)
+	podRules = append(podRules, r.podLabelRules(pod)...)
+	if len(podRules) > 0 {
+		layers = append(layers, ResolutionLayer{Scope: ScopePod, Rules: podRules})
+	}
+
+	return layers, nil
+}
+
+// defaultPrefixed maps a bare direction to its default-* equivalent.
+// Used to translate deprecated --default-memberships flag entries into
+// override-permitted (default-*) ClusterBaseline rules so the historical
+// "pod labels override operator defaults" behavior survives the deprecation
+// window. Bare-input → default-prefixed; default-input → unchanged.
+func defaultPrefixed(d Direction) Direction {
+	switch d {
+	case DirectionBoth:
+		return DirectionDefaultBoth
+	case DirectionIngress:
+		return DirectionDefaultIngress
+	case DirectionEgress:
+		return DirectionDefaultEgress
+	case DirectionNone:
+		return DirectionDefaultNone
+	}
+	return d
+}
+
+// clusterBaselineRules reads the singleton ClusterVirtualNetworkBaseline
+// named `default` (if it exists). Absent → no rules.
+func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
+	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{}
+	if err := r.Get(ctx, client.ObjectKey{Name: "default"}, cb); err != nil {
+		return nil
+	}
+	out := make([]ResolutionRule, 0, len(cb.Spec.Memberships))
+	for _, m := range cb.Spec.Memberships {
+		dir, ok := ParseDirection(m.Direction)
+		if !ok {
+			continue
+		}
+		out = append(out, ResolutionRule{
+			Vnet:      vnetKeyForBinding(m.VirtualNetworkRef, pod.Namespace),
+			Direction: dir,
+			Source:    "ClusterVirtualNetworkBaseline/default",
+		})
+	}
+	return out
+}
+
+// namespaceBaselineRules reads the singleton VirtualNetworkBaseline named
+// `default` in the pod's namespace.
+func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
+	nb := &vnetv1alpha1.VirtualNetworkBaseline{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: "default"}, nb); err != nil {
+		return nil
+	}
+	out := make([]ResolutionRule, 0, len(nb.Spec.Memberships))
+	for _, m := range nb.Spec.Memberships {
+		dir, ok := ParseDirection(m.Direction)
+		if !ok {
+			continue
+		}
+		out = append(out, ResolutionRule{
+			Vnet:      vnetKeyForBinding(m.VirtualNetworkRef, pod.Namespace),
+			Direction: dir,
+			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
+		})
+	}
+	return out
+}
+
+// cvnbLegacyRules reads any surviving ClusterVirtualNetworkBindings as a
+// backwards-compat shim. Deprecated; removed in 0.5 per ADR 0031 Stage 8.
+func (r *ResolutionReconciler) cvnbLegacyRules(ctx context.Context, pod *corev1.Pod, ns *corev1.Namespace) []ResolutionRule {
 	var cvnbs vnetv1alpha1.ClusterVirtualNetworkBindingList
 	if err := r.List(ctx, &cvnbs); err != nil {
-		return nil, fmt.Errorf("list cvnbs: %w", err)
+		return nil
 	}
-	var clusterRules []ResolutionRule
+	var out []ResolutionRule
 	for i := range cvnbs.Items {
 		b := &cvnbs.Items[i]
 		nsSel, err := selectorFromLabelSelector(&b.Spec.NamespaceSelector)
@@ -148,26 +252,30 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 		if dirStr == "" {
 			dirStr = string(DirectionBoth)
 		}
-		dir, ok := ParseDirection(dirStr)
+		dir, ok := ParseBareDirection(dirStr)
 		if !ok {
 			continue
 		}
-		clusterRules = append(clusterRules, ResolutionRule{
+		// Translate to default-* for backwards-compat with ADR 0030's
+		// "specificity wins" semantics — CVNBs were overridable by VNBs and
+		// pod labels. Removed in 0.5 along with the CRD itself.
+		out = append(out, ResolutionRule{
 			Vnet:      vnetKeyForBinding(b.Spec.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    b.Name,
+			Direction: defaultPrefixed(dir),
+			Source:    "ClusterVirtualNetworkBinding/" + b.Name,
 		})
 	}
-	if len(clusterRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBinding, Rules: clusterRules})
-	}
+	return out
+}
 
-	// 3. VirtualNetworkBindings in the pod's namespace — match on podSelector.
+// bindingRules reads VirtualNetworkBindings in the pod's namespace that
+// match the pod's labels. Pod-tier source.
+func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
 	var vnbs vnetv1alpha1.VirtualNetworkBindingList
 	if err := r.List(ctx, &vnbs, client.InNamespace(pod.Namespace)); err != nil {
-		return nil, fmt.Errorf("list vnbs: %w", err)
+		return nil
 	}
-	var nsRules []ResolutionRule
+	var out []ResolutionRule
 	for i := range vnbs.Items {
 		b := &vnbs.Items[i]
 		podSel, err := selectorFromLabelSelector(&b.Spec.PodSelector)
@@ -185,46 +293,40 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 		if !ok {
 			continue
 		}
-		nsRules = append(nsRules, ResolutionRule{
+		out = append(out, ResolutionRule{
 			Vnet:      vnetKeyForBinding(b.Spec.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
-			Source:    b.Name,
+			Source:    "VirtualNetworkBinding/" + b.Name,
 		})
 	}
-	if len(nsRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBinding, Rules: nsRules})
-	}
+	return out
+}
 
-	// 4. Pod-authored labels — `kube-vnet/net.<suffix>=<direction>`.
+// podLabelRules reads the pod's own kube-vnet/net.<suffix>=<direction>
+// labels. Pod-tier source.
+func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 	prefix := r.LabelPrefix
 	if prefix == "" {
 		prefix = DefaultLabelPrefix
 	}
 	userNetPrefix := prefix + "net."
-	var podRules []ResolutionRule
+	var out []ResolutionRule
 	for k, v := range pod.Labels {
 		if !strings.HasPrefix(k, userNetPrefix) {
 			continue
 		}
 		dir, ok := ParseBareDirection(v)
 		if !ok {
-			// Invalid value; skip (the direction VAP rejects these at admission).
-			// default-* values are also rejected here — they're a baseline-tier
-			// concept (ADR 0031); pod labels are bare-only.
 			continue
 		}
 		suffix := strings.TrimPrefix(k, userNetPrefix)
-		podRules = append(podRules, ResolutionRule{
+		out = append(out, ResolutionRule{
 			Vnet:      VnetKey(suffix),
 			Direction: dir,
 			Source:    "<pod-label>",
 		})
 	}
-	if len(podRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopePodLabel, Rules: podRules})
-	}
-
-	return layers, nil
+	return out
 }
 
 // vnetKeyForBinding computes the label suffix the binding's target vnet
@@ -356,6 +458,14 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("resolution").
 		For(&corev1.Pod{}, builder.WithPredicates(podPredicate)).
 		Watches(
+			&vnetv1alpha1.ClusterVirtualNetworkBaseline{},
+			handler.EnqueueRequestsFromMapFunc(r.clusterBaselineToPods),
+		).
+		Watches(
+			&vnetv1alpha1.VirtualNetworkBaseline{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceBaselineToPods),
+		).
+		Watches(
 			&vnetv1alpha1.ClusterVirtualNetworkBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.cvnbToPods),
 		).
@@ -364,6 +474,39 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
 		).
 		Complete(r)
+}
+
+// clusterBaselineToPods fans a ClusterVirtualNetworkBaseline event to every
+// pod cluster-wide. The baseline cascades to all managed namespaces so
+// every pod re-resolves; coarse but the singleton baseline rarely changes.
+func (r *ResolutionReconciler) clusterBaselineToPods(ctx context.Context, _ client.Object) []reconcile.Request {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0, len(pods.Items))
+	for i := range pods.Items {
+		out = append(out, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
+		})
+	}
+	return out
+}
+
+// namespaceBaselineToPods fans a VirtualNetworkBaseline event to every pod
+// in the baseline's namespace.
+func (r *ResolutionReconciler) namespaceBaselineToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0, len(pods.Items))
+	for i := range pods.Items {
+		out = append(out, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
+		})
+	}
+	return out
 }
 
 // cvnbToPods maps a ClusterVirtualNetworkBinding event to all pods cluster-wide.

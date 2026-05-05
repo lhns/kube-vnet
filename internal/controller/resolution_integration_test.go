@@ -143,11 +143,11 @@ func TestIntegration_Resolution_VirtualNetworkBindingStamped(t *testing.T) {
 	})
 }
 
-// TestIntegration_Resolution_BindingConflictTiebreaker: two
+// TestIntegration_Resolution_BindingConflictIntersection: two
 // VirtualNetworkBindings in the same NS, with overlapping podSelectors and
-// disagreeing directions. The alphabetical-by-name winner stamps the
-// system label.
-func TestIntegration_Resolution_BindingConflictTiebreaker(t *testing.T) {
+// disagreeing directions. Per ADR 0031 the conflict resolves via
+// intersection (fail-closed): both ∩ ingress = ingress.
+func TestIntegration_Resolution_BindingConflictIntersection(t *testing.T) {
 	setOperatorDefaults(t, nil)
 
 	ctx := context.Background()
@@ -157,8 +157,6 @@ func TestIntegration_Resolution_BindingConflictTiebreaker(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
 
-	// Both bindings select the same pod for the same vnet; "a-allow" wins
-	// alphabetically over "b-deny".
 	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "b-deny", Namespace: ns},
 		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
@@ -182,9 +180,8 @@ func TestIntegration_Resolution_BindingConflictTiebreaker(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		// "a-allow" with direction=both wins alphabetically.
-		if got := p.Labels["kube-vnet.system/net.v"]; got != "both" {
-			return fmt.Errorf("v label = %q, want both (alphabetical winner from a-allow); labels=%v", got, p.Labels)
+		if got := p.Labels["kube-vnet.system/net.v"]; got != "ingress" {
+			return fmt.Errorf("v label = %q, want ingress (intersection of both + ingress per ADR 0031); labels=%v", got, p.Labels)
 		}
 		return nil
 	})
