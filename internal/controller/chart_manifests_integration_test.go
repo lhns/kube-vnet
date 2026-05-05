@@ -34,14 +34,14 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 		name string
 		sets []string
 	}{
-		{"mode=none", []string{"--set", "operator.ingressIsolation.mode=none"}},
+		{"defaults", nil},
 		// podMonitor.enabled=true is intentionally left out: it renders a
 		// PodMonitor (prometheus-operator CRD) the envtest apiserver doesn't
 		// know about — a real cluster would have it from the operator install.
 		// metricsService is a plain Service, fine to validate.
-		{"mode=pod-with-metrics-svc", []string{
-			"--set", "operator.ingressIsolation.mode=pod",
+		{"with-metrics-svc-and-defaults", []string{
 			"--set", "metricsService.enabled=true",
+			"--set", "operator.defaultMemberships=namespace=both,cluster=egress",
 		}},
 	}
 	for _, tc := range cases {
