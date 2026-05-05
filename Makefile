@@ -95,6 +95,7 @@ render-kustomize-vaps: ## Render the chart's system-* VAPs into config/admission
 	      --namespace kube-vnet-system \
 	      --kube-version 1.31.0 \
 	      --set fullnameOverride=kube-vnet-controller \
+	      --set operator.clusterBaseline.ingressIsolationLevel=namespace \
 	      --show-only templates/$${tpl}.yaml \
 	    | sed -n '/^apiVersion:/,$$p'; \
 	  } > "$$out"; \
