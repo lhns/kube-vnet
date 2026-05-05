@@ -206,7 +206,6 @@ jobs:
           # the kustomize lanes. image.* points at the kind-loaded image.
           helm install kube-vnet charts/kube-vnet \
             --namespace kube-vnet-system --create-namespace \
-            --kube-version 1.31.0 \
             --set fullnameOverride=kube-vnet-controller \
             --set image.repository=kube-vnet \
             --set image.tag=e2e \
