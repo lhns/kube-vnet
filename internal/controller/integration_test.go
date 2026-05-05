@@ -83,7 +83,7 @@ func TestIntegration_Baseline_AnnotationCreates(t *testing.T) {
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
-	// IsolationPod baseline: Ingress only, no allow rules.
+	// Deny-all baseline: Ingress only, no allow rules (ADR 0030).
 	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress], got %v", bp.Spec.PolicyTypes)
 	}
@@ -398,12 +398,12 @@ func TestIntegration_DriftCorrection_Baseline_DeleteRestores(t *testing.T) {
 		if bp.Labels[LabelRole] != LabelRoleBaseline {
 			return fmt.Errorf("role label not %q after re-create: %v", LabelRoleBaseline, bp.Labels)
 		}
-		// IsolationPod baseline: PolicyTypes [Ingress], no allow rules.
+		// Deny-all baseline (ADR 0030): PolicyTypes [Ingress], no allow rules.
 		if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 			return fmt.Errorf("policyTypes after re-create: %v want [Ingress]", bp.Spec.PolicyTypes)
 		}
 		if len(bp.Spec.Ingress) != 0 {
-			return fmt.Errorf("expected no ingress allow rules for IsolationPod baseline, got %d", len(bp.Spec.Ingress))
+			return fmt.Errorf("expected no ingress allow rules for deny-all baseline, got %d", len(bp.Spec.Ingress))
 		}
 		return nil
 	})
@@ -572,16 +572,13 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 	})
 }
 
-// TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline: under the new
-// decoupled model (ADR 0023), deleting a vnet does not affect the baseline
-// — the baseline is owned by NamespaceReconciler and reacts only to the
-// resolved IsolationMode, not to membership presence.
+// TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline: deleting a vnet
+// does not affect the baseline. Per ADRs 0023 and 0030, baseline lifecycle is
+// owned by NamespaceReconciler independently of any specific vnet's existence.
 func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "vdel-keep")
-	mustCreate(t, makeNamespace(ns, map[string]string{
-		"kube-vnet/ingress-isolation": "pod",
-	}, nil))
+	mustCreate(t, makeNamespace(ns, nil, nil))
 	v := &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns}}
 	mustCreate(t, v)
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))

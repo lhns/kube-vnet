@@ -17,17 +17,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// NamespaceReconciler is the *sole owner* of the
-// kube-vnet-default-deny baseline lifecycle. The baseline is decided by the
-// resolved IsolationMode for each namespace (operator-level default + per-mode
-// override lists + per-namespace `kube-vnet/ingress-isolation` annotation),
-// not by membership presence — see ADR 0023.
+// NamespaceReconciler is the *sole owner* of the baseline NetworkPolicy
+// lifecycle. Per ADR 0030 the baseline is uniformly deny-all (with podSelector
+// excluding receivers on any vnet listed in BaselineElideFor); there are no
+// per-mode shapes anymore.
 //
 // For each Namespace event:
 //   - If the namespace is excluded (`--disabled-namespaces`) or annotated
 //     `kube-vnet/disabled=true`, ensure no baseline is present.
-//   - Otherwise resolve the isolation mode and apply (or remove) the baseline
-//     accordingly.
+//   - Otherwise apply the deny-all baseline and sweep any stale-named ones.
 //
 // The reconciler also watches `NetworkPolicy` events scoped to baseline
 // policies (label `kube-vnet/role=baseline`) so a manual delete of the

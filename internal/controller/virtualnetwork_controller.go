@@ -175,9 +175,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
 
-	// Baseline lifecycle is owned by NamespaceReconciler now (ADR 0023):
-	// the baseline is decided per-namespace by the resolved IsolationMode,
-	// not by membership presence. The vnet reconciler no longer touches it.
+	// Baseline lifecycle is owned by NamespaceReconciler (ADR 0023, kept under
+	// ADR 0030). Per ADR 0030 the baseline is uniformly deny-all minus
+	// `--elide-baseline-for` exemptions; the vnet reconciler doesn't touch it.
 
 	if err := r.deleteStale(ctx, vnet, desiredKeys); err != nil {
 		return ctrl.Result{}, err
@@ -633,9 +633,9 @@ func (r *VirtualNetworkReconciler) deleteStale(
 }
 
 // cleanupForDeleted removes all operator-managed membership policies for a
-// deleted VirtualNetwork. The baseline (if any) is owned by NamespaceReconciler
-// and reacts to the namespace's resolved IsolationMode, not to vnet
-// presence — so we don't touch it here. See ADR 0023.
+// deleted VirtualNetwork. The baseline is owned by NamespaceReconciler
+// independently and isn't tied to any specific vnet's lifecycle; we don't
+// touch it here. See ADR 0023 (decoupling) and ADR 0030 (current shape).
 func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, name string) error {
 	netID := ns + "." + name
 	var policies networkingv1.NetworkPolicyList
