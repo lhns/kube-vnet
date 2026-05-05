@@ -31,11 +31,12 @@ spec:
             - --leader-elect
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
-            # The kustomize-driven dev/e2e deployment runs every namespace
-            # at pod-strict ingress isolation so the e2e suite's
-            # "must-be-blocked" assertions hold. Chart users get the
-            # conservative `none` default and opt in per namespace.
-            - --ingress-isolation=pod
+            # ADR 0030: baseline is unconditionally deny-all minus
+            # --elide-baseline-for exemptions. The kustomize-driven dev/e2e
+            # deployment leaves --default-memberships empty so e2e's
+            # "must-be-blocked" assertions hold (no implicit cluster-wide
+            # allow-all). Chart users can override via --default-memberships.
+            - --elide-baseline-for=cluster
           env:
             - name: POD_NAMESPACE
               valueFrom:

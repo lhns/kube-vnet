@@ -1,15 +1,14 @@
 # Allow any namespace whose labels match a selector. Idiomatic for "all prod namespaces".
 #
-# All three namespaces are set to ingress-isolation `pod` so the demonstration
-# is self-contained: only labeled pods in `platform` and `prod-webapp` reach
-# each other; the dev-webapp join attempt is rejected at the vnet level AND
-# its baseline blocks unrelated ingress.
+# Per ADR 0030, every managed namespace ships with a deny-all baseline. The
+# demonstration is self-contained: only labeled pods in `platform` and
+# `prod-webapp` reach each other; the dev-webapp pod's join is rejected at
+# the vnet level (namespace-selector miss) and the deny-all baseline in
+# `dev-webapp` blocks unrelated ingress.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
@@ -17,8 +16,6 @@ metadata:
   name: prod-webapp
   labels:
     tier: prod
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
@@ -26,8 +23,6 @@ metadata:
   name: dev-webapp
   labels:
     tier: dev
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork

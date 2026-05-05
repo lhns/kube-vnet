@@ -1,18 +1,15 @@
 # Simplest case: only pods in the same namespace as the VirtualNetwork can join.
 # spec.allowedNamespaces is omitted, which is equivalent to "home namespace only".
 #
-# This namespace is set to ingress-isolation `pod` so the example actually
-# demonstrates isolation: pods without the join label can't reach pods that
-# have it. To loosen, change the annotation to `namespace` (allow same-ns
-# ingress) or remove it (no baseline; vnet narrows membership only). See
-# config/samples/07_ingress_isolation_modes.yaml for a side-by-side demo of
-# all three modes.
+# Per ADR 0030, every managed namespace gets a deny-all baseline by default.
+# The pod that joins the `payments` vnet (kube-vnet/net.payments=both) is then
+# additively allowed to receive ingress from other vnet peers — pods without
+# the join label can't reach it. To open the namespace up, set
+# kube-vnet/disabled=true on the namespace (the operator stays out entirely).
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork

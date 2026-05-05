@@ -1,23 +1,19 @@
 # Wildcard: any namespace's pods may join. Useful for cross-cutting concerns
 # like observability or service mesh sidecars.
 #
-# Both namespaces are set to ingress-isolation `pod` so the example shows the
-# isolation effect end-to-end. Note that even with `allowedNamespaces.all=true`
-# on the vnet, each namespace still picks its own ingress-isolation
-# independently — a wildcard vnet doesn't blanket-isolate every namespace.
+# Per ADR 0030, every managed namespace ships with a deny-all baseline by
+# default. The example shows the isolation end-to-end: the observability
+# membership policy additively allows vnet peers in any namespace; pods that
+# don't carry the join label are still ingress-isolated by the baseline.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
