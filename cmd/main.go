@@ -184,6 +184,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	sysVnetReconciler := &controller.SystemVnetReconciler{
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		NSFilter:          nsFilter,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+	}
+	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up system vnet reconciler")
+		os.Exit(1)
+	}
+
 	diagReconciler := &controller.JoinLabelDiagnosticReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),

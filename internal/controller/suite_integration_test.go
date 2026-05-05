@@ -119,6 +119,19 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	sysVnetReconciler := &SystemVnetReconciler{
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		NSFilter:          NewNamespaceFilter(nil),
+		OperatorNamespace: "kube-vnet-system-test",
+	}
+	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup system vnet reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		if err := mgr.Start(ctx); err != nil {

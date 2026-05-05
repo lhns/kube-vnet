@@ -25,7 +25,6 @@ rules:
   resources:
   - clustervirtualnetworkbindings
   - virtualnetworkbindings
-  - virtualnetworks
   verbs:
   - get
   - list
@@ -48,6 +47,17 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - kube-vnet.lhns.de
+  resources:
+  - virtualnetworks
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - networking.k8s.io
   resources:
