@@ -12,6 +12,20 @@ release. Pinning to an exact version is recommended.
 
 ### Added
 
+- **End-user RBAC: aggregated ClusterRoles for the kube-vnet CRDs.** The
+  chart now ships editor + viewer ClusterRoles per CRD. The namespace-scoped
+  ones (`VirtualNetwork`, `VirtualNetworkBinding`, `VirtualNetworkBaseline`)
+  carry `rbac.authorization.k8s.io/aggregate-to-{admin,edit,view}` labels —
+  anyone bound to the upstream `admin`/`edit`/`view` ClusterRole within a
+  namespace automatically gains the corresponding access on the kube-vnet
+  CRDs in that namespace. `ClusterVirtualNetworkBaseline` ships an
+  **unbound** `<release>-clustervirtualnetworkbaselines-editor` ClusterRole
+  for cluster-admins to delegate explicitly via their own
+  `ClusterRoleBinding` — the cluster baseline drives every namespace's
+  default ingress posture, so binding is opt-in. New chart toggle
+  `rbac.aggregate` (default `true`) enables/disables the entire block. See
+  `docs/security.md#who-can-write-what`.
+
 - **Two new CRDs and the chart-level `operator.clusterBaseline` block
   introduce a baseline-tier resolution model (ADR 0031).**
   `ClusterVirtualNetworkBaseline` (cluster-scoped singleton named `default`)

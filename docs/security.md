@@ -82,6 +82,23 @@ It **cannot**:
 
 If the operator is compromised, the worst-case impact is: it can rewrite or delete every `NetworkPolicy` in the cluster, and read every Pod/Namespace label. It cannot exfiltrate secrets or pivot to other resources.
 
+### Who can write what
+
+The chart ships ClusterRoles aggregated into the upstream `admin`/`edit`/`view` defaults so the right authority tier writes the right CRD. With `rbac.aggregate=true` (default):
+
+| Kind | Default writer | Mechanism |
+|---|---|---|
+| `VirtualNetwork` | namespace-admin | `<release>-virtualnetworks-editor` ClusterRole, aggregated into `admin`+`edit` |
+| `VirtualNetworkBinding` | namespace-admin | `<release>-virtualnetworkbindings-editor`, aggregated into `admin`+`edit` |
+| `VirtualNetworkBaseline` | namespace-admin | `<release>-virtualnetworkbaselines-editor`, aggregated into `admin`+`edit` |
+| `ClusterVirtualNetworkBaseline` | cluster-admin | no aggregation; `<release>-clustervirtualnetworkbaselines-editor` is shipped **unbound** so cluster-admins can delegate via their own `ClusterRoleBinding` |
+
+A matching `*-viewer` ClusterRole per CRD aggregates into `view` (or, for the cluster baseline, ships unbound).
+
+The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP from ADR 0031 prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet/system=true`.
+
+To skip the chart-shipped end-user RBAC entirely (managing it externally via Argo, GitOps, etc.), set `rbac.aggregate=false`.
+
 ---
 
 ## Supply chain

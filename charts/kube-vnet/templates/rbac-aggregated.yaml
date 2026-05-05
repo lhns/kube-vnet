@@ -1,0 +1,82 @@
+{{- /*
+End-user RBAC for the kube-vnet CRDs (ADR 0031).
+
+Three namespace-scoped CRDs (VirtualNetwork, VirtualNetworkBinding,
+VirtualNetworkBaseline) get an editor (aggregated to upstream `admin`+`edit`)
+and a viewer (aggregated to upstream `view`) ClusterRole. The apiserver's
+role-aggregator merges the rules into the upstream defaults, so anyone
+bound to `admin`/`edit`/`view` within a namespace automatically picks up
+the new permissions there. No new bindings.
+
+ClusterVirtualNetworkBaseline (cluster-scoped) ships an unbound editor and
+viewer pair — no aggregation, since `aggregate-to-admin` only applies to
+namespace-scoped resources. Cluster-admins bind these explicitly via their
+own ClusterRoleBinding to delegate read or write of the cluster-wide
+ingress floor without granting full cluster-admin.
+
+Toggle the entire block with `rbac.aggregate=false` if managing RBAC
+elsewhere.
+*/ -}}
+{{- if .Values.rbac.aggregate -}}
+{{- $name := include "kube-vnet.fullname" . -}}
+{{- $labels := include "kube-vnet.labels" . -}}
+{{- range $resource := list "virtualnetworks" "virtualnetworkbindings" "virtualnetworkbaselines" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ $resource }}-editor
+  labels:
+    {{- $labels | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-admin: "true"
+    rbac.authorization.k8s.io/aggregate-to-edit: "true"
+rules:
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [{{ $resource }}]
+    verbs: [create, delete, deletecollection, get, list, patch, update, watch]
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [{{ $resource }}/status]
+    verbs: [get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ $resource }}-viewer
+  labels:
+    {{- $labels | nindent 4 }}
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [{{ $resource }}]
+    verbs: [get, list, watch]
+{{- end }}
+---
+# Cluster-scoped: NOT aggregated. Cluster-admins bind these explicitly to
+# delegate read or write of the cluster baseline without granting full
+# cluster-admin. Editing the cluster baseline gives effective control over
+# every namespace's default ingress posture — delegate carefully.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-clustervirtualnetworkbaselines-editor
+  labels:
+    {{- $labels | nindent 4 }}
+rules:
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [clustervirtualnetworkbaselines]
+    verbs: [create, delete, deletecollection, get, list, patch, update, watch]
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [clustervirtualnetworkbaselines/status]
+    verbs: [get, patch, update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-clustervirtualnetworkbaselines-viewer
+  labels:
+    {{- $labels | nindent 4 }}
+rules:
+  - apiGroups: [kube-vnet.lhns.de]
+    resources: [clustervirtualnetworkbaselines]
+    verbs: [get, list, watch]
+{{- end }}

@@ -49,12 +49,21 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.elideBaselineFor` | `cluster` | Comma-separated vnet names whose receivers are excluded from the deny-all baseline |
 | `operator.leaderElect` | `true` | Enable leader election |
+| `rbac.aggregate` | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to manage all RBAC outside Helm. |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |
 | `podMonitor.enabled` | `false` | Create a `PodMonitor` for the Prometheus operator |
 | `resources.*` | small defaults | CPU/memory requests and limits |
 | `nodeSelector` / `tolerations` / `affinity` | empty | Standard Pod scheduling overrides |
 
 See [`values.yaml`](./values.yaml) for the full set.
+
+## End-user RBAC
+
+By default (`rbac.aggregate: true`) the chart ships ClusterRoles aggregated into the upstream `admin`, `edit`, and `view` ClusterRoles for `VirtualNetwork`, `VirtualNetworkBinding`, and `VirtualNetworkBaseline`. Anyone bound to one of those upstream roles within a namespace automatically gains the corresponding access on the kube-vnet CRDs in that namespace — no extra bindings to create.
+
+`ClusterVirtualNetworkBaseline` (cluster-scoped) is **not** aggregated; only cluster-admin can write it by default. The chart ships an unbound `<release>-clustervirtualnetworkbaselines-editor` ClusterRole for cluster-admins to bind explicitly via their own `ClusterRoleBinding` if they want to delegate cluster-baseline editing to a platform-team user/group. **Bind carefully**: the cluster baseline drives every namespace's default ingress posture.
+
+A matching viewer ClusterRole (`<release>-clustervirtualnetworkbaselines-viewer`) lets dashboards and audit tooling read the cluster baseline without write access.
 
 ## Defining a VirtualNetwork
 

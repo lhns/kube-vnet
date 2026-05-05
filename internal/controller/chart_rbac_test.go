@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -89,7 +90,13 @@ func renderChart(t *testing.T) ([]byte, error) {
 }
 
 // extractClusterRoleRules pulls every PolicyRule from every ClusterRole
-// document in a multi-document YAML stream.
+// document in a multi-document YAML stream. Aggregated end-user
+// ClusterRoles (ADR 0031 cleanup) are filtered out — they're identified by
+// any `rbac.authorization.k8s.io/aggregate-to-*` label OR by the
+// `-{editor,viewer}` name suffix that the chart uses for the unbound
+// cluster-baseline pair (which has no aggregation labels). Only the
+// operator's own ClusterRole, which `config/rbac/role.yaml` mirrors,
+// participates in this drift check.
 func extractClusterRoleRules(t *testing.T, in io.Reader) []rbacv1.PolicyRule {
 	t.Helper()
 	var rules []rbacv1.PolicyRule
@@ -115,8 +122,26 @@ func extractClusterRoleRules(t *testing.T, in io.Reader) []rbacv1.PolicyRule {
 		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(buf), 4096).Decode(&cr); err != nil {
 			t.Fatalf("decode ClusterRole: %v", err)
 		}
+		if isEndUserAggregatedRole(&cr) {
+			continue
+		}
 		rules = append(rules, cr.Rules...)
 	}
+}
+
+// isEndUserAggregatedRole returns true for the chart's end-user-facing
+// ClusterRoles (Stage A/B of the ADR-0031-RBAC PR). They are not part of
+// the operator's own permissions and don't appear in config/rbac/role.yaml.
+func isEndUserAggregatedRole(cr *rbacv1.ClusterRole) bool {
+	for k := range cr.Labels {
+		if strings.HasPrefix(k, "rbac.authorization.k8s.io/aggregate-to-") {
+			return true
+		}
+	}
+	if strings.HasSuffix(cr.Name, "-editor") || strings.HasSuffix(cr.Name, "-viewer") {
+		return true
+	}
+	return false
 }
 
 // normalizeRules canonicalizes each rule (sort apiGroups/resources/verbs)

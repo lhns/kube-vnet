@@ -80,6 +80,23 @@ operator:
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
 
+# End-user RBAC for the kube-vnet CRDs (ADR 0031). When `aggregate: true`
+# (default), the chart ships ClusterRoles labeled with the standard
+# `rbac.authorization.k8s.io/aggregate-to-{admin,edit,view}` markers for
+# the namespace-scoped CRDs (VirtualNetwork, VirtualNetworkBinding,
+# VirtualNetworkBaseline). Anyone bound to the upstream `admin`/`edit`
+# ClusterRole within a namespace gets read+write on those CRDs in that
+# namespace; `view` gets read.
+#
+# ClusterVirtualNetworkBaseline (cluster-scoped) is NOT aggregated — only
+# cluster-admin can write it by default. The chart also ships an unbound
+# editor + viewer pair for that resource so a cluster-admin can delegate
+# read or write via their own ClusterRoleBinding.
+#
+# Set `aggregate: false` to skip all the above and manage RBAC yourself.
+rbac:
+  aggregate: true
+
 # Pod-level scheduling.
 nodeSelector: {}
 tolerations: []

@@ -98,6 +98,27 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |
 
+### `rbac.*` (end-user RBAC)
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `rbac.aggregate` | bool | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to skip and manage RBAC outside Helm. |
+
+When `rbac.aggregate=true`, the chart emits eight ClusterRoles:
+
+| ClusterRole | Aggregates into | Grants |
+|---|---|---|
+| `<release>-virtualnetworks-editor` | `admin`, `edit` | CRUD on `virtualnetworks` (+ `/status`) |
+| `<release>-virtualnetworks-viewer` | `view` | read on `virtualnetworks` |
+| `<release>-virtualnetworkbindings-editor` | `admin`, `edit` | CRUD on `virtualnetworkbindings` (+ `/status`) |
+| `<release>-virtualnetworkbindings-viewer` | `view` | read on `virtualnetworkbindings` |
+| `<release>-virtualnetworkbaselines-editor` | `admin`, `edit` | CRUD on `virtualnetworkbaselines` (+ `/status`) |
+| `<release>-virtualnetworkbaselines-viewer` | `view` | read on `virtualnetworkbaselines` |
+| `<release>-clustervirtualnetworkbaselines-editor` | (none — unbound) | CRUD on `clustervirtualnetworkbaselines` (+ `/status`); cluster-admin binds explicitly to delegate |
+| `<release>-clustervirtualnetworkbaselines-viewer` | (none — unbound) | read on `clustervirtualnetworkbaselines`; cluster-admin binds explicitly |
+
+See [`security.md`](../security.md#who-can-write-what) for the trust-model rationale.
+
 ### Pod-level scheduling
 
 | Key | Type | Default | Description |
