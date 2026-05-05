@@ -10,6 +10,63 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **Two new CRDs and the chart-level `operator.isolationLevel` enum
+  introduce a baseline-tier resolution model (ADR 0031).**
+  `ClusterVirtualNetworkBaseline` (cluster-scoped singleton named `default`)
+  and `VirtualNetworkBaseline` (namespace-scoped singleton named `default`)
+  carry tier-defaults; the chart seeds the cluster baseline from
+  `operator.isolationLevel` (one of `pod`, `namespace`, `cluster`). The
+  `Direction` enum gains four `default-*` variants — bare values are
+  *enforced* (lower tiers cannot override), `default-*` values are
+  *advisory* (lower tiers may override). Within-tier and pod-tier
+  binding-vs-label conflicts now resolve by **intersection** (fail-closed)
+  rather than alphabetical-by-source. `ValidatingAdmissionPolicy`-equivalent
+  CEL on each baseline pins it to the `default` name.
+
+### Changed
+
+- **`VirtualNetworkBinding.spec.podSelector` must select at least one pod.**
+  CRD CEL rejects empty selectors. The previously-supported
+  "empty-selector means all pods in this namespace" use-case migrates to
+  `VirtualNetworkBaseline` per ADR 0031. Existing CRs continue to read; any
+  `kubectl edit` requires migrating the empty-selector case.
+
+### Deprecated
+
+- **`ClusterVirtualNetworkBinding` is deprecated** (removed in 0.5).
+  Cluster-wide-default usage migrates to `ClusterVirtualNetworkBaseline`;
+  per-pod cross-namespace targeting (rare in practice) migrates to
+  `VirtualNetworkBinding` in the target namespace. Surviving CRs are read as
+  a backwards-compat shim through 0.4 — translated to
+  `ClusterVirtualNetworkBaseline.memberships` entries with `default-*`
+  directions to preserve ADR 0030's specificity-wins override behavior.
+- **`--default-memberships` operator flag is deprecated** (removed in 0.5).
+  Migrate to `operator.isolationLevel` (or edit the seeded
+  `ClusterVirtualNetworkBaseline` directly). The flag's bare directions are
+  translated to `default-*` for the deprecation window so existing pod-label
+  overrides continue to work. Setting both: the CR wins; the flag's value
+  is logged with a deprecation warning at startup.
+
+### Migration (ADR 0031)
+
+```bash
+# 1. Pin the chart's isolationLevel that matches your previous flag value.
+#    If you had `--default-memberships=namespace=both,cluster=egress`, pick
+#    `isolationLevel: namespace`. Drop the explicit flag override.
+helm upgrade --install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
+  --set operator.isolationLevel=namespace
+
+# 2. Convert any existing ClusterVirtualNetworkBinding with empty selectors
+#    into a ClusterVirtualNetworkBaseline entry (do this manually — the
+#    backwards-compat shim handles them automatically through 0.4).
+
+# 3. Convert any VirtualNetworkBinding with empty `podSelector` to a
+#    VirtualNetworkBaseline named `default` in that namespace. Existing CRs
+#    keep working; only new edits trip the new CEL.
+```
+
 ### Fixed
 
 - **Cluster system vnet was rejected as `HomeNamespaceExcluded` on every

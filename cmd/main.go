@@ -151,6 +151,14 @@ func main() {
 		setupLog.Error(err, "invalid --default-memberships")
 		os.Exit(1)
 	}
+	if len(parsedDefaults) > 0 {
+		setupLog.Info(
+			"DEPRECATED: --default-memberships will be removed in 0.5; "+
+				"use ClusterVirtualNetworkBaseline (or the chart's "+
+				"operator.isolationLevel) instead. ADR 0031.",
+			"value", defaultMemberships,
+		)
+	}
 	resReconciler := &controller.ResolutionReconciler{
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),

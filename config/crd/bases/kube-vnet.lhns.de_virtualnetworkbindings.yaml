@@ -63,17 +63,19 @@ spec:
               VirtualNetworkBindingSpec is the desired state of a VirtualNetworkBinding.
 
               A binding attaches the pods selected by spec.podSelector (in this binding's
-              own namespace) to the referenced VirtualNetwork. Useful when the pod
-              template can't be modified (third-party manifests, Helm charts, other
-              operators). Direct join labels remain the primary, simpler mechanism;
-              bindings are the escape hatch.
+              own namespace) to the referenced VirtualNetwork. Per ADR 0031 the
+              podSelector must select at least one pod (no empty matchLabels +
+              matchExpressions) — namespace-wide defaults belong in a
+              VirtualNetworkBaseline. Direction is restricted to bare values; default-*
+              is meaningful only at baseline tiers.
             properties:
               direction:
                 default: both
                 description: |-
                   Direction the selected pods participate in.
                   Same enum as the join label value: both | ingress | egress | none.
-                  Defaults to "both".
+                  Defaults to "both". The default-* baseline-tier variants are not
+                  permitted here (ADR 0031).
                 enum:
                 - both
                 - ingress
@@ -81,8 +83,9 @@ spec:
                 - none
                 type: string
               podSelector:
-                description: PodSelector selects pods *in this binding's own namespace*.
-                  Required.
+                description: |-
+                  PodSelector selects pods *in this binding's own namespace*. Required;
+                  must be non-empty (ADR 0031).
                 properties:
                   matchExpressions:
                     description: matchExpressions is a list of label selector requirements.
@@ -144,6 +147,12 @@ spec:
             - podSelector
             - virtualNetworkRef
             type: object
+            x-kubernetes-validations:
+            - message: podSelector must select at least one pod (use VirtualNetworkBaseline
+                for namespace-wide defaults; ADR 0031)
+              rule: (has(self.podSelector.matchLabels) && size(self.podSelector.matchLabels)
+                > 0) || (has(self.podSelector.matchExpressions) && size(self.podSelector.matchExpressions)
+                > 0)
           status:
             description: VirtualNetworkBindingStatus is the observed state.
             properties:

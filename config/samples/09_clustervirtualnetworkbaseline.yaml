@@ -1,0 +1,27 @@
+# A ClusterVirtualNetworkBaseline (ADR 0031) is the cluster-wide tier-default
+# for vnet memberships. Singleton, named `default`. The Helm chart seeds this
+# from `operator.isolationLevel`; you can edit it post-install (the chart
+# annotates it with helm.sh/resource-policy: keep so subsequent helm
+# upgrades won't stomp your edits unless you also change isolationLevel).
+#
+# Bare directions are enforced — namespace baselines, bindings, and pod
+# labels cannot override them. `default-*` directions are advisory — lower
+# tiers may override per-vnet.
+#
+# This example shows the equivalent of `isolationLevel: namespace`: pods
+# join their per-namespace system vnet (overridable) and the cluster
+# system vnet for egress only (overridable).
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: ClusterVirtualNetworkBaseline
+metadata:
+  name: default
+spec:
+  memberships:
+    - virtualNetworkRef:
+        name: namespace
+        namespace: kube-vnet-system
+      direction: default-both
+    - virtualNetworkRef:
+        name: cluster
+        namespace: kube-vnet-system
+      direction: default-egress

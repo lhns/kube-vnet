@@ -1,0 +1,20 @@
+# A VirtualNetworkBaseline (ADR 0031) is the namespace-wide tier-default for
+# vnet memberships. One CR per namespace, named `default`. Pods inherit the
+# memberships listed here; bindings and labels (the pod tier) can further
+# override per-vnet — but only when this baseline used a `default-*`
+# direction. Bare directions on this baseline cannot be overridden by
+# pod-tier sources.
+#
+# Use case: namespace-admin says "every pod in MY namespace joins the
+# `payments` vnet for ingress, unless an explicit pod label says otherwise."
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBaseline
+metadata:
+  name: default
+  namespace: webapp
+spec:
+  memberships:
+    - virtualNetworkRef:
+        name: payments
+        namespace: platform
+      direction: default-ingress

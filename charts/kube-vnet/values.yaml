@@ -37,11 +37,30 @@ operator:
   # don't get a redundant baseline policy. ADR 0030.
   elideBaselineFor: cluster
 
-  # Comma-separated <vnet>=<direction> pairs that every pod in every managed
-  # namespace joins by default. The two recognized vnet keys are the system
-  # vnets `namespace` and `cluster`. Pod labels and VirtualNetworkBindings
-  # add to or override these defaults. Default empty (no auto-memberships).
-  # Per ADR 0030. Example: `namespace=both,cluster=egress`.
+  # Isolation level (ADR 0031). Seeds a ClusterVirtualNetworkBaseline named
+  # `default` with the corresponding system-vnet memberships. One of:
+  #
+  #   pod        — namespace=default-egress, cluster=default-egress
+  #                Strict: ingress only via explicit binding/label; egress
+  #                permitted (DNS, image pulls, etc.).
+  #   namespace  — namespace=default-both,   cluster=default-egress
+  #                Same-NS pods reachable; cross-NS egress only.
+  #   cluster    — namespace=default-both,   cluster=default-both
+  #                No isolation (allow-all); equivalent to the legacy
+  #                `mode=none`.
+  #
+  # All directions are default-* so namespace baselines, bindings, and pod
+  # labels can override per-vnet. To enforce a value cluster-wide (no
+  # override), edit the rendered ClusterVirtualNetworkBaseline directly
+  # post-install — the chart annotates it with helm.sh/resource-policy: keep
+  # so subsequent `helm upgrade` runs don't stomp your edits.
+  # +kubebuilder:validation:Enum=pod;namespace;cluster
+  isolationLevel: namespace
+
+  # DEPRECATED in 0.4 (ADR 0031), removed in 0.5. Comma-separated
+  # <vnet>=<direction> pairs that every pod joins by default — equivalent to
+  # an inline ClusterVirtualNetworkBaseline. Use `isolationLevel` instead.
+  # Setting both: the CR wins; this flag's value is ignored with a warning.
   defaultMemberships: ""
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.

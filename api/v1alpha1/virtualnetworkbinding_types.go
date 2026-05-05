@@ -15,23 +15,28 @@ type VirtualNetworkRef struct {
 // VirtualNetworkBindingSpec is the desired state of a VirtualNetworkBinding.
 //
 // A binding attaches the pods selected by spec.podSelector (in this binding's
-// own namespace) to the referenced VirtualNetwork. Useful when the pod
-// template can't be modified (third-party manifests, Helm charts, other
-// operators). Direct join labels remain the primary, simpler mechanism;
-// bindings are the escape hatch.
+// own namespace) to the referenced VirtualNetwork. Per ADR 0031 the
+// podSelector must select at least one pod (no empty matchLabels +
+// matchExpressions) — namespace-wide defaults belong in a
+// VirtualNetworkBaseline. Direction is restricted to bare values; default-*
+// is meaningful only at baseline tiers.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.podSelector.matchLabels) && size(self.podSelector.matchLabels) > 0) || (has(self.podSelector.matchExpressions) && size(self.podSelector.matchExpressions) > 0)",message="podSelector must select at least one pod (use VirtualNetworkBaseline for namespace-wide defaults; ADR 0031)"
 type VirtualNetworkBindingSpec struct {
 	// VirtualNetworkRef is the target VirtualNetwork.
 	VirtualNetworkRef VirtualNetworkRef `json:"virtualNetworkRef"`
 
 	// Direction the selected pods participate in.
 	// Same enum as the join label value: both | ingress | egress | none.
-	// Defaults to "both".
+	// Defaults to "both". The default-* baseline-tier variants are not
+	// permitted here (ADR 0031).
 	// +kubebuilder:validation:Enum=both;ingress;egress;none
 	// +kubebuilder:default=both
 	// +optional
 	Direction string `json:"direction,omitempty"`
 
-	// PodSelector selects pods *in this binding's own namespace*. Required.
+	// PodSelector selects pods *in this binding's own namespace*. Required;
+	// must be non-empty (ADR 0031).
 	PodSelector metav1.LabelSelector `json:"podSelector"`
 }
 

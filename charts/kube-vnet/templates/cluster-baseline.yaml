@@ -1,0 +1,59 @@
+{{- /*
+Seeded ClusterVirtualNetworkBaseline (ADR 0031). The chart populates the
+singleton named `default` from the chosen `operator.isolationLevel`. The
+helm.sh/resource-policy: keep annotation prevents `helm uninstall` from
+deleting it (which would also clear the conditions cluster-admins use to
+pin enforced bare directions). Subsequent `helm upgrade` will reconcile
+this template's values; if you've edited the CR by hand to use bare
+(enforced) directions, your edits are overwritten on upgrade — see ADR
+0031's "chart upgrade idempotency" verification step. To prevent overwrite,
+either set isolationLevel to match your hand-edits, or unset the chart
+template by setting `operator.isolationLevel: ""`.
+
+System-vnet keys ("namespace", "cluster") are bare by convention — the
+SystemVnetReconciler creates the corresponding VirtualNetwork CRs in the
+operator's own namespace.
+*/ -}}
+{{- $level := default "namespace" .Values.operator.isolationLevel -}}
+{{- if $level }}
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: ClusterVirtualNetworkBaseline
+metadata:
+  name: default
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  memberships:
+{{- if eq $level "pod" }}
+    - virtualNetworkRef:
+        name: namespace
+        namespace: {{ .Release.Namespace }}
+      direction: default-egress
+    - virtualNetworkRef:
+        name: cluster
+        namespace: {{ .Release.Namespace }}
+      direction: default-egress
+{{- else if eq $level "namespace" }}
+    - virtualNetworkRef:
+        name: namespace
+        namespace: {{ .Release.Namespace }}
+      direction: default-both
+    - virtualNetworkRef:
+        name: cluster
+        namespace: {{ .Release.Namespace }}
+      direction: default-egress
+{{- else if eq $level "cluster" }}
+    - virtualNetworkRef:
+        name: namespace
+        namespace: {{ .Release.Namespace }}
+      direction: default-both
+    - virtualNetworkRef:
+        name: cluster
+        namespace: {{ .Release.Namespace }}
+      direction: default-both
+{{- else }}
+    {{- fail (printf "operator.isolationLevel must be one of: pod, namespace, cluster (got %q)" $level) }}
+{{- end }}
+{{- end }}

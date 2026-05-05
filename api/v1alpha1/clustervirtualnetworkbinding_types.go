@@ -73,7 +73,16 @@ type ClusterVirtualNetworkBindingStatus struct {
 // ClusterVirtualNetworkBinding attaches pods selected by
 // spec.namespaceSelector + spec.podSelector to the referenced VirtualNetwork
 // across all matching namespaces. Cluster-scoped sibling of
-// VirtualNetworkBinding. See ADR 0030.
+// VirtualNetworkBinding.
+//
+// Deprecated: ClusterVirtualNetworkBinding is being replaced in two parts
+// (ADR 0031). Broad-selector usage migrates to ClusterVirtualNetworkBaseline
+// (the dominant case in practice — every cluster-admin-authored CVNB with
+// empty selectors). The narrow per-pod cross-namespace case has no direct
+// replacement; if needed, write a VirtualNetworkBinding in the target NS.
+// Existing CRs continue to function as a backwards-compat shim through 0.4
+// (translated to ClusterVirtualNetworkBaseline.memberships entries with
+// default-* directions); the kind itself is removed in 0.5.
 type ClusterVirtualNetworkBinding struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
