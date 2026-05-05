@@ -20,13 +20,13 @@ spec:
     - name: joinKeyPrefix
       expression: '"kube-vnet/net."'
     - name: validValues
-      expression: '["both","ingress","egress","none","true","false",""]'
+      expression: '["both","ingress","egress","none"]'
   validations:
     - expression: |
         object.metadata.labels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           object.metadata.labels[k] in variables.validValues)
-      message: "kube-vnet join label values must be one of: both, ingress, egress, none, true, false (empty allowed; treated as none)."
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

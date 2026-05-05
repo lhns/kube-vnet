@@ -12,6 +12,13 @@ release. Pinning to an exact version is recommended.
 
 ### Breaking
 
+- **Direction enum pruned.** Join-label values are now exactly `both` /
+  `ingress` / `egress` / `none`. The legacy aliases `true` and `false`,
+  and the empty-string value, are dropped. The chart's
+  `ValidatingAdmissionPolicy` rejects pods carrying legacy values at admission;
+  on older clusters the operator's `UnknownDirection` reason on the vnet's
+  Degraded condition catches them at reconcile. Migrate `=true`→`=both` and
+  `=false`/`=""`→`=none`. Per ADR 0030 (with the ADR 0021 2026-05-05 addendum).
 - **Mode=none now materializes an allow-all baseline.** Previously, a managed
   namespace with `ingress-isolation=none` had no `kube-vnet`-owned baseline
   policy. As of this release, mode=none generates a baseline whose ingress

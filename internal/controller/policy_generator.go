@@ -48,13 +48,12 @@ const (
 // Direction is the per-pod direction of a vnet membership. Set as the value
 // of a join label (or via a VirtualNetworkBinding's spec.direction).
 //
-// Aliases honored by ParseDirection:
-//
-//	"true"           → DirectionBoth   (legacy presence-only alias)
-//	"false" / ""     → DirectionNone   (empty intentionally maps to "not a member")
-//
-// Anything else is rejected by ParseDirection (returns ok=false). Callers
-// should surface unknown values as InvalidJoiner with reason UnknownDirection.
+// Valid values: `both`, `ingress`, `egress`, `none`. Any other value (including
+// the legacy `true`/`false`/empty-string aliases that earlier ADRs honored)
+// is rejected by ParseDirection. The direction-value VAP shipped via the
+// chart also rejects them at admission. Callers that hit ok=false from
+// ParseDirection should surface the value as an InvalidJoiner with reason
+// UnknownDirection. See ADR 0030 and the ADR 0021 2026-05-05 addendum.
 type Direction string
 
 const (
@@ -65,22 +64,19 @@ const (
 )
 
 // ParseDirection normalizes a label value to a Direction. Returns ok=false
-// for unrecognized non-empty values; the parsed Direction is DirectionNone
-// in that case (not a member).
-//
-// Empty string maps to DirectionNone — i.e. a pod with `kube-vnet/net.X: ""`
-// is NOT a member. This is a behavior change from earlier v1alpha1 where
-// the empty value was a presence-only alias for `both`. The legacy `true`
-// alias still maps to `both`. See ADR 0021 (Addendum) and ADR 0027.
+// for any value other than the four enum constants. The legacy aliases
+// `true`, `false`, and the empty string are no longer accepted (dropped per
+// ADR 0030; see the ADR 0021 2026-05-05 addendum). The direction-value VAP
+// rejects them at admission too.
 func ParseDirection(value string) (Direction, bool) {
 	switch value {
-	case "both", "true":
+	case "both":
 		return DirectionBoth, true
 	case "ingress":
 		return DirectionIngress, true
 	case "egress":
 		return DirectionEgress, true
-	case "false", "none", "":
+	case "none":
 		return DirectionNone, true
 	}
 	return DirectionNone, false
@@ -231,11 +227,11 @@ var (
 	// merged self-policy per (ns, form). Egress-only members are not
 	// included — they don't accept ingress, so they don't need a self-
 	// policy at all.
-	selfValuesReceiver = []string{"true", string(DirectionBoth), string(DirectionIngress)}
+	selfValuesReceiver = []string{string(DirectionBoth), string(DirectionIngress)}
 
 	// peerInitiatorValues matches peers that can INITIATE traffic
 	// (potential sources of ingress to me). Used in ingress.from.
-	peerInitiatorValues = []string{"true", string(DirectionBoth), string(DirectionEgress)}
+	peerInitiatorValues = []string{string(DirectionBoth), string(DirectionEgress)}
 )
 
 // hasReceiver reports whether the (form, direction-map) tuple has any

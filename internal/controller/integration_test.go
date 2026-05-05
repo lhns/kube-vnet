@@ -197,7 +197,7 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 	})
 	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.shared": "both"}))
 	mustCreate(t, makePod(foreign, "f", map[string]string{
-		"kube-vnet/net." + home + ".shared": "true",
+		"kube-vnet/net." + home + ".shared": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
@@ -238,7 +238,7 @@ func TestIntegration_InvalidJoiner_DegradedCondition(t *testing.T) {
 	})
 	// Pod in `other` carries the prefixed join label — should be flagged invalid.
 	mustCreate(t, makePod(other, "rogue", map[string]string{
-		"kube-vnet/net." + home + ".strict": "true",
+		"kube-vnet/net." + home + ".strict": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
@@ -274,7 +274,7 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 	mustCreate(t, v)
 	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.doomed": "both"}))
 	mustCreate(t, makePod(foreign, "f", map[string]string{
-		"kube-vnet/net." + home + ".doomed": "true",
+		"kube-vnet/net." + home + ".doomed": "both",
 	}))
 
 	// Wait for both policies to exist.
@@ -505,11 +505,11 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 	})
 	// Prod pod is allowed.
 	mustCreate(t, makePod(prod, "p", map[string]string{
-		"kube-vnet/net." + home + ".selvnet": "true",
+		"kube-vnet/net." + home + ".selvnet": "both",
 	}))
 	// Dev pod's join label should be ignored (label doesn't match) and surface as InvalidJoiner.
 	mustCreate(t, makePod(dev, "d", map[string]string{
-		"kube-vnet/net." + home + ".selvnet": "true",
+		"kube-vnet/net." + home + ".selvnet": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
@@ -757,7 +757,7 @@ func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 		},
 	})
 	mustCreate(t, makePod(excluded, "rogue", map[string]string{
-		"kube-vnet/net." + home + ".vex": "true",
+		"kube-vnet/net." + home + ".vex": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
@@ -801,7 +801,7 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	//   joiner — has the prefixed join label, should become a member.
 	//   bystander — has no kube-vnet label, must be ignored.
 	mustCreate(t, makePod(foreign, "joiner", map[string]string{
-		"kube-vnet/net." + home + ".shared": "true",
+		"kube-vnet/net." + home + ".shared": "both",
 	}))
 	mustCreate(t, makePod(foreign, "bystander", map[string]string{
 		"app": "unrelated",
@@ -914,7 +914,7 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 			return err
 		}
 		got := p.Spec.PodSelector.MatchExpressions[0].Values
-		want := []string{"true", "both", "ingress"}
+		want := []string{"both", "ingress"}
 		if !equalStringSlice(got, want) {
 			return fmt.Errorf("podSelector values=%v want %v", got, want)
 		}
@@ -925,27 +925,6 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 		if _, err := findPolicy(ctx, ns, PolicyName("v", ns)+suffix); !apierrors.IsNotFound(err) {
 			t.Errorf("policy with suffix %q must not exist after the merge: err=%v", suffix, err)
 		}
-	}
-}
-
-// TestIntegration_DirectionEnum_TrueAliasIsBoth: legacy "true" value still
-// produces the same single bidi policy with the v1alpha1 name.
-func TestIntegration_DirectionEnum_TrueAliasIsBoth(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "alias")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
-	})
-	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "true"}))
-
-	eventually(t, 10*time.Second, func() error {
-		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
-		return err
-	})
-	// And no -ingress / -egress suffixed variants.
-	if _, err := findPolicy(ctx, ns, PolicyName("v", ns)+"-ingress"); !apierrors.IsNotFound(err) {
-		t.Errorf("ingress policy should not exist for true-only members: %v", err)
 	}
 }
 
@@ -988,7 +967,7 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
 	mustCreate(t, makePod(ns, "longform-pod", map[string]string{
-		"kube-vnet/net." + ns + ".v": "true",
+		"kube-vnet/net." + ns + ".v": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {

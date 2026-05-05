@@ -2,15 +2,15 @@
 Validating admission for kube-vnet join-label values.
 
 Rejects Pod create/update where any label key matching `<labelPrefix>net.*`
-has a value outside the recognized direction enum. The full enum:
-  both, ingress, egress, none, true, false (legacy aliases), or empty
-  string (treated as `none` by the operator — i.e. "not a member").
+has a value outside the recognized direction enum: `both`, `ingress`,
+`egress`, `none`. Legacy aliases `true`, `false`, and the empty string
+were dropped per ADR 0030 (and the ADR 0021 2026-05-05 addendum).
 
 Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
 older clusters this template renders nothing; the operator's vnet-status
 `UnknownDirection` reason still catches bad values at reconcile time.
 
-See ADR 0027.
+See ADR 0027 and ADR 0030.
 */}}
 {{- /* VAP is GA in admissionregistration.k8s.io/v1 since Kubernetes 1.30. */ -}}
 {{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
@@ -38,13 +38,13 @@ spec:
     - name: joinKeyPrefix
       expression: {{ printf "\"%snet.\"" (default "kube-vnet/" .Values.operator.labelPrefix) | quote }}
     - name: validValues
-      expression: '["both","ingress","egress","none","true","false",""]'
+      expression: '["both","ingress","egress","none"]'
   validations:
     - expression: |
         object.metadata.labels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           object.metadata.labels[k] in variables.validValues)
-      message: "kube-vnet join label values must be one of: both, ingress, egress, none, true, false (empty allowed; treated as none). See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

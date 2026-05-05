@@ -10,7 +10,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 - [Pod events kube-vnet emits](#pod-events-kube-vnet-emits)
 - [`kubectl apply` rejected my pod: "value not in [both, ingress, egress, none, true, false]"](#kubectl-apply-rejected-my-pod-value-not-in-both-ingress-egress-none-true-false)
-- [My pod with `kube-vnet/net.X: ""` stopped joining after upgrade](#my-pod-with-kube-vnetnetx--stopped-joining-after-upgrade)
+- [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [CNI pitfalls that silently break enforcement (separate page)](troubleshooting/cni-pitfalls.md)
@@ -130,28 +130,26 @@ denied request: kube-vnet/net.* label value must be one of [both ingress egress 
 ```yaml
 labels:
   kube-vnet/net.payments: both        # bidirectional, the usual choice
-  # or `ingress`, `egress`, `none`, the legacy `true`/`false`, or `""` (treated as none)
+  # or `ingress`, `egress`, `none`
 ```
 
-On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
+The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
 
 ---
 
-## My pod with `kube-vnet/net.X: ""` stopped joining after upgrade
+## My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade
 
-**Symptom.** A pod manifest that used `kube-vnet/net.<vnet>: ""` (empty string) used to be a member. After upgrade, the pod is no longer a member; no NetworkPolicy selects it.
+**Symptom.** A pod manifest that used `kube-vnet/net.<vnet>: "true"` (or `""`, or `"false"`) is now rejected at admission, or excluded from membership on older clusters.
 
-**Cause.** Breaking change. The empty-string value used to map to `both` (the legacy "presence-only meant member" rule). It now parses as `none` — i.e. *not a member*. See the [ADR 0021 empty-string addendum](adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--empty-string-value-reinterpreted-as-none) and [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+**Cause.** Breaking change. The legacy aliases `true`, `false`, and the empty-string value were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). The valid direction values are now exactly `both`, `ingress`, `egress`, `none`.
 
 **Fix.** Set an explicit value:
 
 ```yaml
 labels:
-  kube-vnet/net.payments: both     # was: ""
-  # or kube-vnet/net.payments: "true"  (legacy alias for both)
+  kube-vnet/net.payments: both     # was: "true" or ""
+  # or `none`               (was: "false" or "")
 ```
-
-The legacy `"true"` alias is unchanged — only `""` flipped meaning.
 
 ---
 
@@ -165,7 +163,7 @@ Most common case. Walk through these in order:
 
    The pod's namespace decides which forms are valid, not the vnet's.
 
-   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. Legacy `"true"` maps to `both` and `"false"` maps to `none`. An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
+   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. The legacy `true`/`false`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
 
 2. **Is the pod's namespace operator-excluded?**
 
@@ -380,7 +378,7 @@ The binding is honored only when the target vnet permits its namespace — same 
 
 ## Degraded with UnknownDirection or ConflictingDirections
 
-`UnknownDirection`: at least one pod has a join label whose value isn't `both`/`ingress`/`egress`/`none` (or the legacy `"true"`/`"false"`). The pod is excluded from membership; fix the typo.
+`UnknownDirection`: at least one pod has a join label whose value isn't `both`/`ingress`/`egress`/`none`. The pod is excluded from membership; fix the typo. Legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.
 
 ```bash
 kubectl describe vnet -n <ns> <name>   # the message names the offending pods
@@ -413,7 +411,7 @@ The reason explains what to fix.
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
 | `InvalidJoiners` | At least one pod carries the appropriate join label but is in a non-permitted or excluded namespace. The vnet's status message names the offending pods. | Either (a) extend `allowedNamespaces` to include the pod's namespace, (b) move the pod, or (c) remove the join label from the pod if it shouldn't be a member. The Degraded message also distinguishes whether the underlying reason was `NamespaceNotAllowed` (not in `allowedNamespaces`) or `NamespaceExcluded` (in `--disabled-namespaces` or annotated `kube-vnet/disabled=true`). |
-| `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none` (or the legacy `"true"`/`"false"`). The pod is excluded from membership. | Fix the value on the offending pod (named in the Degraded message). |
+| `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none`. The pod is excluded from membership. (The legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.) | Fix the value on the offending pod (named in the Degraded message). |
 | `ConflictingDirections` | A home-namespace pod carries both the bare and the prefixed form of the join label with conflicting direction values. The pod is excluded from membership. | Pick one form, or set both forms to the same value. See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md). |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |

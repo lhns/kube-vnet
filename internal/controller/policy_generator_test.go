@@ -71,7 +71,7 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 	}
 	// Self-policy selects all receiver-capable members (`both`, `ingress`, plus
 	// the legacy `true` alias).
-	wantValues := []string{"true", "both", "ingress"}
+	wantValues := []string{"both", "ingress"}
 	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !equalStringSlice(got, wantValues) {
 		t.Errorf("podSelector values=%v want %v", got, wantValues)
 	}
@@ -167,8 +167,8 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	if out.Policies[0].Name != wantName {
 		t.Errorf("policy name=%q want %q", out.Policies[0].Name, wantName)
 	}
-	if !equalStringSlice(p.podSelectorValues, []string{"true", "both", "ingress"}) {
-		t.Errorf("podSelector values=%v want [true both ingress]", p.podSelectorValues)
+	if !equalStringSlice(p.podSelectorValues, []string{"both", "ingress"}) {
+		t.Errorf("podSelector values=%v want [both ingress]", p.podSelectorValues)
 	}
 	if !p.hasIngress || p.hasEgress {
 		t.Errorf("merged self-policy should have Ingress only (egress never restricted)")
@@ -195,8 +195,8 @@ func TestGenerate_DirectionEnum_PeerSelectorsNarrowed(t *testing.T) {
 	}
 	p := out.Policies[0]
 	from := p.Spec.Ingress[0].From[0].PodSelector.MatchExpressions[0]
-	if !equalStringSlice(from.Values, []string{"true", "both", "egress"}) {
-		t.Errorf("ingress.from peer values=%v want [true both egress]", from.Values)
+	if !equalStringSlice(from.Values, []string{"both", "egress"}) {
+		t.Errorf("ingress.from peer values=%v want [both egress]", from.Values)
 	}
 	if len(p.Spec.Egress) != 0 {
 		t.Errorf("expected no egress section, got %d rules", len(p.Spec.Egress))
@@ -443,12 +443,13 @@ func TestParseDirection(t *testing.T) {
 	}
 	cases := []tc{
 		{"both", DirectionBoth, true},
-		{"true", DirectionBoth, true}, // legacy alias preserved
-		{"", DirectionNone, true},     // empty now means "not a member" (ADR 0027)
 		{"ingress", DirectionIngress, true},
 		{"egress", DirectionEgress, true},
-		{"false", DirectionNone, true},
 		{"none", DirectionNone, true},
+		// Legacy aliases dropped per ADR 0030; these are now invalid.
+		{"true", DirectionNone, false},
+		{"false", DirectionNone, false},
+		{"", DirectionNone, false},
 		{"yes", DirectionNone, false},
 		{"INGRESS", DirectionNone, false}, // case-sensitive
 		{"both ", DirectionNone, false},   // no whitespace stripping
