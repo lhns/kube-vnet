@@ -340,7 +340,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if hasUserBare || hasUserPref {
 			// Typo check: any present user value must parse.
 			if hasUserBare {
-				if _, ok := ParseDirection(userBareVal); !ok {
+				if _, ok := ParseBareDirection(userBareVal); !ok {
 					invalid = append(invalid, InvalidJoiner{
 						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
 					})
@@ -348,7 +348,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 				}
 			}
 			if hasUserPref {
-				if _, ok := ParseDirection(userPrefVal); !ok {
+				if _, ok := ParseBareDirection(userPrefVal); !ok {
 					invalid = append(invalid, InvalidJoiner{
 						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
 					})
@@ -414,11 +414,11 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		// Parse each present form's direction.
 		bareDir, bareOK := DirectionNone, true
 		if hasBare {
-			bareDir, bareOK = ParseDirection(bareVal)
+			bareDir, bareOK = ParseBareDirection(bareVal)
 		}
 		prefDir, prefOK := DirectionNone, true
 		if hasPref {
-			prefDir, prefOK = ParseDirection(prefVal)
+			prefDir, prefOK = ParseBareDirection(prefVal)
 		}
 
 		// Unknown direction values surface but don't make the pod a member.
@@ -558,7 +558,7 @@ func (r *VirtualNetworkReconciler) discoverBindings(
 		if dirVal == "" {
 			dirVal = string(DirectionBoth)
 		}
-		dir, parseOK := ParseDirection(dirVal)
+		dir, parseOK := ParseBareDirection(dirVal)
 		if !parseOK {
 			invalid = append(invalid, InvalidJoiner{
 				PodNamespace: b.Namespace,

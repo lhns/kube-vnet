@@ -1,6 +1,6 @@
 # 0026 — `VirtualNetworkBinding` CRD as the no-label alternative
 
-Status: Accepted
+Status: Accepted (constrained further by [ADR 0031](0031-baseline-tier-resolution.md) — `podSelector` is required to be non-empty; the empty-selector case moves to `VirtualNetworkBaseline`)
 
 ## Context
 

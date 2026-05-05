@@ -48,12 +48,21 @@ const (
 // Direction is the per-pod direction of a vnet membership. Set as the value
 // of a join label (or via a VirtualNetworkBinding's spec.direction).
 //
-// Valid values: `both`, `ingress`, `egress`, `none`. Any other value (including
-// the legacy `true`/`false`/empty-string aliases that earlier ADRs honored)
-// is rejected by ParseDirection. The direction-value VAP shipped via the
-// chart also rejects them at admission. Callers that hit ok=false from
-// ParseDirection should surface the value as an InvalidJoiner with reason
-// UnknownDirection. See ADR 0030 and the ADR 0021 2026-05-05 addendum.
+// Valid values: `both`, `ingress`, `egress`, `none`, plus the four `default-*`
+// variants (`default-both`, `default-ingress`, `default-egress`, `default-none`)
+// used at baseline tiers to mark a value as override-able by lower tiers. See
+// ADR 0031. Bare values are enforced (no override permitted); `default-*`
+// values are advisory.
+//
+// Pod-tier values (pod label and `VirtualNetworkBinding.spec.direction`)
+// accept only the bare four — the `default-*` prefix is meaningless at the
+// leaf tier and is rejected at admission (CRD CEL) and at runtime (label
+// parser). Any other value (including the legacy `true`/`false`/empty-string
+// aliases that earlier ADRs honored) is rejected by ParseDirection. The
+// direction-value VAP shipped via the chart also rejects unknown values at
+// admission. Callers that hit ok=false from ParseDirection should surface the
+// value as an InvalidJoiner with reason UnknownDirection. See ADR 0030, the
+// ADR 0021 2026-05-05 addendum, and ADR 0031.
 type Direction string
 
 const (
@@ -61,10 +70,16 @@ const (
 	DirectionIngress Direction = "ingress"
 	DirectionEgress  Direction = "egress"
 	DirectionNone    Direction = "none"
+
+	// default-* variants are valid at baseline tiers only (ADR 0031).
+	DirectionDefaultBoth    Direction = "default-both"
+	DirectionDefaultIngress Direction = "default-ingress"
+	DirectionDefaultEgress  Direction = "default-egress"
+	DirectionDefaultNone    Direction = "default-none"
 )
 
 // ParseDirection normalizes a label value to a Direction. Returns ok=false
-// for any value other than the four enum constants. The legacy aliases
+// for any value other than the eight enum constants. The legacy aliases
 // `true`, `false`, and the empty string are no longer accepted (dropped per
 // ADR 0030; see the ADR 0021 2026-05-05 addendum). The direction-value VAP
 // rejects them at admission too.
@@ -78,8 +93,55 @@ func ParseDirection(value string) (Direction, bool) {
 		return DirectionEgress, true
 	case "none":
 		return DirectionNone, true
+	case "default-both":
+		return DirectionDefaultBoth, true
+	case "default-ingress":
+		return DirectionDefaultIngress, true
+	case "default-egress":
+		return DirectionDefaultEgress, true
+	case "default-none":
+		return DirectionDefaultNone, true
 	}
 	return DirectionNone, false
+}
+
+// ParseBareDirection accepts only the four bare values (rejects default-*).
+// Used at the pod tier (label parsing, VirtualNetworkBinding direction) where
+// the override-permission concept doesn't apply.
+func ParseBareDirection(value string) (Direction, bool) {
+	d, ok := ParseDirection(value)
+	if !ok || d.IsDefault() {
+		return DirectionNone, false
+	}
+	return d, true
+}
+
+// IsDefault reports whether d is one of the override-permitted (default-*)
+// variants.
+func (d Direction) IsDefault() bool {
+	switch d {
+	case DirectionDefaultBoth, DirectionDefaultIngress, DirectionDefaultEgress, DirectionDefaultNone:
+		return true
+	}
+	return false
+}
+
+// Bare strips the default-* prefix, returning the bare equivalent. Bare
+// values pass through unchanged. The final emitted direction (label stamped
+// onto pods) is always bare; the default-* prefix is consumed during
+// resolution to compute override-permission.
+func (d Direction) Bare() Direction {
+	switch d {
+	case DirectionDefaultBoth:
+		return DirectionBoth
+	case DirectionDefaultIngress:
+		return DirectionIngress
+	case DirectionDefaultEgress:
+		return DirectionEgress
+	case DirectionDefaultNone:
+		return DirectionNone
+	}
+	return d
 }
 
 // KeyForm distinguishes the bare and namespace-prefixed forms of the join

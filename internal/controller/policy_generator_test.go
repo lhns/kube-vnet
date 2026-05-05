@@ -446,6 +446,11 @@ func TestParseDirection(t *testing.T) {
 		{"ingress", DirectionIngress, true},
 		{"egress", DirectionEgress, true},
 		{"none", DirectionNone, true},
+		// default-* variants are valid at baseline tiers (ADR 0031).
+		{"default-both", DirectionDefaultBoth, true},
+		{"default-ingress", DirectionDefaultIngress, true},
+		{"default-egress", DirectionDefaultEgress, true},
+		{"default-none", DirectionDefaultNone, true},
 		// Legacy aliases dropped per ADR 0030; these are now invalid.
 		{"true", DirectionNone, false},
 		{"false", DirectionNone, false},
@@ -453,11 +458,62 @@ func TestParseDirection(t *testing.T) {
 		{"yes", DirectionNone, false},
 		{"INGRESS", DirectionNone, false}, // case-sensitive
 		{"both ", DirectionNone, false},   // no whitespace stripping
+		{"default-", DirectionNone, false},
+		{"DEFAULT-BOTH", DirectionNone, false},
 	}
 	for _, c := range cases {
 		got, ok := ParseDirection(c.in)
 		if got != c.want || ok != c.ok {
 			t.Errorf("ParseDirection(%q) = (%v, %v), want (%v, %v)", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestParseBareDirection_RejectsDefaultPrefix(t *testing.T) {
+	for _, v := range []string{"default-both", "default-ingress", "default-egress", "default-none"} {
+		if _, ok := ParseBareDirection(v); ok {
+			t.Errorf("ParseBareDirection(%q) should reject default-* values (pod tier is bare-only per ADR 0031)", v)
+		}
+	}
+	for _, v := range []string{"both", "ingress", "egress", "none"} {
+		if _, ok := ParseBareDirection(v); !ok {
+			t.Errorf("ParseBareDirection(%q) rejected a valid bare value", v)
+		}
+	}
+}
+
+func TestDirection_IsDefault(t *testing.T) {
+	defaults := []Direction{DirectionDefaultBoth, DirectionDefaultIngress, DirectionDefaultEgress, DirectionDefaultNone}
+	for _, d := range defaults {
+		if !d.IsDefault() {
+			t.Errorf("%s.IsDefault() = false, want true", d)
+		}
+	}
+	bares := []Direction{DirectionBoth, DirectionIngress, DirectionEgress, DirectionNone}
+	for _, d := range bares {
+		if d.IsDefault() {
+			t.Errorf("%s.IsDefault() = true, want false", d)
+		}
+	}
+}
+
+func TestDirection_Bare(t *testing.T) {
+	cases := map[Direction]Direction{
+		DirectionBoth:           DirectionBoth,
+		DirectionIngress:        DirectionIngress,
+		DirectionEgress:         DirectionEgress,
+		DirectionNone:           DirectionNone,
+		DirectionDefaultBoth:    DirectionBoth,
+		DirectionDefaultIngress: DirectionIngress,
+		DirectionDefaultEgress:  DirectionEgress,
+		DirectionDefaultNone:    DirectionNone,
+	}
+	for in, want := range cases {
+		if got := in.Bare(); got != want {
+			t.Errorf("%s.Bare() = %s, want %s", in, got, want)
+		}
+		if got := in.Bare(); got.IsDefault() {
+			t.Errorf("%s.Bare() returned a default-prefixed value: %s", in, got)
 		}
 	}
 }

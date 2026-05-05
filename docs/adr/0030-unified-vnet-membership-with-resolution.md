@@ -1,6 +1,6 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-Status: Accepted
+Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md))
 
 Date: 2026-05-05
 

@@ -79,7 +79,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	if dirVal == "" {
 		dirVal = string(DirectionBoth)
 	}
-	if _, ok := ParseDirection(dirVal); !ok {
+	if _, ok := ParseBareDirection(dirVal); !ok {
 		setBindingReady(b, metav1.ConditionFalse, ReasonBindingUnknownDirection,
 			fmt.Sprintf("unknown direction %q", dirVal))
 		return ctrl.Result{}, r.writeStatus(ctx, b, nil)

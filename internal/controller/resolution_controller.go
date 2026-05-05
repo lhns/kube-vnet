@@ -181,7 +181,7 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 		if dirStr == "" {
 			dirStr = string(DirectionBoth)
 		}
-		dir, ok := ParseDirection(dirStr)
+		dir, ok := ParseBareDirection(dirStr)
 		if !ok {
 			continue
 		}
@@ -206,9 +206,11 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 		if !strings.HasPrefix(k, userNetPrefix) {
 			continue
 		}
-		dir, ok := ParseDirection(v)
+		dir, ok := ParseBareDirection(v)
 		if !ok {
 			// Invalid value; skip (the direction VAP rejects these at admission).
+			// default-* values are also rejected here — they're a baseline-tier
+			// concept (ADR 0031); pod labels are bare-only.
 			continue
 		}
 		suffix := strings.TrimPrefix(k, userNetPrefix)
