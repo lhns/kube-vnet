@@ -16,24 +16,25 @@ The operator binary (`/manager` in the container) accepts these flags. They map 
 | `--health-probe-bind-address` | string | `:8081` | Address the `/healthz` and `/readyz` endpoints listen on. |
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--label-prefix` | string | `kube-vnet/` | Label-key prefix for join labels. Must end with `/`. Changing this is rare; mostly useful if you already have an unrelated `kube-vnet/` namespace in your cluster's labels. |
-| `--disabled-namespaces` | string (comma-separated) | `""` | Namespaces the operator never touches. The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md). |
-| `--ingress-isolation` | string enum | **(required)** | Cluster-wide default ingress-isolation mode. One of `none`, `namespace`, `pod`. The operator binary exits non-zero at startup if this flag is not set explicitly. Per-namespace `kube-vnet/ingress-isolation` annotations and the per-mode override lists below take precedence. See [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). |
-| `--ingress-isolation-none` | string (CSV) | `kube-system,kube-public,kube-node-lease` | Namespaces overridden to `ingress-isolation=none` regardless of the cluster-wide default. The default keeps control-plane namespaces unbaseline'd while still letting the operator discover labeled pods there. |
-| `--ingress-isolation-namespace` | string (CSV) | `""` | Namespaces overridden to `ingress-isolation=namespace`. |
-| `--ingress-isolation-pod` | string (CSV) | `""` | Namespaces overridden to `ingress-isolation=pod`. |
+| `--disabled-namespaces` | string (comma-separated) | `kube-system,kube-public,kube-node-lease` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
+| `--default-memberships` | string (`<vnet>=<dir>` CSV) | `""` | Comma-separated `<vnet>=<direction>` pairs the resolution controller stamps onto every pod in every managed namespace as default vnet memberships. Only the system vnet keys `namespace` and `cluster` are accepted. Pod labels and `(Cluster)VirtualNetworkBinding` rules can override these defaults; `direction=none` opts a pod out. Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
+| `--elide-baseline-for` | string (CSV) | `cluster` | Vnet names whose receivers (`In: [both, ingress]`) are excluded from the deny-all baseline. The default `cluster` matches the convention that pods on the cluster system-vnet are reachable from anywhere and don't need a redundant baseline. ADR 0030. |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
 
-### Resolution order (per namespace)
+### Inheritance order for vnet membership (per pod)
 
-1. The namespace's `kube-vnet/ingress-isolation` annotation, if set to a recognized value (`none`, `namespace`, `pod`).
-2. The matching per-mode override list (`--ingress-isolation-{none,namespace,pod}`).
-3. The cluster-wide default `--ingress-isolation`.
+Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), the resolution controller computes effective `(vnet, direction)` per pod by walking layers from lowest to highest priority:
 
-A namespace listed in two override lists is a startup configuration error; the operator refuses to start.
+1. Operator defaults (from `--default-memberships`).
+2. Matching `ClusterVirtualNetworkBinding` rules (cluster scope).
+3. Matching `VirtualNetworkBinding` rules in the pod's namespace.
+4. The pod's own `kube-vnet/net.<vnet>=<direction>` labels.
 
-`kube-vnet/disabled=true` and `--disabled-namespaces` membership override everything: the operator does nothing in those namespaces, regardless of `ingress-isolation` config.
+Each layer can add a vnet, override an inherited direction, or remove one via `direction=none`. Within a single layer, multiple matching rules are tied alphabetically by source name.
+
+`kube-vnet/disabled=true` and `--disabled-namespaces` membership override everything: the operator does nothing in those namespaces.
 
 ### Example: cluster-wide ingress-deny posture
 
@@ -42,9 +43,9 @@ manager \
   --leader-elect \
   --metrics-bind-address=:8080 \
   --health-probe-bind-address=:8081 \
-  --ingress-isolation=pod \
-  --ingress-isolation-none=kube-system,kube-public,kube-node-lease,legacy,sandbox \
-  --disabled-namespaces=my-legacy-ns
+  --default-memberships=                 # empty = no auto-memberships → pods hit the deny-all baseline \
+  --elide-baseline-for=cluster \
+  --disabled-namespaces=kube-system,kube-public,kube-node-lease,my-legacy-ns
 ```
 
 ---
@@ -93,11 +94,9 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `operator.labelPrefix` | string | `kube-vnet/` | → `--label-prefix`. |
-| `operator.disabledNamespaces` | `[]string` | `[]` | → `--disabled-namespaces` (the chart joins them with commas). Mirrors the per-namespace `kube-vnet/disabled=true` annotation. The operator's own namespace is added implicitly via `POD_NAMESPACE`. |
-| `operator.ingressIsolation.mode` | string enum | **(required)** | → `--ingress-isolation`. One of `none`, `namespace`, `pod`. The chart has no default; `helm install`/`helm upgrade` fails fast via `required` if this is empty. |
-| `operator.ingressIsolation.namespaceOverrides.none` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--ingress-isolation-none`. Namespaces overridden to `none` regardless of the cluster-wide mode. The default carves out the three control-plane namespaces so they never get an ingress baseline. |
-| `operator.ingressIsolation.namespaceOverrides.namespace` | `[]string` | `[]` | → `--ingress-isolation-namespace`. Namespaces overridden to `namespace`. |
-| `operator.ingressIsolation.namespaceOverrides.pod` | `[]string` | `[]` | → `--ingress-isolation-pod`. Namespaces overridden to `pod`. |
+| `operator.disabledNamespaces` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. |
+| `operator.defaultMemberships` | string (`<vnet>=<dir>` CSV) | `""` | → `--default-memberships`. Operator-default vnet memberships the resolution controller stamps onto every pod. Only the system vnet keys `namespace` and `cluster` are accepted. |
+| `operator.elideBaselineFor` | string (CSV) | `cluster` | → `--elide-baseline-for`. Vnet names whose receivers are excluded from the deny-all baseline. ADR 0030. |
 | `operator.leaderElect` | bool | `true` | → `--leader-elect`. Recommended on; harmless with one replica and required for safe multi-replica HA. |
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |
@@ -164,13 +163,9 @@ kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPo
 
 The chart matches "what cert-manager / Cilium operator / Flux do" — leader election on by default so scaling is one line. The binary defaults to off so local `make run` doesn't need leader-election RBAC.
 
-### Why no default for `operator.ingressIsolation.mode`?
+### Why does `disabledNamespaces` default to the control-plane namespaces?
 
-The cluster-wide ingress-isolation posture is the most consequential single setting in the chart — picking `pod` against an existing cluster imposes ingress-deny on every workload that isn't yet using vnets. Making it required at install time forces the operator to make a deliberate choice rather than acquiring whatever default ships in a given release. The CLI flag (`--ingress-isolation`) follows the same rule: the binary exits non-zero if it's not set explicitly. See [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md).
-
-### Why does `namespaceOverrides.none` default to the control-plane namespaces?
-
-`kube-system`, `kube-public`, `kube-node-lease` — Kubernetes control-plane namespaces. Installing an ingress-deny baseline in `kube-system` would block traffic to CoreDNS, the metrics server, and the apiserver aggregator. Putting them in `namespaceOverrides.none` (rather than in `disabledNamespaces`) means the operator still *discovers* labeled pods there — useful if a cluster admin deliberately wants to enroll a kube-system component into a vnet — but never installs an ingress-deny baseline regardless of the cluster-wide `mode`. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md).
+`kube-system`, `kube-public`, `kube-node-lease` — Kubernetes control-plane namespaces. The operator stays out of those entirely (no baseline, no system vnets, no resolution stamping) so it can't accidentally break CoreDNS, the metrics server, or the apiserver aggregator. To enroll a system-namespace pod in a vnet, remove the namespace from this list explicitly. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
 The operator's own namespace is implicitly added to `disabledNamespaces` so that a misconfigured `allowedNamespaces.all: true` vnet can't accidentally lock the operator out of itself.
 

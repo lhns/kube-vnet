@@ -42,30 +42,21 @@ You need cluster-admin (or equivalent) for the install — the operator needs cl
 
 The chart is published as an OCI artifact to `ghcr.io/lhns/charts/kube-vnet`. Helm 3.8+ supports OCI registries natively; no separate repository to add.
 
-The chart has **no default for `operator.ingressIsolation.mode`** — you must pick one of `none`, `namespace`, or `pod` at install time. This is deliberate: the cluster-wide ingress-isolation posture is not something to acquire silently.
-
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.1.0 \
-  --namespace kube-vnet-system --create-namespace \
-  --set operator.ingressIsolation.mode=none
+  --namespace kube-vnet-system --create-namespace
 ```
 
 Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
 
-If you forget `mode`, `helm install`/`helm upgrade` fails fast:
+Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a uniform deny-all baseline by default; there's no per-namespace mode setting anymore. To get the previous "pod-strict" or "same-NS" postures, configure `operator.defaultMemberships` on the chart (see below).
 
-```
-Error: execution error at (kube-vnet/templates/deployment.yaml): operator.ingressIsolation.mode is required (one of: none, namespace, pod)
-```
+The chart's default `operator.disabledNamespaces` lists `[kube-system, kube-public, kube-node-lease]`, so the operator stays out of those control-plane namespaces entirely (no baseline, no system vnets, no resolution stamping).
 
-Pick `none` if you only want the operator to install policies for explicit `VirtualNetwork` members (existing-cluster-friendly default behavior — start here unless you know you want broader posture). Pick `namespace` or `pod` to install an ingress-restricting baseline cluster-wide. See [`concepts.md`](concepts.md) and ADRs 0023–0025.
+#### What the default install means for new namespaces
 
-The chart's default `operator.ingressIsolation.namespaceOverrides.none` lists `[kube-system, kube-public, kube-node-lease]`, so even if you pick `mode=pod` cluster-wide, those control-plane namespaces stay at `none` — the operator still discovers any deliberate joiner there but never installs a baseline.
-
-#### What `mode: none` means for new namespaces
-
-After install with `mode: none`, no namespace gets a baseline policy until you annotate it. The samples in [`../config/samples/`](../config/samples/) all set `kube-vnet/ingress-isolation: pod` on their namespaces — apply one to see kube-vnet's isolation behavior end-to-end. To opt your own namespace in:
+With no extra flags, every managed namespace gets the deny-all baseline. Pods that opt in via vnet membership (the `kube-vnet/net.<vnet>` label, or a `(Cluster)VirtualNetworkBinding`) get additive ingress allows from vnet peers; everything else is denied. To opt a namespace out entirely:
 
 ```yaml
 apiVersion: v1
@@ -73,40 +64,29 @@ kind: Namespace
 metadata:
   name: my-app
   annotations:
-    kube-vnet/ingress-isolation: pod  # or `namespace` for same-ns ingress allowed
-```
-
-Or for an existing namespace:
-
-```bash
-kubectl annotate ns my-app kube-vnet/ingress-isolation=pod --overwrite
+    kube-vnet/disabled: "true"
 ```
 
 ### Common values
 
 ```bash
 # Pin a specific image tag (default: chart appVersion)
-helm install ... --set image.tag=v0.1.0 --set operator.ingressIsolation.mode=none
+helm install ... --set image.tag=v0.1.0
 
-# Cluster-wide ingress-isolation: pod (every non-overridden namespace gets a strict-ingress baseline)
-helm install ... --set operator.ingressIsolation.mode=pod
+# Auto-join every pod to the namespace system-vnet (same-NS connectivity by default)
+helm install ... --set operator.defaultMemberships=namespace=both,cluster=egress
 
-# Per-mode namespace-override lists carve out exceptions to the cluster-wide default.
-helm install ... \
-  --set 'operator.ingressIsolation.mode=pod' \
-  --set 'operator.ingressIsolation.namespaceOverrides.none={legacy,sandbox}' \
-  --set 'operator.ingressIsolation.namespaceOverrides.namespace={team-a,team-b}'
+# Auto-join every pod to the cluster system-vnet (allow-from-anywhere) — equivalent of mode=none
+helm install ... --set operator.defaultMemberships=cluster=both
 
-# Customize the operator-level disabled-namespaces list (defaults to []; the operator's own ns is auto-added)
-helm install ... \
-  --set operator.ingressIsolation.mode=none \
-  --set 'operator.disabledNamespaces={my-legacy-ns}'
+# Customize the operator-level disabled-namespaces list (operator's own ns is auto-added)
+helm install ... --set 'operator.disabledNamespaces={kube-system,kube-public,kube-node-lease,my-legacy-ns}'
 
 # Expose the metrics endpoint via a Service (off by default)
-helm install ... --set operator.ingressIsolation.mode=none --set metricsService.enabled=true
+helm install ... --set metricsService.enabled=true
 
 # Create a Prometheus PodMonitor (requires the Prometheus Operator)
-helm install ... --set operator.ingressIsolation.mode=none --set podMonitor.enabled=true
+helm install ... --set podMonitor.enabled=true
 ```
 
 The full value reference is in [`reference/configuration.md`](reference/configuration.md). The chart's own README is [`charts/kube-vnet/README.md`](../charts/kube-vnet/README.md).
@@ -162,8 +142,7 @@ Every push to any branch (and every `workflow_dispatch` run of the release workf
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.0.0-dev.abc1234 \
-  --namespace kube-vnet-system --create-namespace \
-  --set operator.ingressIsolation.mode=none
+  --namespace kube-vnet-system --create-namespace
 ```
 
 To find the latest dev sha for a branch (requires `gh` CLI auth):

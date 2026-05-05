@@ -229,11 +229,11 @@ Events have a default TTL of 1 hour (apiserver-managed) — they're a notificati
 
 ## Operational playbooks
 
-### "I just installed kube-vnet with mode: none — why isn't anything isolated?"
+### "I just installed kube-vnet — why aren't my non-vnet pods isolated?"
 
-That's by design. After `helm install`, no namespace gets a baseline policy until you either set `kube-vnet/ingress-isolation` on it (per-namespace), add it to `operator.ingressIsolation.namespaceOverrides.{namespace,pod}` (operator-level), or change the cluster-wide `mode`. kube-vnet doesn't silently impose ingress restrictions during adoption.
+By default they are: every managed namespace gets a deny-all baseline. If pods can still reach each other, the most likely cause is that they're members of the same vnet (which adds an allow rule). Check `kubectl get netpol -A -l kube-vnet/role=baseline` to confirm the baseline is present in your namespace.
 
-The included samples opt-in via the namespace annotation so the isolation behavior is observable when you `kubectl apply -f config/samples/01_same_namespace.yaml`. Production rollouts typically pick one of the operator-level paths (cluster-wide `mode` change, or the override list) once the team is ready.
+If you want to *open up* a namespace, annotate it `kube-vnet/disabled: "true"` (the operator stays out entirely there) or add it to `--disabled-namespaces` / `operator.disabledNamespaces`.
 
 ### "I want to know if kube-vnet is healthy"
 
@@ -264,64 +264,49 @@ The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and l
 
 CRD changes are not applied by `helm upgrade` — see [`install.md`](install.md) for how to apply CRD updates explicitly.
 
-### "I want to enable cluster-wide ingress-isolation"
+### "I want to roll out cluster-wide isolation"
 
-The chart has no default for `mode` — every install picks one. To raise the posture from `none` to `pod` against an existing cluster, the strict-ingress baseline lands in every non-disabled, non-overridden namespace immediately, which can break workloads that previously relied on default-allow ingress.
+Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) the deny-all baseline applies to every managed namespace by default — if you've already installed kube-vnet, isolation is in place. Migration risk is real on existing clusters: workloads that previously relied on default-allow ingress will break the moment kube-vnet starts.
 
 Recommended rollout:
 
-1. Annotate every namespace that hasn't been migrated to use vnets:
+1. *Before* installing, mark every namespace that isn't ready to be isolated:
    ```bash
    kubectl annotate namespace <name> kube-vnet/disabled=true
    ```
-2. Set the cluster-wide default (or use the override lists to ramp up gradually):
-   ```bash
-   helm upgrade kube-vnet ... --set operator.ingressIsolation.mode=pod
-   # Or migrate per-namespace via the override list:
-   helm upgrade kube-vnet ... \
-     --set 'operator.ingressIsolation.mode=none' \
-     --set 'operator.ingressIsolation.namespaceOverrides.pod={ns-a,ns-b}'
-   ```
-3. Remove the `kube-vnet/disabled` annotation namespace by namespace as workloads are migrated.
-
-Per-namespace overrides via the `kube-vnet/ingress-isolation` annotation always win over the operator-level config. See [ADR 0023](adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+2. Install the chart. The deny-all baseline lands only in non-disabled namespaces.
+3. Migrate namespaces to vnets one at a time. Add `VirtualNetwork` + `kube-vnet/net.<vnet>` labels (or `VirtualNetworkBinding`) so the workloads that need to reach each other are vnet members.
+4. Remove the `kube-vnet/disabled` annotation namespace by namespace. The deny-all baseline applies; vnet membership grants the allows.
 
 ### "An auditor is asking what kube-vnet does in `kube-system`"
 
-By default: nothing harmful. `kube-system`, `kube-public`, and `kube-node-lease` are listed in the chart's default `operator.ingressIsolation.namespaceOverrides.none`, so the operator's resolved mode for those namespaces is `none` — no baseline is installed. The operator still discovers any deliberate joiner pod there (so a user can opt a kube-system component into a vnet via the prefixed join label, if `allowedNamespaces` permits it), but it never installs an ingress-deny baseline that could break CoreDNS, the API aggregator, or other control-plane traffic.
-
-If you'd rather have the operator never look at those namespaces at all, add them to `operator.disabledNamespaces` instead. See [`security.md`](security.md) for the full RBAC inventory.
+Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's default `operator.disabledNamespaces`, so the operator stays out of them entirely: no baseline, no system vnets, no resolution stamping, no eligibility as a peer for foreign-NS vnets. To enroll a system-namespace pod in a vnet, remove the namespace from `disabledNamespaces` explicitly. See [`security.md`](security.md) for the full RBAC inventory.
 
 ### "I'm upgrading from a release with the old config-key names"
 
-A few breaking and behavior changes landed this cycle. Read these before `helm upgrade`.
+[ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) removed the `--ingress-isolation*` flag family and the `kube-vnet/ingress-isolation` annotation. Read these before `helm upgrade`.
 
-**`operator.ingressIsolation.mode` is now required.** The chart no longer defaults `mode`. Helm's `required` function fails the install/upgrade if it's empty:
+**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all minus `--elide-baseline-for` exemptions; there's no per-namespace mode anymore. To get the previous "default-allow" posture cluster-wide, set `--default-memberships=cluster=both`. To get same-NS connectivity, set `--default-memberships=namespace=both,cluster=egress`. To get strict deny-all, leave `--default-memberships` empty.
 
-```
-Error: execution error at (kube-vnet/templates/deployment.yaml): operator.ingressIsolation.mode is required (one of: none, namespace, pod)
-```
+**System namespaces are disabled by default again.** `operator.disabledNamespaces` defaults to `[kube-system, kube-public, kube-node-lease]`; the operator stays out of those entirely.
 
-Add `mode: <none|namespace|pod>` to your values (or pass `--set operator.ingressIsolation.mode=...`) before running `helm upgrade`. If you operate the binary directly, add `--ingress-isolation=...` to the manager args — the operator binary now exits non-zero at startup if it isn't set explicitly.
-
-**System namespaces moved out of the disabled list.** Previously `kube-system`, `kube-public`, `kube-node-lease` were the default for `operator.disabledNamespaces`. They've moved to `operator.ingressIsolation.namespaceOverrides.none`, with the chart default literally `[kube-system, kube-public, kube-node-lease]`. The operator's `--ingress-isolation-none` flag default is the same CSV. Effect: the operator now *discovers* labeled pods in those namespaces (so you can deliberately opt a kube-system component into a vnet via `allowedNamespaces`) but never installs an ingress-deny baseline there, regardless of `mode`. If you previously relied on the operator never touching those namespaces *at all* (not even discovery), add them back to `operator.disabledNamespaces` explicitly. The default for `disabledNamespaces` is now `[]`; `POD_NAMESPACE` (the operator's own namespace) is still added implicitly.
-
-**Renamed values — old names no longer accepted.** Rename in your values file and CI manifests *before* you upgrade. There is no compatibility shim:
+**Renamed/removed values — old names no longer accepted.** Rename in your values file and CI manifests *before* you upgrade:
 
 | Old (removed) | New |
 |---|---|
 | `operator.excludedNamespaces` | `operator.disabledNamespaces` |
 | CLI `--excluded-namespaces` | CLI `--disabled-namespaces` |
-| `operator.ingressIsolation.forceNone` | `operator.ingressIsolation.namespaceOverrides.none` |
-| `operator.ingressIsolation.forceNamespace` | `operator.ingressIsolation.namespaceOverrides.namespace` |
-| `operator.ingressIsolation.forcePod` | `operator.ingressIsolation.namespaceOverrides.pod` |
-| CLI `--default-deny-everywhere` | CLI `--ingress-isolation=pod` |
-| `operator.defaultDenyEverywhere` | `operator.ingressIsolation.mode=pod` |
+| `operator.ingressIsolation.mode` | `operator.defaultMemberships` (different semantic; see [`concepts.md`](concepts.md)) |
+| `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}` | (removed; use the per-namespace `kube-vnet/disabled` annotation or per-pod vnet membership) |
+| `operator.ingressIsolation.force{None,Namespace,Pod}` | (removed; same migration as above) |
+| CLI `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}` | (removed; see `--default-memberships` and `--elide-baseline-for`) |
+| CLI `--default-deny-everywhere` and `operator.defaultDenyEverywhere` | (removed) |
+| `kube-vnet/ingress-isolation` namespace annotation | (removed) |
 
-Two related behavior changes from the same cycle to keep in mind:
+Two related behavior reminders:
 
-- **Egress is no longer restricted** by the operator's baseline. Existing installs that relied on the previous "deny everything except DNS + vnet members" egress will see their egress posture loosen on upgrade. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
-- **The implicit "first vnet member triggers the baseline" coupling is gone.** Set `kube-vnet/ingress-isolation: pod` on the namespace explicitly (or use the operator-level config) if you want the previous behavior.
+- **Egress is not restricted** by the baseline ([ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
+- **Vnet membership is the only ingress-allow mechanism**, including for "open up a namespace" cases. To allow same-NS ingress without joining a user vnet, default-join every pod to the system `namespace` vnet via `--default-memberships=namespace=both`.
 
 ### "Pods I expect to be isolated can talk to each other"
 

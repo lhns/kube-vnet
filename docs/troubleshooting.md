@@ -174,7 +174,7 @@ Most common case. Walk through these in order:
    If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded.
 
    Two ways a namespace can be excluded:
-   - The operator-level `--disabled-namespaces` flag (default `[]`, plus the operator's own namespace). Note: `kube-system`, `kube-public`, `kube-node-lease` are no longer disabled by default — they're in `--ingress-isolation-none` instead, which means the operator *does* discover labeled pods there but won't install an ingress baseline.
+   - The operator-level `--disabled-namespaces` flag (default `kube-system,kube-public,kube-node-lease`, plus the operator's own namespace).
    - The per-namespace annotation: `kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/disabled}'` — if it reads `true`, that's why.
 
 3. **Is the pod's namespace permitted by `allowedNamespaces`?**
@@ -209,26 +209,14 @@ Most common case. Walk through these in order:
 
 ## I labeled my pod and the vnet is Ready, but external pods can still reach it
 
-This is the most common adoption surprise. Most likely cause: **the namespace has no `kube-vnet/ingress-isolation` annotation and the cluster-wide `mode` is `none`**.
+The deny-all baseline excludes pods that are *receivers* on any vnet listed in `--elide-baseline-for` (default `cluster`). If your pod is on the cluster system-vnet as `both`/`ingress` (e.g. via `--default-memberships=cluster=both`), the baseline doesn't apply to it — the cluster-vnet membership policy alone governs its ingress, which by convention allows from anywhere on the cluster.
 
-```bash
-# Check the cluster-wide mode the operator is running with
-kubectl -n kube-vnet-system get deploy kube-vnet-controller -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep ingress-isolation
+To enforce stricter ingress on a specific pod:
 
-# Check the per-namespace annotation
-kubectl get ns <your-ns> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'
-```
+- Don't make the pod a `cluster=both` member. Either remove the operator default or set `kube-vnet/net.cluster=none` on the pod.
+- The deny-all baseline will then apply, and only the user-vnet membership policies grant ingress.
 
-If the cluster-wide mode is `none` (the default for new adopters) and the namespace has no annotation, the operator does NOT install a baseline in that namespace. Your labeled pod is part of the vnet, and *its own* ingress is restricted to vnet peers — but unlabeled pods in the same namespace and traffic from unmanaged namespaces still reach pods that aren't selected by any policy.
-
-To opt the namespace in:
-
-```bash
-kubectl annotate ns <your-ns> kube-vnet/ingress-isolation=pod --overwrite
-# or `=namespace` for "allow same-ns ingress + vnet peers"
-```
-
-See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#kube-vnetingress-isolation) and [`concepts.md#the-ingress-isolation-baseline`](concepts.md#the-ingress-isolation-baseline) for the full precedence rules.
+For the full design, see the [deny-all baseline section in `concepts.md`](concepts.md#the-deny-all-baseline) and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
 ## Pods I expect to be isolated can talk to each other
 
@@ -240,17 +228,15 @@ See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#
 
    If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`troubleshooting/cni-pitfalls.md`](troubleshooting/cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
 
-2. **Is the ingress-isolation baseline present in the receiving namespace?**
+2. **Is the deny-all baseline present in the receiving namespace?**
 
-   Ingress isolation requires the baseline on the *receiving* end. If `kube-vnet-default-deny` is missing or the namespace's `ingress-isolation` mode is `none`, ingress is unrestricted on that side (except for whatever membership policies are present, which still default-deny ingress on selected pods).
+   Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a `kube-vnet`-named deny-all baseline. If it's missing, the namespace is `disabled` (operator stays out entirely).
 
    ```bash
    kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet,kube-vnet/role=baseline
    ```
 
-   Check the resolved mode for a namespace: `kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'`. If empty, the operator-level default applies — inspect the operator args.
-
-3. **If you want every namespace ingress-deny-by-default**, set `--ingress-isolation=pod` (or use the `--ingress-isolation-pod` override list to ramp up gradually). See [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md) and the migration pattern in [`operations.md`](operations.md).
+3. **If you want every namespace ingress-deny-by-default**, you have it already by default. To open up specific pods, make them members of a vnet (typically the system `cluster` or `namespace` vnet, or a user-defined one).
 
 4. **Are the membership policies installed in both namespaces?**
 
@@ -281,48 +267,38 @@ If you need per-workload egress restriction, write a user-managed `NetworkPolicy
 
 ---
 
-## The default-deny baseline didn't appear
+## The deny-all baseline didn't appear
 
-The baseline lifecycle is owned by the `NamespaceReconciler` and is decided purely by the resolved `ingress-isolation` mode for the namespace. There is no implicit "first vnet member triggers the baseline" coupling. Check, in order:
+Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a deny-all baseline named `kube-vnet`. If it's missing, the namespace is excluded:
 
-1. What's the resolved mode for the namespace?
-
-   ```bash
-   kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/ingress-isolation}{"\n"}'
-   ```
-
-   If unset, the operator-level config applies — check the operator args for `--ingress-isolation`, `--ingress-isolation-pod`, `--ingress-isolation-namespace`, and `--ingress-isolation-none`.
-
-   - Mode `none` → no baseline. By design.
-   - Mode `namespace` → baseline allowing same-namespace ingress.
-   - Mode `pod` → strict-ingress baseline.
-
-2. Is the namespace operator-managed?
+1. Is the namespace excluded?
 
    ```bash
    kubectl get ns <name> -o yaml | grep -A2 annotations:
    ```
 
-   If `kube-vnet/disabled: "true"` is set, the operator does nothing in that namespace — including not installing the baseline. By design.
+   If `kube-vnet/disabled: "true"` is set, the operator stays out entirely — by design.
 
-3. Is the namespace in `--disabled-namespaces`?
+2. Is the namespace in `--disabled-namespaces`?
 
    ```bash
    kubectl get deploy -n kube-vnet-system kube-vnet-controller \
      -o jsonpath='{.spec.template.spec.containers[0].args}'
    ```
 
-   If your namespace appears (or the operator's own namespace, which is added implicitly), the operator does nothing there. Separately, if your namespace appears in `--ingress-isolation-none` (defaults to `kube-system,kube-public,kube-node-lease`), the operator still discovers pods there but won't install an ingress baseline regardless of cluster-wide `mode`.
+   The default list is `kube-system,kube-public,kube-node-lease` plus the operator's own namespace.
 
-4. Want a baseline in every managed namespace? Set `--ingress-isolation=pod` (or `namespace`). See [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md).
+3. Otherwise, the baseline should be present:
+
+   ```bash
+   kubectl get netpol -n <name> kube-vnet
+   ```
 
 ---
 
 ## The baseline disappeared after I deleted my vnet — bug?
 
-No, but the cause is different from earlier releases. The baseline is now owned by the `NamespaceReconciler` and tied to the namespace's `ingress-isolation` mode — not to vnet membership. If the namespace's mode resolves to `none`, no baseline is installed, regardless of how many vnets have members there. If the namespace's mode is `namespace` or `pod`, the baseline persists across vnet deletions.
-
-If your baseline disappeared, check the resolved mode (annotation or operator-level config). Setting `kube-vnet/ingress-isolation: pod` on the namespace pins the strict baseline.
+No. The baseline is owned by the `NamespaceReconciler` independently of any specific vnet's lifecycle. Deleting a vnet doesn't remove the baseline. If your baseline disappeared, the most likely cause is that the namespace transitioned to `disabled` (annotation or `--disabled-namespaces` change).
 
 ---
 

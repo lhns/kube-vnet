@@ -43,9 +43,9 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `replicaCount` | `1` | Operator replicas (scale to 2+ for HA; leader election always on) |
 | `operator.labelPrefix` | `kube-vnet/` | Label-key prefix for join labels |
-| `operator.disabledNamespaces` | `[]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
-| `operator.ingressIsolation.mode` | **(required)** | Cluster-wide ingress-isolation mode (`none`/`namespace`/`pod`) |
-| `operator.ingressIsolation.namespaceOverrides.none` | `[kube-system, kube-public, kube-node-lease]` | Namespaces overridden to `none` (control-plane safety) |
+| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
+| `operator.defaultMemberships` | `""` | Comma-separated `<vnet>=<dir>` pairs (system vnets `namespace`/`cluster` only) the resolution controller stamps onto every pod |
+| `operator.elideBaselineFor` | `cluster` | Comma-separated vnet names whose receivers are excluded from the deny-all baseline |
 | `operator.leaderElect` | `true` | Enable leader election |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |
 | `podMonitor.enabled` | `false` | Create a `PodMonitor` for the Prometheus operator |

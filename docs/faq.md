@@ -73,7 +73,7 @@ See [the bridge-pod recipe](recipes.md#bridge-pod-joining-two-vnets-sidecar--pro
 
 ### What are direction modes?
 
-The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). Legacy `"true"` maps to `both` and `"false"` maps to `none`. Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
+The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). The legacy `"true"`/`"false"`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
 
 ### Can I attach pods to a vnet without modifying their template?
 
@@ -151,7 +151,7 @@ Behavior change with the `ingress-isolation` rename. The previous baseline block
 
 ### Can a namespace owner just delete the deny baseline?
 
-Yes — if they have `delete networkpolicy` RBAC in their namespace, they can remove `kube-vnet-default-deny`. The operator restores it within seconds (drift correction) and emits a `Warning PolicyRestored` Event for visibility. There's a small window between deletion and restore where the policy is gone.
+Yes — if they have `delete networkpolicy` RBAC in their namespace, they can remove the `kube-vnet` baseline. The operator restores it within seconds (drift correction) and emits a `Warning PolicyRestored` Event for visibility. There's a small window between deletion and restore where the policy is gone.
 
 For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` (cluster-scoped, separate RBAC, higher precedence). Tracked as the future direction in [ADR 0019](adr/0019-baseline-durability.md). For now: monitor the `PolicyRestored` events; alert on repeated occurrences.
 

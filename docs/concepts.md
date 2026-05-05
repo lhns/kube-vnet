@@ -70,14 +70,9 @@ The join label *value* declares which directions a pod participates in. Recogniz
 | `egress` | Initiate-only. Send egress to peers; do not accept from them. |
 | `none` | Not a member. Equivalent to label absent. |
 
-For backward compatibility with older manifests, two legacy values are accepted:
+The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Use `both`/`ingress`/`egress`/`none` exclusively.
 
-| Legacy | Maps to |
-|---|---|
-| `"true"` | `both` |
-| `"false"` | `none` |
-
-Unknown values (typos like `"bothh"`) surface on the vnet's `Degraded` condition with reason `UnknownDirection`, naming the offending pods. The pod is excluded from membership; nothing is silently allowed.
+Unknown values (typos like `"bothh"`) are rejected at admission by the chart's `ValidatingAdmissionPolicy`, and on older clusters surface on the vnet's `Degraded` condition with reason `UnknownDirection`, naming the offending pods. The pod is excluded from membership; nothing is silently allowed.
 
 ### Traffic-flow algebra
 
@@ -184,58 +179,55 @@ Bindings are an escape hatch — the join label is the recommended primary mecha
 
 ---
 
-## The ingress-isolation baseline
+## The deny-all baseline
 
 Without baseline isolation, `allowedNamespaces` and the membership rules above would be decorative. Kubernetes' default is allow-all: a pod with no `NetworkPolicy` selecting it can reach any other pod.
 
-kube-vnet's baseline behavior is controlled by the **ingress-isolation mode** of the namespace. Three values, set per namespace via the `kube-vnet/ingress-isolation` annotation, with cluster-wide defaults from operator flags:
+Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), kube-vnet installs a single uniform baseline in every managed namespace: deny-all ingress (`policyTypes: [Ingress]`, no allow rules). The baseline's `podSelector` excludes pods that are *receivers* (direction `both` or `ingress`) on any vnet listed in the operator flag `--elide-baseline-for` (default: `cluster`). Everything else falls through to deny-all; vnet members get additive allows from their membership policies, and pods that aren't members of anything get nothing through.
 
-| Mode | Baseline shape | Effect |
-|---|---|---|
-| `none` (default) | no baseline | The operator does not install a baseline. Ingress is unrestricted unless other policies (yours or the membership policies) restrict it. |
-| `namespace` | ingress allowed from same-namespace pods | Pods in this namespace are reachable from other pods in the same namespace, but not from pods in other namespaces unless an explicit policy permits. |
-| `pod` | strict ingress deny | No ingress allow rules in the baseline. Pods are reachable only via membership policies (vnet peers) or explicit user-managed policies. |
+**Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
 
-The baseline carries `policyTypes: [Ingress]` only. **Egress is unrestricted by the baseline.** Membership policies still grant egress allows to vnet peers; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
-
-The baseline `NetworkPolicy` is named `kube-vnet-default-deny` and labeled `kube-vnet/managed-by=kube-vnet, kube-vnet/role=baseline`.
+The baseline `NetworkPolicy` is named `kube-vnet` and labeled `kube-vnet/managed-by=kube-vnet, kube-vnet/role=baseline`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet-default-deny
+  name: kube-vnet
   namespace: <ns>
   labels:
     kube-vnet/managed-by: kube-vnet
     kube-vnet/role: baseline
 spec:
-  podSelector: {}
+  podSelector:
+    matchExpressions:
+      # one entry per vnet in --elide-baseline-for
+      - key: kube-vnet.system/net.cluster
+        operator: NotIn
+        values: [both, ingress]
   policyTypes: [Ingress]
-  ingress: <varies by mode>
+  # no `ingress:` rules — deny-all
 ```
 
-See [ADR 0023](adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
-### Resolving the mode for a namespace
+### Tuning what the baseline excludes
 
-Highest precedence wins:
+The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) accepts a comma-separated list of vnet names. Pods with `kube-vnet.system/net.<vnet>` set to `both` or `ingress` for any listed vnet are dropped from the baseline's selector. The default `cluster` covers the common case where pods join the operator-managed `cluster` system vnet to receive cluster-wide ingress.
 
-1. The namespace's `kube-vnet/ingress-isolation` annotation, if set to a recognized value.
-2. The operator-level override list the namespace appears in: `--ingress-isolation-none`, `--ingress-isolation-namespace`, or `--ingress-isolation-pod`.
-3. Otherwise, the cluster-wide default `--ingress-isolation` (default `none`).
+### Operator default vnet memberships
 
-A namespace listed in two override lists is a startup configuration error; the operator refuses to start.
+The `--default-memberships=<vnet>=<dir>,...` operator flag (Helm: `operator.defaultMemberships`) declares membership the operator stamps on every pod via the resolution controller. Only the system vnets (`namespace`, `cluster`) are accepted as keys; user vnets are joined per-pod via labels or `VirtualNetworkBinding`/`ClusterVirtualNetworkBinding`. Pod-authored labels and bindings can override these defaults, including via `direction=none` to opt the pod out of an inherited membership.
 
 ### Baseline ownership
 
-The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches namespaces and applies or removes the baseline based on the resolved isolation mode. The `VirtualNetworkReconciler` only writes membership policies; it never touches the baseline. There is no implicit "first vnet member triggers the baseline" coupling — baseline existence is decided purely by the ingress-isolation mode resolved for the namespace.
+The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches namespaces and applies the deny-all baseline to every managed namespace. The `VirtualNetworkReconciler` only writes membership policies; it never touches the baseline.
 
 ### Disabling the operator for a namespace
 
-The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline regardless of ingress-isolation, no membership policies, no eligibility as a peer, no honoring bindings. The operator-level flag `--disabled-namespaces` (default `[]`; the operator's own namespace is always added implicitly) has the same effect at the cluster level. The three control-plane namespaces (`kube-system`, `kube-public`, `kube-node-lease`) used to live here as defaults; they've moved to `operator.ingressIsolation.namespaceOverrides.none` so the operator can still discover deliberate joiners there but never installs an ingress baseline.
+The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline, no membership policies, no system vnet, no eligibility as a peer, no honoring bindings. The operator-level flag `--disabled-namespaces` (default: `kube-system`, `kube-public`, `kube-node-lease`, plus the operator's own namespace added implicitly) has the same effect at the cluster level.
 
-See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (now superseded by ADR 0023 for the baseline-control half) and [ADR 0007](adr/0007-operator-level-excluded-namespaces.md).
+See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (superseded by ADR 0023 for the baseline-control half, then by ADR 0030 for the shape), [ADR 0007](adr/0007-operator-level-excluded-namespaces.md), and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
 ---
 
@@ -243,11 +235,11 @@ See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (now supers
 
 NetworkPolicy in Kubernetes is **additive**. A pod's allowed traffic is the union of allow-rules from every policy that selects that pod. With kube-vnet's baseline + per-vnet membership policies in a namespace:
 
-- **Pod with the join label, ingress-isolation `pod`**: both the baseline (deny-all-ingress) and the membership policy (allow same-vnet peers) select it. Net effect: ingress is restricted to same-vnet peers; egress is unrestricted.
-- **Pod without the join label, ingress-isolation `pod`**: only the baseline selects it. Net effect: no ingress; egress is unrestricted.
-- **Any pod, ingress-isolation `none`**: no baseline. Membership policies, if they select the pod, still restrict ingress to same-vnet peers (NetworkPolicy goes default-deny on a pod the moment any policy selects it for a given direction).
+- **Pod with the join label**: the membership policy selects it for ingress; the resolution controller stamps `kube-vnet.system/net.<vnet>=<dir>` so the policy matches, and (if `<vnet>` is in `--elide-baseline-for`) excludes the pod from the deny-all baseline. Net effect: ingress is restricted to same-vnet peers; egress is unrestricted.
+- **Pod without any vnet membership**: only the deny-all baseline selects it. Net effect: no ingress; egress is unrestricted.
+- **Pod on the cluster system vnet** (with `cluster` in `--elide-baseline-for`, the default): excluded from the baseline; ingress comes from cluster-vnet peers (effectively allow-from-everywhere if the cluster vnet's default is `both`).
 
-For cross-namespace ingress isolation, both ends need baselines (or the receiving side needs `ingress-isolation: pod`). A pod in A reaches a pod in B only if the receiving side allows it.
+Cross-namespace ingress always requires the receiving pod to be a vnet member that allows the sender — the deny-all baseline blocks anything else.
 
 ---
 
@@ -255,7 +247,7 @@ For cross-namespace ingress isolation, both ends need baselines (or the receivin
 
 For each VirtualNetwork with at least one receiver-capable member, the operator generates **one membership `NetworkPolicy` per (namespace, key-form)**. The home namespace can split into two policies (bare + `-prefixed`) when both label forms are in use. Each `VirtualNetworkBinding` produces one additional per-binding policy.
 
-Naming: `kube-vnet-<vnet>-<namespace>` for the bare-form, label-driven policy (legacy v1alpha1 name preserved). The home long-form variant adds `-prefixed`. Per-binding policies use `kube-vnet-<vnet>-b-<binding>`. If the deterministic name exceeds Kubernetes' 253-character resource-name limit, the front is truncated and a 4-byte SHA-256 suffix is appended. See [ADR 0011](adr/0011-policy-naming-and-truncation.md) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md) (Addendum) for the bidi+ingress consolidation.
+Naming (post-ADR-0030): `kube-vnet.<vnet>-<8hex>` for bare-form policies, `kube-vnet.<homeNS>.<vnet>-<8hex>` for prefixed-form, and `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>` for binding-driven policies. The 8-hex suffix is a SHA-256-based identity hash that disambiguates against name collisions. The truncate-and-hash overflow handler still applies if the rendered name exceeds Kubernetes' 253-character resource-name limit. See [ADR 0011](adr/0011-policy-naming-and-truncation.md) and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
 Labels on every operator-managed `NetworkPolicy`:
 

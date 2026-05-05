@@ -4,7 +4,7 @@ Worked end-to-end examples beyond the minimal samples in [`config/samples/`](../
 
 For the conceptual model behind these patterns, see [`concepts.md`](concepts.md).
 
-> **Each recipe namespace is annotated `kube-vnet/ingress-isolation: pod`** so the recipe's network behavior is fully observable: vnet membership grants ingress, anything outside the vnet is denied. To match a different production posture (e.g. `mode: namespace` for "same-ns ingress is fine but cross-ns requires a vnet"), change the annotation in each Namespace block. See [`reference/labels-and-annotations.md`](reference/labels-and-annotations.md#kube-vnetingress-isolation) and the [ingress-isolation concept](concepts.md#the-ingress-isolation-baseline).
+> **Each recipe relies on the deny-all baseline + opt-in vnet membership model from [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md):** every managed namespace gets a deny-all baseline; pods that join a vnet (via the `kube-vnet/net.<vnet>` label) get additive ingress allows from vnet peers; everything else is denied. See the [deny-all baseline concept](concepts.md#the-deny-all-baseline) for details.
 
 ---
 
@@ -36,8 +36,6 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 # vnet 1: frontend ↔ backend
 apiVersion: kube-vnet.lhns.de/v1alpha1
@@ -127,15 +125,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -201,8 +195,6 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -285,8 +277,6 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -360,15 +350,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: platform
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: webapp
-  annotations:
-    kube-vnet/ingress-isolation: pod
 ---
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
@@ -459,10 +445,10 @@ spec:
 # 5. Repeat step 3 for each additional workload that should join.
 
 # 6. Once you're ready to flip the namespace into ingress-deny posture, set
-#    the ingress-isolation annotation. This installs the strict-ingress
-#    baseline; non-member pods become unreachable on ingress (they can still
-#    initiate outbound).
-kubectl annotate namespace platform kube-vnet/ingress-isolation=pod
+#    Per ADR 0030 the deny-all baseline applies to every managed namespace
+#    automatically; non-member pods are unreachable on ingress (they can
+#    still initiate outbound). To opt a namespace out entirely, annotate
+#    it kube-vnet/disabled=true.
 
 # 7. For workloads that need ingress NOT covered by any vnet (accepting
 #    external Ingress controller traffic, etc.), add a user-managed
@@ -550,7 +536,7 @@ And nothing else (the baseline denies the rest of the ingress; egress is unrestr
 
 **Don't apply the `kube-vnet/managed-by=kube-vnet` label to your custom policies.** That label is the operator's claim of ownership; if your policy has it, the operator will treat it as drift on its own resource and may overwrite or delete it. User policies should have any other labels you want, just not that one.
 
-If you accidentally pick a name kube-vnet wants to use (e.g. `kube-vnet-default-deny` or `kube-vnet-<your-vnet>-<ns>`), the operator surfaces a `NameCollision` Degraded condition and refuses to overwrite — see [`troubleshooting.md`](troubleshooting.md). Rename your policy to resolve.
+If you accidentally pick a name kube-vnet wants to use (e.g. `kube-vnet` itself, or one of the operator-generated `kube-vnet.<vnet>-<hash>` shapes), the operator surfaces a `NameCollision` Degraded condition and refuses to overwrite — see [`troubleshooting.md`](troubleshooting.md). Rename your policy to resolve.
 
 ---
 

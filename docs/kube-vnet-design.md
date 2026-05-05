@@ -1,6 +1,6 @@
 # kube-vnet Design Document
 
-> **Reference status.** This is the original design document. Where it disagrees with the current implementation (notably: baseline is now ingress-only and decoupled from membership; the join label value carries a *direction*; long-form labels are accepted in the home namespace; `VirtualNetworkBinding` is the no-label alternative), the [ADRs](adr/README.md) are authoritative. See in particular ADRs 0021–0026.
+> **Reference status.** This is the original design document. Where it disagrees with the current implementation (notably: baseline is uniformly deny-all and ingress-only; pod join labels are inputs to a resolution layer that stamps `kube-vnet.system/net.<vnet>` labels read by the generator; the join label value carries a *direction*; long-form labels are accepted in the home namespace; `VirtualNetworkBinding` and the new `ClusterVirtualNetworkBinding` are the no-label alternative; the `kube-vnet/ingress-isolation` annotation and `--ingress-isolation*` flags have been removed in favour of `--default-memberships` + `--elide-baseline-for`), the [ADRs](adr/README.md) are authoritative. See in particular ADRs 0021–0030.
 
 `kube-vnet` is a Kubernetes operator that introduces a `VirtualNetwork` custom resource, giving the cluster a Docker-Swarm-style named-network primitive. The operator translates VirtualNetwork membership into standard `NetworkPolicy` resources.
 

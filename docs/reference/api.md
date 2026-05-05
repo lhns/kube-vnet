@@ -197,7 +197,7 @@ status:
       name: kube-vnet-payments-webapp
 ```
 
-This list does **not** include the `kube-vnet-default-deny` baseline. The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet/role=baseline`).
+This list does **not** include the `kube-vnet` baseline (see [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)). The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet/role=baseline`).
 
 ### `status.observedGeneration`
 

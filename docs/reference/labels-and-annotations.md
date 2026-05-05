@@ -13,7 +13,7 @@ These are how pods declare membership in `VirtualNetwork` resources.
 | | |
 |---|---|
 | **On** | `Pod` (typically via `Deployment.spec.template.metadata.labels`) |
-| **Value** | One of `both` (default), `ingress`, `egress`, `none`. Legacy aliases: `"true"` → `both`, `"false"` → `none`, `""` (empty) → `none`. Unknown values are rejected at admission on Kubernetes ≥ 1.30 (the chart's `ValidatingAdmissionPolicy`); on older clusters they are admitted but surface on the vnet's `Degraded` condition with reason `UnknownDirection`. |
+| **Value** | Exactly one of `both` (default), `ingress`, `egress`, `none`. Legacy aliases (`"true"`, `"false"`, empty string) were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). Unknown values are rejected at admission on Kubernetes ≥ 1.30 (the chart's `ValidatingAdmissionPolicy`); on older clusters they are admitted but surface on the vnet's `Degraded` condition with reason `UnknownDirection`. |
 | **Set by** | The user / workload owner. |
 | **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in the same namespace as this pod, with the given direction." |
 | **Used by** | The operator's pod-watch + `discoverMembers` + the generated NetworkPolicy's `podSelector` and peer rules. |
@@ -31,7 +31,7 @@ labels:
 | | |
 |---|---|
 | **On** | `Pod` |
-| **Value** | Same direction enum as the bare form: `both`, `ingress`, `egress`, `none` (or legacy `"true"`/`"false"`; `""` is also treated as `none`). |
+| **Value** | Same direction enum as the bare form: `both`, `ingress`, `egress`, `none`. Legacy aliases dropped per ADR 0030. |
 | **Set by** | The user / workload owner. |
 | **Meaning** | "This pod is a member of the VirtualNetwork named `<vnet-name>` in namespace `<homeNS>`, with the given direction." |
 | **Used by** | Same as bare form, but works across namespaces. |
@@ -103,29 +103,9 @@ metadata:
 
 See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md) (now superseded by ADR 0023 for the baseline-control half).
 
-### `kube-vnet/ingress-isolation`
+### ~~`kube-vnet/ingress-isolation`~~ — *removed*
 
-| | |
-|---|---|
-| **On** | `Namespace` |
-| **Value** | `none` \| `namespace` \| `pod`. Any other value (including absent) means "fall back to operator-level config." |
-| **Set by** | The cluster admin / namespace owner. |
-| **Meaning** | The baseline mode for this namespace. `none` → no baseline. `namespace` → baseline allows ingress from same-namespace pods. `pod` → strict-ingress baseline (no allow rules). |
-| **Used by** | `NamespaceReconciler.ResolveIsolation()` — the per-namespace annotation has the highest precedence; below it are the operator-level override lists, then the cluster-wide `--ingress-isolation` default. |
-| **Independent of** | `kube-vnet/disabled` (the disabled annotation overrides everything regardless), and from vnet membership presence (no implicit "first member triggers baseline"). |
-
-Example:
-
-```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: payments
-  annotations:
-    kube-vnet/ingress-isolation: pod
-```
-
-See [ADR 0023](../adr/0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](../adr/0024-ingress-isolation-mode-and-overrides.md), and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+Previously a namespace annotation that selected one of three baseline shapes (`none`/`namespace`/`pod`). Removed under [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md): the baseline is now uniformly deny-all minus `--elide-baseline-for` exemptions, with no per-namespace shape knob. Tune behaviour via `--default-memberships` (operator-level), `(Cluster)VirtualNetworkBinding` (per-NS / cluster-scoped), or `kube-vnet/net.<vnet>` labels (per-pod). To opt a namespace out entirely, use `kube-vnet/disabled=true` above.
 
 ---
 
@@ -193,10 +173,10 @@ Per-binding policies are named `kube-vnet-<vnet>-b-<binding>` and live in the bi
 
 | | |
 |---|---|
-| **On** | `kube-vnet/role=membership` on per-vnet membership policies (label-driven and binding-driven alike). `kube-vnet/role=baseline` on the `kube-vnet-default-deny` baseline. |
+| **On** | `kube-vnet/role=membership` on per-vnet membership policies (label-driven and binding-driven alike). `kube-vnet/role=baseline` on the `kube-vnet` baseline. |
 | **Set by** | The operator. |
 | **Meaning** | Discriminates the two policy classes the operator owns. |
-| **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet-default-deny` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |
+| **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |
 
 Example: an operator-managed membership policy in `webapp` for vnet `monitoring/observability`:
 
@@ -218,7 +198,7 @@ And the corresponding baseline in `webapp`:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet-default-deny
+  name: kube-vnet
   namespace: webapp
   labels:
     kube-vnet/managed-by: kube-vnet
