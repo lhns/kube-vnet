@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || e2e_namespace
 
 package e2e
 
@@ -10,6 +10,79 @@ import (
 	"testing"
 	"time"
 )
+
+const (
+	// Image used for test pods. Tiny, has /bin/sh, has wget.
+	testImage = "registry.k8s.io/e2e-test-images/agnhost:2.43"
+
+	// Connectivity probe windows.
+	allowProbe = 30 * time.Second // canReach: as soon as one wget succeeds, allow is confirmed
+	denyProbe  = 15 * time.Second // cannotReach: every wget must fail for this long
+)
+
+// httpServerPod returns a Pod that runs `agnhost netexec` (HTTP server on :80).
+func httpServerPod(ns, name string, joinLabels map[string]string) string {
+	labels := []string{fmt.Sprintf("app: %s", name)}
+	for k, v := range joinLabels {
+		labels = append(labels, fmt.Sprintf("%s: %q", k, v))
+	}
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    %s
+spec:
+  containers:
+    - name: web
+      image: %s
+      args: ["netexec", "--http-port=80"]
+      ports:
+        - containerPort: 80
+`, name, ns, strings.Join(labels, "\n    "), testImage)
+}
+
+// clientPod returns a Pod that sleeps; kubectl exec is used to drive wget.
+func clientPod(ns, name string, joinLabels map[string]string) string {
+	labels := []string{fmt.Sprintf("app: %s", name)}
+	for k, v := range joinLabels {
+		labels = append(labels, fmt.Sprintf("%s: %q", k, v))
+	}
+	return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    %s
+spec:
+  containers:
+    - name: client
+      image: %s
+      command: ["sleep", "3600"]
+`, name, ns, strings.Join(labels, "\n    "), testImage)
+}
+
+func ensureNamespace(t *testing.T, name string, labels map[string]string) {
+	t.Helper()
+	labelLines := []string{fmt.Sprintf("kubernetes.io/metadata.name: %s", name)}
+	for k, v := range labels {
+		labelLines = append(labelLines, fmt.Sprintf("%s: %s", k, v))
+	}
+	applyYAML(t, fmt.Sprintf(`apiVersion: v1
+kind: Namespace
+metadata:
+  name: %s
+  labels:
+    %s
+`, name, strings.Join(labelLines, "\n    ")))
+}
+
+func cleanupNamespace(t *testing.T, name string) {
+	t.Helper()
+	kubectl(t, "delete", "namespace", name, "--ignore-not-found", "--wait=false")
+}
 
 // kubectl runs `kubectl ARGS...` and returns combined stdout+stderr and exit code.
 func kubectl(t *testing.T, args ...string) (string, int) {
