@@ -94,6 +94,8 @@ The `Con` bullet above ("Up to 3× the policy count per namespace per vnet") and
 
 ## Addendum (2026-05-04) — empty-string value reinterpreted as `none`
 
+> **Superseded by the [2026-05-05 addendum](#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped) below.** That addendum drops `""` / `"true"` / `"false"` as legal values entirely; the compat table at the end of *this* addendum no longer reflects current behavior. Kept for history.
+
 The compat row above maps `""` (empty) to `both`, on the original "presence-only meant member" rule from before the direction enum existed. That rule no longer matches user expectations: every other value in the enum is explicit, and the VAP shipped alongside [ADR 0027](0027-pod-scoped-join-label-events.md) accepts `""` as a *syntactically* valid value (so old manifests aren't rejected at admission), but the parser now treats it as `none` — i.e. **not a member**.
 
 The legacy `"true"` alias still maps to `both`; only the empty string changed.
