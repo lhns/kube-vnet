@@ -58,6 +58,22 @@ release. Pinning to an exact version is recommended.
   the rare per-pod cross-namespace case migrates to a
   `VirtualNetworkBinding` in the target namespace. Convert any existing
   CR before upgrading.
+
+  **Manual cleanup required**: because we removed the CVNB chart template
+  in a single release rather than the two-release pattern from
+  [ADR 0032](docs/adr/0032-chart-crd-removal-two-release-pattern.md),
+  the live CRD object on your cluster is now an orphan after this upgrade
+  — Helm respects the `helm.sh/resource-policy: keep` annotation and
+  won't delete it. After upgrading, confirm no `ClusterVirtualNetworkBinding`
+  CRs remain and then delete the CRD itself:
+
+  ```bash
+  kubectl get clustervirtualnetworkbindings -A   # expect: No resources found
+  kubectl delete crd clustervirtualnetworkbindings.kube-vnet.lhns.de
+  ```
+
+  Future CRD removals will follow the two-release pattern in ADR 0032 and
+  clean up automatically.
 - **`--default-memberships` operator flag and `operator.defaultMemberships`
   chart value removed.** Use `operator.clusterBaseline.ingressIsolationLevel`
   (one of `pod`/`namespace`/`cluster`) or

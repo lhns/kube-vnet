@@ -192,6 +192,17 @@ Three workflows under `.github/workflows/`:
 
 For a v1alpha1 release, breaking changes between alpha versions are explicitly allowed — see the SemVer note in `CHANGELOG.md`. Document any breaking change in the changelog entry.
 
+### Removing a CRD from the chart
+
+**Removing a CRD requires two releases.** Per [ADR 0032](adr/0032-chart-crd-removal-two-release-pattern.md): every chart-shipped CRD carries `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete user data. The annotation also blocks Helm from cleaning up the live CRD object when you remove the template, so single-release removal leaves an orphan on every user's cluster.
+
+The dance:
+
+1. **Release N (deprecation)** — edit `charts/kube-vnet/templates/crd-<name>.yaml` to drop the `helm.sh/resource-policy: keep` annotation. The template still ships; the live object is just no longer protected. Add a CHANGELOG entry under "Deprecated" naming the CRD and stating "removed in next release; auto-cleanup happens on the next upgrade."
+2. **Release N+1 (removal)** — delete the chart template entirely. CHANGELOG under "Removed" confirms the auto-cleanup. Helm sees the live object has no `keep` annotation and deletes it on the upgrade.
+
+If you accidentally remove a CRD in one step (as we did with `ClusterVirtualNetworkBinding` in the ADR-0031 cleanup PR), document a manual `kubectl delete crd <name>` step in the CHANGELOG so users can clean up their orphan.
+
 ---
 
 ## Code generation
