@@ -48,6 +48,7 @@ func main() {
 		ingressIsolationNone string
 		ingressIsolationNS   string
 		ingressIsolationPod  string
+		elideBaselineFor     string
 		showVersion          bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
@@ -84,6 +85,12 @@ func main() {
 	flag.StringVar(&ingressIsolationPod, "ingress-isolation-pod", "",
 		"comma-separated namespaces overridden to ingress-isolation mode `pod` "+
 			"(baseline denies all ingress).",
+	)
+	flag.StringVar(&elideBaselineFor, "elide-baseline-for", "cluster",
+		"comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet> "+
+			"In [both,ingress]) are excluded from the deny-all baseline. Default "+
+			"is `cluster` so the cluster system-vnet's allow-all members don't get "+
+			"a redundant baseline policy. See ADR 0030.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -163,10 +170,11 @@ func main() {
 	}
 
 	nsReconciler := &controller.NamespaceReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		NSFilter:  nsFilter,
+		Client:           mgr.GetClient(),
+		APIReader:        mgr.GetAPIReader(),
+		Scheme:           mgr.GetScheme(),
+		NSFilter:         nsFilter,
+		BaselineElideFor: splitAndTrim(elideBaselineFor),
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")

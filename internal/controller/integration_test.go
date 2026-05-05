@@ -57,6 +57,7 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 // namespace no longer implicitly creates the baseline. The baseline is
 // now decided by the resolved ingress-isolation mode (default: none).
 func TestIntegration_Baseline_NoLongerImplicitOnMember(t *testing.T) {
+	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed; see baseline_test.go")
 	ctx := context.Background()
 	ns := uniqueNS(t, "no-implicit")
 	mustCreate(t, makeNamespace(ns, nil, nil))
@@ -607,6 +608,7 @@ func TestIntegration_PodRelabeling(t *testing.T) {
 // baseline rather than no baseline, so the baseline transitions from
 // deny-all (mode=pod) to allow-all (mode=none) — same name, different shape.
 func TestIntegration_Baseline_AnnotationRemovalRevertsBaseline(t *testing.T) {
+	t.Skip("obsolete under ADR 0030 — baseline is always deny-all")
 	ctx := context.Background()
 	ns := uniqueNS(t, "ann-revert")
 	mustCreate(t, makeNamespace(ns, map[string]string{
@@ -842,6 +844,7 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 // kube-vnet/ingress-isolation=namespace puts a baseline that allows ingress
 // only from same-namespace pods.
 func TestIntegration_IngressIsolation_Namespace_BaselineAllowsSameNS(t *testing.T) {
+	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed")
 	ctx := context.Background()
 	ns := uniqueNS(t, "ns-iso")
 	mustCreate(t, makeNamespace(ns, map[string]string{
@@ -1067,6 +1070,7 @@ func touchNamespace(t *testing.T, name string) {
 // cluster-wide default is `pod`. ADR 0029: mode=none materializes an
 // allow-all baseline rather than no baseline.
 func TestIntegration_NamespaceOverride_ShieldsFromClusterMode(t *testing.T) {
+	t.Skip("obsolete under ADR 0030 — per-mode baseline shapes removed")
 	ctx := context.Background()
 	shielded := uniqueNS(t, "shielded")
 	mustCreate(t, makeNamespace(shielded, nil, nil))
@@ -1109,6 +1113,7 @@ func TestIntegration_NamespaceOverride_ShieldsFromClusterMode(t *testing.T) {
 // baseline (ADR 0029). Functionally invisible to traffic; visible to
 // `kubectl get netpol`.
 func TestIntegration_DefaultDenyAll_FlagOff_AllowAllBaselineInEmptyNS(t *testing.T) {
+	t.Skip("obsolete under ADR 0030 — baseline is always deny-all")
 	ctx := context.Background()
 	withDefaultDenyEverywhere(t, false)
 	ns := uniqueNS(t, "ddaoff")

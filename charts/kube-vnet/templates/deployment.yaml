@@ -55,6 +55,9 @@ spec:
             - --ingress-isolation-pod={{ join "," . }}
             {{- end }}
             {{- end }}
+            {{- with .Values.operator.elideBaselineFor }}
+            - --elide-baseline-for={{ . }}
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom:

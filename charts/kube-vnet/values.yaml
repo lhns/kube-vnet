@@ -57,6 +57,12 @@ operator:
       none: []
       namespace: []
       pod: []
+
+  # Comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet>
+  # In [both,ingress]) are excluded from the deny-all baseline. Default
+  # `cluster` so pods on the cluster system-vnet (allow-all by convention)
+  # don't get a redundant baseline policy. ADR 0030.
+  elideBaselineFor: cluster
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.
   leaderElect: true

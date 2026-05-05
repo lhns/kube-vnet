@@ -8,10 +8,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestDesiredBaseline_None_AllowAll(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationNone)
+func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
+	p := DesiredBaseline("platform", IsolationNone, nil)
 	if p == nil {
-		t.Fatalf("IsolationNone should return an allow-all baseline, got nil")
+		t.Fatalf("DesiredBaseline returned nil")
 	}
 	if p.Name != BaselinePolicyName || p.Namespace != "platform" {
 		t.Errorf("got %s/%s", p.Namespace, p.Name)
@@ -22,59 +22,47 @@ func TestDesiredBaseline_None_AllowAll(t *testing.T) {
 	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress] only, got %v", p.Spec.PolicyTypes)
 	}
-	// Allow-all is expressed as one empty ingress rule (no `from`, no `ports`),
-	// per K8s NetworkPolicy semantics. NetworkPolicyPeer can't itself be empty.
-	if len(p.Spec.Ingress) != 1 {
-		t.Fatalf("expected one ingress rule, got %d: %+v", len(p.Spec.Ingress), p.Spec.Ingress)
+	// Deny-all baseline: no ingress rules.
+	if len(p.Spec.Ingress) != 0 {
+		t.Errorf("expected no ingress rules (deny-all), got %+v", p.Spec.Ingress)
 	}
-	rule := p.Spec.Ingress[0]
-	if len(rule.From) != 0 || len(rule.Ports) != 0 {
-		t.Errorf("allow-all rule must have empty From and Ports, got %+v", rule)
-	}
-	if len(p.Spec.Egress) != 0 {
-		t.Errorf("baseline should not restrict egress, got %+v", p.Spec.Egress)
-	}
-}
-
-func TestDesiredBaseline_Pod(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationPod)
-	if p.Name != BaselinePolicyName || p.Namespace != "platform" {
-		t.Fatalf("got %s/%s", p.Namespace, p.Name)
-	}
-	if p.Labels[LabelManagedBy] != LabelManagedByValue || p.Labels[LabelRole] != LabelRoleBaseline {
-		t.Errorf("missing labels: %v", p.Labels)
-	}
-	// Empty podSelector applies to all pods.
-	if len(p.Spec.PodSelector.MatchLabels) != 0 || len(p.Spec.PodSelector.MatchExpressions) != 0 {
-		t.Errorf("podSelector not empty")
-	}
-	// Ingress only — egress is unrestricted under the new model (ADR 0025).
-	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Errorf("policyTypes should be [Ingress] only, got %v", p.Spec.PolicyTypes)
-	}
-	if p.Spec.Ingress != nil {
-		t.Errorf("IsolationPod should have nil ingress (deny-all), got %+v", p.Spec.Ingress)
+	// Empty elide list → empty matchExpressions on the podSelector,
+	// meaning the baseline selects every pod.
+	if len(p.Spec.PodSelector.MatchExpressions) != 0 {
+		t.Errorf("expected empty matchExpressions with no elide, got %+v", p.Spec.PodSelector.MatchExpressions)
 	}
 	if len(p.Spec.Egress) != 0 {
 		t.Errorf("baseline should not restrict egress, got %+v", p.Spec.Egress)
 	}
 }
 
-func TestDesiredBaseline_Namespace(t *testing.T) {
-	p := DesiredBaseline("platform", IsolationNamespace)
-	if p.Name != BaselinePolicyName || p.Namespace != "platform" {
-		t.Fatalf("got %s/%s", p.Namespace, p.Name)
+func TestDesiredBaseline_ElideForCluster(t *testing.T) {
+	p := DesiredBaseline("platform", IsolationNone, []string{"cluster"})
+	// Deny-all + one matchExpression excluding cluster receivers.
+	if len(p.Spec.Ingress) != 0 {
+		t.Errorf("expected deny-all, got %+v", p.Spec.Ingress)
 	}
-	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Errorf("policyTypes should be [Ingress] only, got %v", p.Spec.PolicyTypes)
+	if len(p.Spec.PodSelector.MatchExpressions) != 1 {
+		t.Fatalf("expected one matchExpression, got %d: %+v",
+			len(p.Spec.PodSelector.MatchExpressions), p.Spec.PodSelector.MatchExpressions)
 	}
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
-		t.Fatalf("expected one ingress rule with one peer, got %+v", p.Spec.Ingress)
+	expr := p.Spec.PodSelector.MatchExpressions[0]
+	if expr.Key != "kube-vnet.system/net.cluster" {
+		t.Errorf("expr key = %q, want kube-vnet.system/net.cluster", expr.Key)
 	}
-	from := p.Spec.Ingress[0].From[0]
-	if from.NamespaceSelector == nil ||
-		from.NamespaceSelector.MatchLabels[NamespaceMetadataNameLabel] != "platform" {
-		t.Errorf("ingress peer should select same namespace, got %+v", from)
+	if expr.Operator != metav1.LabelSelectorOpNotIn {
+		t.Errorf("expr operator = %v, want NotIn", expr.Operator)
+	}
+	wantValues := []string{"both", "ingress"}
+	if len(expr.Values) != len(wantValues) {
+		t.Errorf("expr values = %v, want %v", expr.Values, wantValues)
+	}
+}
+
+func TestDesiredBaseline_ElideMultipleVnets(t *testing.T) {
+	p := DesiredBaseline("platform", IsolationNone, []string{"cluster", "public"})
+	if len(p.Spec.PodSelector.MatchExpressions) != 2 {
+		t.Errorf("expected two matchExpressions, got %d", len(p.Spec.PodSelector.MatchExpressions))
 	}
 }
 

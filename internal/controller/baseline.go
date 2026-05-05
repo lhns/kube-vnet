@@ -49,20 +49,33 @@ func ParseIsolationMode(value string) (IsolationMode, bool) {
 	return IsolationNone, false
 }
 
-// DesiredBaseline returns the baseline NetworkPolicy for a namespace given
-// the desired ingress-isolation mode. Always returns a non-nil policy for
-// every IsolationMode — the baseline expresses the namespace's "outer
-// boundary" for ingress, which is well-defined even in IsolationNone (where
-// the boundary is "everywhere"). See ADR 0029.
+// DesiredBaseline returns the deny-all baseline NetworkPolicy for a managed
+// namespace. Per ADR 0030, the baseline is always the same shape: deny-all
+// ingress (`policyTypes: [Ingress]`, no allow rules) for every pod in the
+// namespace EXCEPT pods that are receivers on any vnet listed in elideFor.
+// Default operator config sets elideFor to `[cluster]` so the cluster-vnet
+// "everyone reachable" pattern doesn't carry a redundant baseline policy.
 //
-// The baseline carries `policyTypes: [Ingress]` only — egress is never
-// restricted by kube-vnet. See ADR 0025.
+// elideFor entries are vnet keys (label suffixes after `kube-vnet.system/net.`).
+// A pod with `kube-vnet.system/net.<vnet>` set to `both` or `ingress` for any
+// vnet in elideFor is excluded from the baseline.
+//
+// The mode parameter is retained for transitional compatibility with the
+// (deprecated) IsolationMode enum during the staged rollout; it is ignored.
 //
 // Callers that want "no kube-vnet objects in this namespace" must check
 // IsManaged separately; the disabled-namespaces path bypasses
 // DesiredBaseline entirely.
-func DesiredBaseline(ns string, mode IsolationMode) *networkingv1.NetworkPolicy {
-	policy := &networkingv1.NetworkPolicy{
+func DesiredBaseline(ns string, _ IsolationMode, elideFor []string) *networkingv1.NetworkPolicy {
+	matchExpressions := make([]metav1.LabelSelectorRequirement, 0, len(elideFor))
+	for _, vnet := range elideFor {
+		matchExpressions = append(matchExpressions, metav1.LabelSelectorRequirement{
+			Key:      LabelSystemNetPrefix + vnet,
+			Operator: metav1.LabelSelectorOpNotIn,
+			Values:   []string{string(DirectionBoth), string(DirectionIngress)},
+		})
+	}
+	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: networkingv1.SchemeGroupVersion.String(),
 			Kind:       "NetworkPolicy",
@@ -76,34 +89,12 @@ func DesiredBaseline(ns string, mode IsolationMode) *networkingv1.NetworkPolicy 
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
+			PodSelector: metav1.LabelSelector{
+				MatchExpressions: matchExpressions,
+			},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			// No Ingress rules — deny-all, except for pods excluded by the
+			// elide-list above.
 		},
 	}
-	switch mode {
-	case IsolationNone:
-		// One empty ingress rule = "allow all sources on all ports" per
-		// the K8s NetworkPolicy spec ("An empty NetworkPolicyIngressRule
-		// matches all traffic"). Note: a NetworkPolicyPeer cannot itself
-		// be empty (the apiserver rejects `from: [{}]`); the right idiom
-		// is to leave both `from` and `ports` unset on the rule.
-		// Functionally indistinguishable from "no policy" — present so
-		// the namespace's mode is visible in `kubectl get netpol` and so
-		// the additive union with vnet membership policies stays
-		// "everywhere" (model: mode is the namespace's outer boundary).
-		policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{}}
-	case IsolationNamespace:
-		policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{
-			From: []networkingv1.NetworkPolicyPeer{{
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{NamespaceMetadataNameLabel: ns},
-				},
-			}},
-		}}
-	case IsolationPod:
-		// No allow rules — every ingress is denied. Membership policies are
-		// what grant per-vnet allows.
-		policy.Spec.Ingress = nil
-	}
-	return policy
 }
