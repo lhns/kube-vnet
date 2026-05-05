@@ -35,7 +35,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 27. [0027 — Pod-scoped events for join-label diagnostics](0027-pod-scoped-join-label-events.md)
 28. [0028 — Runtime policy-enforcement verification (Proposed / draft)](0028-runtime-policy-verification.md)
 29. [0029 — Allow-all baseline in mode=none; system namespaces disabled by default](0029-allow-all-baseline-and-system-ns-disabled.md) — *superseded by 0030*
-30. [0030 — Unified vnet-membership model with resolution layer (Proposed / draft)](0030-unified-vnet-membership-with-resolution.md)
+30. [0030 — Unified vnet-membership model with resolution layer](0030-unified-vnet-membership-with-resolution.md)
 
 ## Format
 

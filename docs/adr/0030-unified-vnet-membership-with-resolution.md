@@ -1,8 +1,12 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-Status: Proposed (draft). To be marked `Accepted` once the implementation lands.
+Status: Accepted
 
 Date: 2026-05-05
+
+Implementation rolled out across commits `66c8688` (ADR draft), `3481b8c` (direction-enum prune), `b232505` (CVNB CRD scaffold), `2fa49b1` (system vnets), `fb3121d` (resolution algorithm), `451a61c` (resolution controller), `01ca033` (generator switchover), `5e51392` (deny-all baseline + --elide-baseline-for), `0a49234` (system-labels VAP), `b7216a1` (--default-memberships flag).
+
+The deprecated `--ingress-isolation*` flags and the `IsolationMode` enum remain in the codebase as vestigial input that no longer drives behaviour (the baseline is unconditionally deny-all + elide-list); their full removal is a follow-up cleanup pass and does not block this ADR's acceptance.
 
 Supersedes: [ADR 0023](0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](0024-ingress-isolation-mode-and-overrides.md), [ADR 0029](0029-allow-all-baseline-and-system-ns-disabled.md). Partially supersedes [ADR 0006](0006-baseline-default-deny-and-single-opt-out.md) (baseline shapes).
 
