@@ -202,7 +202,7 @@ spec:
     matchExpressions:
       # one entry per vnet in --elide-baseline-for; bare entries are
       # resolved to canonical FQ at render time (per ADR 0033)
-      - key: kube-vnet.system/net.<operatorNS>.cluster
+      - key: kube-vnet.system/net.cluster
         operator: NotIn
         values: [both, ingress]
   policyTypes: [Ingress]
@@ -217,7 +217,7 @@ The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) acc
 
 | Entry | Canonical FQ key in baseline for NS `X` |
 |---|---|
-| `cluster` (bare, system) | `kube-vnet.system/net.<operatorNS>.cluster` — the **only** entry that anchors on the operator NS rather than `X`. |
+| `cluster` (bare or `<X>.cluster`) | `kube-vnet.system/net.cluster` — bare. The cluster vnet is the cluster-wide singleton; per [ADR 0033 (Amendment)](adr/0033-canonical-fq-system-labels.md) it always collapses to bare regardless of input form. |
 | `namespace` (bare, system) | `kube-vnet.system/net.X.namespace` — per-rendering-NS. |
 | bare user vnet `<vnet>` | `kube-vnet.system/net.X.<vnet>` — same per-NS rule as `namespace`. |
 | `<homeNS>.<name>` (FQ) | `kube-vnet.system/net.<homeNS>.<name>` — pass-through. |
@@ -246,7 +246,7 @@ The whole policy set is **two layers stacked**, plus one knob that says "skip th
 
 1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet` per managed namespace. `policyTypes: [Ingress]`, zero allow rules. Selects every pod in the namespace *except* those matching the elide-list `NotIn` exclusion. Egress is never restricted by the baseline.
 2. **Membership policies (additive allows)** — one per `(vnet, namespace)`. Select pods that carry `kube-vnet.system/net.<homeNS>.<vnet>` in `[both, ingress]` and add `from:` rules naming peers across all member-bearing namespaces. They only ever *add* to allowed traffic.
-3. **Elide list (skip the floor for always-open vnets)** — `--elide-baseline-for=<csv>` (default `cluster`) tells the baseline to exclude pods that are receivers on any of the listed vnets. The corresponding membership policy (e.g. `kube-vnet.<operatorNS>.cluster-<hash>`) replaces the baseline for those pods.
+3. **Elide list (skip the floor for always-open vnets)** — `--elide-baseline-for=<csv>` (default `cluster`) tells the baseline to exclude pods that are receivers on any of the listed vnets. The corresponding membership policy (e.g. `kube-vnet.cluster-<hash>`) replaces the baseline for those pods.
 
 ### The composition rule, in one sentence
 

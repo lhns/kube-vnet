@@ -26,7 +26,7 @@ The intended outcome: every pod-tier system label and every membership-policy na
 
 - User vnet: `<ref.Namespace>.<ref.Name>`
 - System vnet `namespace`: `<podNS>.namespace` (the per-NS namespace vnet lives in the pod's NS)
-- System vnet `cluster`: `<operatorNS>.cluster` (the cluster vnet lives in the operator's release NS)
+- System vnet `cluster`: `cluster` (bare — see Amendment below)
 
 `podLabelRules` normalizes both bare and prefixed pod-input labels through this helper. `bindingRules` and the baseline-rule paths also use it (already did, for user vnets). The pod-stamped `kube-vnet.system/net.<key>` is therefore always FQ.
 
@@ -52,6 +52,20 @@ Two reconcilers gain explicit cleanup tail-steps. No orphan window, ever.
 - `SystemVnetReconciler`: gains `delete` verb. On a Namespace event for a now-disabled namespace, lists `VirtualNetwork`s in that NS labeled `kube-vnet/system=true` and deletes them. The reserved-name VAP guarantees only the operator could have created such a vnet, so deletion is safe.
 
 The `NamespaceReconciler` (baseline lifecycle) is already symmetric (creates baseline on managed transition, no-ops on disabled). No change needed.
+
+### Amendment: cluster singleton exception
+
+The cluster system vnet is THE cluster-wide singleton — there's only ever one, anchored on the operator's release namespace by definition. The reserved-name VAP forbids user-authored vnets named `cluster` in any namespace, so the suffix `cluster` is unambiguous on its own. The `<operatorNS>.` prefix carries no information.
+
+For cluster, the canonicalization rule **inverts**: any input form (bare `cluster` or prefixed `<anything>.cluster`) collapses to bare `cluster`. Specifically:
+
+- Pod-stamped system label: `kube-vnet.system/net.cluster=<dir>` (not `kube-vnet.system/net.<operatorNS>.cluster`).
+- Membership policy name: `kube-vnet.cluster-<8hex>` (not `kube-vnet.<operatorNS>.cluster-<8hex>`).
+- Baseline elide-list translation: `cluster` → `kube-vnet.system/net.cluster` (the `CanonicalSuffix` rule does the collapse automatically; `DesiredBaseline` is unchanged).
+
+Cluster is the only vnet where the suffix is *removed* rather than *added* — every other vnet stamps FQ for disambiguation; cluster has nothing to disambiguate. The `kube-vnet/network=<operatorNS>.cluster` cleanup label is intentionally retained on policies (it's a routing/identity tag, not a selector key — operators querying by `<operatorNS>.cluster` keep working).
+
+Migration: existing FQ-stamped pods get re-stamped to bare on next resolution; the cleanup tail-step removes the old `kube-vnet.<operatorNS>.cluster-<hash>` policies and emits the new `kube-vnet.cluster-<hash>`-named ones.
 
 ## Consequences
 

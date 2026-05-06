@@ -202,6 +202,13 @@ func SystemLabelKey(homeNS, vnet string) string {
 // disambiguates against name collisions; see ADR 0011 for the truncate-and-
 // hash overflow handler.
 func PolicyName(vnet, homeNS string) string {
+	if vnet == SystemVnetCluster {
+		// Cluster is the cluster-wide singleton; bare-named everywhere
+		// per ADR 0033 amendment. Hash inputs use empty homeNS so the
+		// name is stable regardless of which NS the operator runs in.
+		return truncatePolicyName(fmt.Sprintf("kube-vnet.%s-%s",
+			SystemVnetCluster, policyHash("membership", "", SystemVnetCluster)))
+	}
 	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s-%s",
 		homeNS, vnet, policyHash("membership", homeNS, vnet)))
 }

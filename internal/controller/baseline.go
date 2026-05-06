@@ -23,7 +23,7 @@ const BaselinePolicyName = "kube-vnet"
 // resolution controller uses for pod-input labels (CanonicalSuffix), with
 // `ns` substituted for the pod's NS:
 //
-//   - `cluster`            → kube-vnet.system/net.<operatorNS>.cluster (lone exception)
+//   - `cluster` (or `<X>.cluster`) → kube-vnet.system/net.cluster      (singleton, bare per ADR 0033 amendment)
 //   - `namespace`          → kube-vnet.system/net.<ns>.namespace       (per-NS)
 //   - bare user vnet name  → kube-vnet.system/net.<ns>.<name>          (per-NS)
 //   - `<homeNS>.<name>`    → kube-vnet.system/net.<homeNS>.<name>       (FQ pass-through)

@@ -251,29 +251,29 @@ func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS stri
 }
 
 // CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
-// or `kube-vnet.system/net.`) into the canonical FQ form per ADR 0033.
-// The same rule applies to pod-input labels (resolution controller) and to
-// `--elide-baseline-for` entries (baseline generator):
+// or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
+// cluster-singleton exception per ADR 0033 (Amendment):
 //
+//   - cluster (bare or prefixed `<X>.cluster`) → `cluster`
+//     The cluster vnet is THE cluster-wide singleton; the prefix is
+//     informationless. The reserved-name VAP forbids user-authored vnets
+//     named `cluster`, so any `<anything>.cluster` is unambiguously the
+//     cluster system vnet and collapses to bare. This inverts the rule
+//     for every other vnet.
 //   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
-//   - bare `cluster`              → `<operatorNS>.cluster` (the lone exception:
-//                                   cluster vnet's home is the operator NS,
-//                                   not the rendering scope)
 //   - bare `namespace`            → `<scopeNS>.namespace`
 //   - bare user vnet `<name>`     → `<scopeNS>.<name>`
 //
 // `scopeNS` is the pod's NS (resolution) or the baseline's NS (elide list).
-// If `operatorNS` is empty (test/out-of-cluster fallback), bare `cluster`
-// stays bare so the policy generator can still match.
+// `operatorNS` is no longer consulted; kept in the signature for callers
+// that already pass it, reserved for future special-cases.
 func CanonicalSuffix(suffix, scopeNS, operatorNS string) string {
+	if suffix == SystemVnetCluster ||
+		strings.HasSuffix(suffix, "."+SystemVnetCluster) {
+		return SystemVnetCluster
+	}
 	if strings.IndexByte(suffix, '.') >= 0 {
 		return suffix
-	}
-	if suffix == SystemVnetCluster {
-		if operatorNS == "" {
-			return SystemVnetCluster
-		}
-		return operatorNS + "." + SystemVnetCluster
 	}
 	return scopeNS + "." + suffix
 }
@@ -285,15 +285,12 @@ func CanonicalSuffix(suffix, scopeNS, operatorNS string) string {
 // the per-NS `namespace` system vnet; the operator's release NS for
 // `cluster`; the ref's own namespace for user vnets).
 func (r *ResolutionReconciler) canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
+	if ref.Name == SystemVnetCluster {
+		// Cluster is the cluster-wide singleton; bare per ADR 0033 amendment.
+		return VnetKey(SystemVnetCluster)
+	}
 	if ref.Name == SystemVnetNamespace {
 		return VnetKey(podNS + "." + SystemVnetNamespace)
-	}
-	if ref.Name == SystemVnetCluster {
-		opNS := r.OperatorNamespace
-		if opNS == "" {
-			opNS = ref.Namespace
-		}
-		return VnetKey(opNS + "." + SystemVnetCluster)
 	}
 	return VnetKey(ref.Namespace + "." + ref.Name)
 }

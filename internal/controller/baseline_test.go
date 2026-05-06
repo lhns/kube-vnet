@@ -36,8 +36,10 @@ func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
 }
 
 func TestDesiredBaseline_ElideForCluster(t *testing.T) {
-	// `cluster` is the lone bare suffix that anchors on operatorNS, not on
-	// the rendering NS — per ADR 0033's CanonicalSuffix rule.
+	// `cluster` is the cluster-wide singleton; per ADR 0033 (Amendment) it
+	// collapses to bare regardless of input form. The baseline elide-list
+	// emits the bare key kube-vnet.system/net.cluster — operatorNS not
+	// embedded.
 	p := DesiredBaseline("platform", testOperatorNS, []string{"cluster"})
 	if len(p.Spec.Ingress) != 0 {
 		t.Errorf("expected deny-all, got %+v", p.Spec.Ingress)
@@ -47,7 +49,7 @@ func TestDesiredBaseline_ElideForCluster(t *testing.T) {
 			len(p.Spec.PodSelector.MatchExpressions), p.Spec.PodSelector.MatchExpressions)
 	}
 	expr := p.Spec.PodSelector.MatchExpressions[0]
-	wantKey := "kube-vnet.system/net." + testOperatorNS + ".cluster"
+	wantKey := "kube-vnet.system/net.cluster"
 	if expr.Key != wantKey {
 		t.Errorf("expr key = %q, want %q", expr.Key, wantKey)
 	}

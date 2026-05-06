@@ -12,6 +12,20 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Cluster vnet stamps and policy name collapse to bare (ADR 0033 Amendment).**
+  The cluster system vnet is the cluster-wide singleton; its `<operatorNS>.`
+  prefix carried no information. The canonicalization rule for cluster now
+  inverts: any input form (bare `cluster` or prefixed `<anything>.cluster`)
+  collapses to bare `cluster`. Pod-stamped system label is
+  `kube-vnet.system/net.cluster=<dir>` (was
+  `kube-vnet.system/net.<operatorNS>.cluster=<dir>`); membership policy is
+  named `kube-vnet.cluster-<hash>` (was `kube-vnet.<operatorNS>.cluster-<hash>`);
+  baseline elide-list emits `kube-vnet.system/net.cluster`. Cluster is the
+  *only* vnet where the suffix is removed rather than added — every other vnet
+  still stamps FQ for disambiguation. Migration: existing FQ-stamped pods are
+  re-stamped to bare on first reconcile after upgrade; the cleanup tail-step
+  removes the old FQ-named cluster policies and emits the new bare-named ones.
+
 - **Canonical fully-qualified system labels and uniform membership-policy
   naming (ADR 0033).** The `ResolutionReconciler` now stamps every pod
   membership as `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` (canonical

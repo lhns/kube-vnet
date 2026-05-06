@@ -250,3 +250,44 @@ func TestResolve_DeterministicConflictOrder(t *testing.T) {
 		t.Errorf("second conflict = %+v, want Pod/z", res.Conflicts[1])
 	}
 }
+
+// Cluster-singleton inversion (ADR 0033 Amendment): bare and prefixed
+// cluster inputs both collapse to bare `cluster`.
+
+func TestCanonicalSuffix_ClusterCollapses_BareInput(t *testing.T) {
+	if got := CanonicalSuffix("cluster", "platform", "kube-vnet-system"); got != "cluster" {
+		t.Errorf("got %q, want cluster", got)
+	}
+}
+
+func TestCanonicalSuffix_ClusterCollapses_PrefixedInput(t *testing.T) {
+	if got := CanonicalSuffix("kube-vnet-system.cluster", "platform", "kube-vnet-system"); got != "cluster" {
+		t.Errorf("got %q, want cluster", got)
+	}
+}
+
+func TestCanonicalSuffix_ClusterCollapses_WrongPrefixInput(t *testing.T) {
+	// Reserved-name VAP forbids user-authored vnets named `cluster`, so
+	// `<anything>.cluster` is unambiguously the cluster system vnet.
+	if got := CanonicalSuffix("random.cluster", "platform", "kube-vnet-system"); got != "cluster" {
+		t.Errorf("got %q, want cluster", got)
+	}
+}
+
+func TestCanonicalSuffix_NamespaceFollowsBareRule(t *testing.T) {
+	if got := CanonicalSuffix("namespace", "platform", "kube-vnet-system"); got != "platform.namespace" {
+		t.Errorf("got %q, want platform.namespace", got)
+	}
+}
+
+func TestCanonicalSuffix_BareUserVnetFollowsBareRule(t *testing.T) {
+	if got := CanonicalSuffix("payments", "platform", "kube-vnet-system"); got != "platform.payments" {
+		t.Errorf("got %q, want platform.payments", got)
+	}
+}
+
+func TestCanonicalSuffix_FQUserVnetPassThrough(t *testing.T) {
+	if got := CanonicalSuffix("monitoring.observability", "platform", "kube-vnet-system"); got != "monitoring.observability" {
+		t.Errorf("got %q, want monitoring.observability", got)
+	}
+}

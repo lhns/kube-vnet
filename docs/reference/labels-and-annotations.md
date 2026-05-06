@@ -124,7 +124,7 @@ Pod labels admit two forms for the vnet suffix in `kube-vnet/net.<key>`: bare (`
 
 - A **bare key** in a baseline names a *scope-relative* vnet — only meaningful for the system vnets `namespace` and `cluster`. The reserved-name VAP guarantees no user vnet can collide. Bare-keyed entries expand to the matching bare pod label at resolution time, so a single baseline entry produces a per-pod-namespace effect for the per-NS `namespace` system vnet.
 - A **prefixed key** (`<namespace>.<name>`) is fully resolved at the baseline level. Use this for user vnets you want to attach via a baseline rather than per-workload bindings.
-- Specifying the `cluster` system vnet with a `kube-vnet-system.cluster` (release-namespace-prefixed) form technically works but is discouraged because it couples user-facing config to the operator's release namespace.
+- Specifying the `cluster` system vnet with a `<release-namespace>.cluster` (or any `<X>.cluster`) prefixed form is accepted but normalized to bare `cluster` per [ADR 0033 Amendment](../adr/0033-canonical-fq-system-labels.md): the cluster vnet is a singleton, the prefix is informationless, and the canonicalization rule collapses `<anything>.cluster` to bare. Pod-stamped labels and policy names always use the bare form.
 
 ### Validation limits on baseline references
 
