@@ -47,7 +47,6 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `operator.clusterBaseline.create` | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` |
 | `operator.clusterBaseline.ingressIsolationLevel` | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
-| `operator.elideBaselineFor` | `cluster` | Comma-separated vnet names whose receivers are excluded from the deny-all baseline |
 | `operator.leaderElect` | `true` | Enable leader election |
 | `rbac.aggregate` | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to manage all RBAC outside Helm. |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |

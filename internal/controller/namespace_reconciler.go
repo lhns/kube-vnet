@@ -18,14 +18,17 @@ import (
 )
 
 // NamespaceReconciler is the *sole owner* of the baseline NetworkPolicy
-// lifecycle. Per ADR 0030 the baseline is uniformly deny-all (with podSelector
-// excluding receivers on any vnet listed in BaselineElideFor); there are no
-// per-mode shapes anymore.
+// lifecycle. Per ADR 0030 the baseline is uniformly deny-all selecting every
+// pod in every managed namespace; there are no per-mode shapes and no
+// elide-list exemptions (ADR 0035 removed the elide flag — it had no
+// observable effect on connectivity since NetworkPolicy union semantics
+// make the baseline's deny-all redundant for pods that are already covered
+// by a membership policy's allows).
 //
 // For each Namespace event:
 //   - If the namespace is excluded (`--disabled-namespaces`) or annotated
 //     `kube-vnet/disabled=true`, ensure no baseline is present.
-//   - Otherwise apply the deny-all baseline and sweep any stale-named ones.
+//   - Otherwise apply the deny-all baseline.
 //
 // The reconciler also watches `NetworkPolicy` events scoped to baseline
 // policies (label `kube-vnet/role=baseline`) so a manual delete of the
@@ -34,11 +37,9 @@ import (
 // VirtualNetworkReconciler provides for membership policies.
 type NamespaceReconciler struct {
 	client.Client
-	APIReader         client.Reader
-	Scheme            *runtime.Scheme
-	NSFilter          *NamespaceFilter
-	BaselineElideFor  []string // vnet keys whose receivers are excluded from the baseline
-	OperatorNamespace string   // chart's release NS; used to canonicalize the bare `cluster` elide entry per ADR 0033
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	NSFilter  *NamespaceFilter
 }
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -74,7 +75,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	desired := DesiredBaseline(ns.Name, r.OperatorNamespace, r.BaselineElideFor)
+	desired := DesiredBaseline(ns.Name)
 
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,

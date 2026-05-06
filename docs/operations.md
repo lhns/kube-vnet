@@ -286,7 +286,7 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 
 [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) removed the `--ingress-isolation*` flag family and the `kube-vnet/ingress-isolation` annotation. Read these before `helm upgrade`.
 
-**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all minus `--elide-baseline-for` exemptions; there's no per-namespace mode anymore. To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
+**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all selecting every pod; there's no per-namespace mode and no elide-list (the `--elide-baseline-for` flag was removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md)). To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
 
 **System namespaces are disabled by default again.** `operator.disabledNamespaces` defaults to `[kube-system, kube-public, kube-node-lease]`; the operator stays out of those entirely.
 

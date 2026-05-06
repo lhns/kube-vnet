@@ -50,10 +50,6 @@ type ResolutionReconciler struct {
 	Scheme      *runtime.Scheme
 	NSFilter    *NamespaceFilter
 	LabelPrefix string
-	// OperatorNamespace is the chart's release namespace, where the cluster
-	// system vnet lives. Used to canonicalize the cluster-vnet membership
-	// label key on every pod that inherits the cluster baseline (per ADR 0033).
-	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -243,11 +239,9 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 }
 
 // canonicalKeyFromPodLabelSuffix translates a pod-label suffix (the part
-// after `kube-vnet/net.`) into the canonical FQ VnetKey. Thin wrapper that
-// supplies the receiver's OperatorNamespace; logic lives in the free
-// CanonicalSuffix function so the baseline generator can reuse the same rule.
+// after `kube-vnet/net.`) into the canonical FQ VnetKey via CanonicalSuffix.
 func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS string) VnetKey {
-	return VnetKey(CanonicalSuffix(suffix, podNS, r.OperatorNamespace))
+	return VnetKey(CanonicalSuffix(suffix, podNS))
 }
 
 // CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
@@ -264,10 +258,10 @@ func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS stri
 //   - bare `namespace`            → `<scopeNS>.namespace`
 //   - bare user vnet `<name>`     → `<scopeNS>.<name>`
 //
-// `scopeNS` is the pod's NS (resolution) or the baseline's NS (elide list).
-// `operatorNS` is no longer consulted; kept in the signature for callers
-// that already pass it, reserved for future special-cases.
-func CanonicalSuffix(suffix, scopeNS, operatorNS string) string {
+// `scopeNS` is the pod's NS for the resolution controller. (Previously also
+// used by the baseline generator's elide-list translation; that mechanism
+// was removed in ADR 0035.)
+func CanonicalSuffix(suffix, scopeNS string) string {
 	if suffix == SystemVnetCluster ||
 		strings.HasSuffix(suffix, "."+SystemVnetCluster) {
 		return SystemVnetCluster

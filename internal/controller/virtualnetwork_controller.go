@@ -175,8 +175,8 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Baseline lifecycle is owned by NamespaceReconciler (ADR 0023, kept under
-	// ADR 0030). Per ADR 0030 the baseline is uniformly deny-all minus
-	// `--elide-baseline-for` exemptions; the vnet reconciler doesn't touch it.
+	// ADR 0030). Per ADR 0030 + ADR 0035 the baseline is uniformly deny-all
+	// selecting every pod; the vnet reconciler doesn't touch it.
 
 	if err := r.deleteStale(ctx, vnet, desiredKeys); err != nil {
 		return ctrl.Result{}, err

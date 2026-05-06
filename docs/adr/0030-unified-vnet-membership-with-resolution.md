@@ -1,6 +1,6 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md))
+Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity)
 
 Date: 2026-05-05
 

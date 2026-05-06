@@ -261,7 +261,6 @@ For more, see [`docs/concepts.md`](docs/concepts.md), [`docs/install.md`](docs/i
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
 | `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
 | `--disabled-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
-| `--elide-baseline-for` | `cluster` | comma-separated vnet names whose receivers are excluded from the deny-all baseline (cosmetic — pods on those vnets already accept ingress) |
 
 Baseline contents come from the `ClusterVirtualNetworkBaseline` CR, configured in the chart via `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}`. See [`docs/reference/configuration.md`](docs/reference/configuration.md).
 

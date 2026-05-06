@@ -31,12 +31,6 @@ operator:
     - kube-public
     - kube-node-lease
 
-  # Comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet>
-  # In [both,ingress]) are excluded from the deny-all baseline. Default
-  # `cluster` so pods on the cluster system-vnet (allow-all by convention)
-  # don't get a redundant baseline policy. ADR 0030.
-  elideBaselineFor: cluster
-
   # ClusterVirtualNetworkBaseline seeded by the chart (ADR 0031). The CR is
   # named `default` (singleton) and is annotated `helm.sh/resource-policy:
   # keep` so `helm uninstall` doesn't drop it. Subsequent `helm upgrade`

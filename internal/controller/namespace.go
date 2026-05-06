@@ -13,8 +13,8 @@ const AnnotationDisabled = "kube-vnet/disabled"
 
 // NamespaceFilter decides whether kube-vnet manages a given namespace.
 // (The "what shape is the baseline" question that earlier versions answered
-// here is gone — under ADR 0030 the baseline is unconditionally deny-all
-// minus the operator's `--elide-baseline-for` exemptions.)
+// here is gone — under ADR 0030 + ADR 0035 the baseline is unconditionally
+// deny-all selecting every pod; there's no shape knob.)
 type NamespaceFilter struct {
 	// Excluded is the operator-level exclusion list (from --disabled-namespaces).
 	Excluded map[string]bool

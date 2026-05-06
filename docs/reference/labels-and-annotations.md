@@ -105,7 +105,7 @@ See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md) (now sup
 
 ### ~~`kube-vnet/ingress-isolation`~~ — *removed*
 
-Previously a namespace annotation that selected one of three baseline shapes (`none`/`namespace`/`pod`). Removed under [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md): the baseline is now uniformly deny-all minus `--elide-baseline-for` exemptions, with no per-namespace shape knob. Tune behaviour via `ClusterVirtualNetworkBaseline` (cluster scope; chart-seeded from `operator.clusterBaseline.ingressIsolationLevel`), `VirtualNetworkBaseline` (per-NS), `VirtualNetworkBinding` (per-workload), or `kube-vnet/net.<vnet>` labels (per-pod). See [ADR 0031](../adr/0031-baseline-tier-resolution.md). To opt a namespace out entirely, use `kube-vnet/disabled=true` above.
+Previously a namespace annotation that selected one of three baseline shapes (`none`/`namespace`/`pod`). Removed under [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md): the baseline is now uniformly deny-all selecting every pod, with no per-namespace shape knob and no elide-list (the `--elide-baseline-for` flag from ADR 0030 was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md) — it had no observable effect). Tune behaviour via `ClusterVirtualNetworkBaseline` (cluster scope; chart-seeded from `operator.clusterBaseline.ingressIsolationLevel`), `VirtualNetworkBaseline` (per-NS), `VirtualNetworkBinding` (per-workload), or `kube-vnet/net.<vnet>` labels (per-pod). See [ADR 0031](../adr/0031-baseline-tier-resolution.md). To opt a namespace out entirely, use `kube-vnet/disabled=true` above.
 
 ### `kube-vnet/net.<vnet>=<direction>` (pod label) — direction values
 

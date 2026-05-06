@@ -31,12 +31,12 @@ spec:
             - --leader-elect
             - --metrics-bind-address=:8080
             - --health-probe-bind-address=:8081
-            # ADR 0030: baseline is unconditionally deny-all minus
-            # --elide-baseline-for exemptions. The kustomize-driven dev/e2e
-            # deployment leaves --default-memberships empty so e2e's
-            # "must-be-blocked" assertions hold (no implicit cluster-wide
-            # allow-all). Chart users can override via --default-memberships.
-            - --elide-baseline-for=cluster
+            # ADR 0030 + 0035: baseline is uniformly deny-all selecting every
+            # pod in every managed namespace. The previous --elide-baseline-for
+            # flag was removed (ADR 0035) — it had no observable effect on
+            # connectivity since NetworkPolicy union semantics make the
+            # baseline's deny-all redundant for pods already covered by a
+            # membership policy's allows.
           env:
             - name: POD_NAMESPACE
               valueFrom:

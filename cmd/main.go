@@ -39,13 +39,12 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr          string
-		probeAddr            string
-		enableLeaderElect    bool
-		labelPrefix          string
-		disabledNamespaces   string
-		elideBaselineFor string
-		showVersion      bool
+		metricsAddr        string
+		probeAddr          string
+		enableLeaderElect  bool
+		labelPrefix        string
+		disabledNamespaces string
+		showVersion        bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -60,12 +59,6 @@ func main() {
 			"Default protects the system namespaces from kube-vnet objects "+
 			"entirely; remove a namespace from this list to enroll its pods in "+
 			"a vnet.",
-	)
-	flag.StringVar(&elideBaselineFor, "elide-baseline-for", "cluster",
-		"comma-separated vnet names whose receivers (kube-vnet.system/net.<vnet> "+
-			"In [both,ingress]) are excluded from the deny-all baseline. Default "+
-			"is `cluster` so the cluster system-vnet's allow-all members don't get "+
-			"a redundant baseline policy. See ADR 0030.",
 	)
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -116,12 +109,10 @@ func main() {
 	}
 
 	nsReconciler := &controller.NamespaceReconciler{
-		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
-		NSFilter:          nsFilter,
-		BaselineElideFor:  splitAndTrim(elideBaselineFor),
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		NSFilter:  nsFilter,
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")
@@ -140,11 +131,10 @@ func main() {
 	}
 
 	resReconciler := &controller.ResolutionReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		NSFilter:          nsFilter,
-		LabelPrefix:       labelPrefix,
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		NSFilter:    nsFilter,
+		LabelPrefix: labelPrefix,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")
@@ -187,8 +177,7 @@ func main() {
 	setupLog.Info("starting kube-vnet operator",
 		"version", version, "commit", commit, "buildDate", date,
 		"labelPrefix", labelPrefix,
-		"disabled", fmt.Sprintf("%v", disabled),
-		"elideBaselineFor", elideBaselineFor)
+		"disabled", fmt.Sprintf("%v", disabled))
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")
 		os.Exit(1)

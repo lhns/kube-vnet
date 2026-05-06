@@ -17,7 +17,6 @@ The operator binary (`/manager` in the container) accepts these flags. They map 
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--label-prefix` | string | `kube-vnet/` | Label-key prefix for join labels. Must end with `/`. Changing this is rare; mostly useful if you already have an unrelated `kube-vnet/` namespace in your cluster's labels. |
 | `--disabled-namespaces` | string (comma-separated) | `kube-system,kube-public,kube-node-lease` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
-| `--elide-baseline-for` | string (CSV) | `cluster` | Vnet names whose receivers (`In: [both, ingress]`) are excluded from the deny-all baseline. The default `cluster` matches the convention that pods on the cluster system-vnet are reachable from anywhere and don't need a redundant baseline. ADR 0030. |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
@@ -90,7 +89,6 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 |---|---|---|---|
 | `operator.labelPrefix` | string | `kube-vnet/` | → `--label-prefix`. |
 | `operator.disabledNamespaces` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. |
-| `operator.elideBaselineFor` | string (CSV) | `cluster` | → `--elide-baseline-for`. Vnet names whose receivers are excluded from the deny-all baseline. ADR 0030. |
 | `operator.clusterBaseline.create` | bool | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default`. Set to `false` to manage that CR outside Helm. ADR 0031. |
 | `operator.clusterBaseline.ingressIsolationLevel` | string (`pod` / `namespace` / `cluster`) | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset that maps to a system-vnet membership pair. Mutually exclusive with `memberships`. |
 | `operator.clusterBaseline.memberships` | map `<vnet-key>: <direction>` | `null` | Explicit override map. Keys: bare for system vnets (resolves to release-namespace), `<namespace>.<name>` for user vnets. Mutually exclusive with `ingressIsolationLevel`. |

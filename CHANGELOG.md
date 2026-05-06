@@ -10,6 +10,22 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Removed
+
+- **`--elide-baseline-for` operator flag and `operator.elideBaselineFor` chart
+  value (ADR 0035).** The flag added a `NotIn` matchExpression to the baseline
+  `podSelector` that excluded cluster-receiver pods from the deny-all selector.
+  Per NetworkPolicy union semantics this had no observable effect: the baseline
+  contributes only deny-all (zero allows), and the cluster membership policy's
+  allows apply whether or not the baseline also selects the pod. Removing the
+  flag simplifies the operator surface; no connectivity changes. Existing
+  baselines are re-rendered with `podSelector: {}` (selects every pod) on the
+  first reconcile after upgrade. The `BaselineElideFor`, `OperatorNamespace`
+  fields on `NamespaceReconciler`, the `OperatorNamespace` field on
+  `ResolutionReconciler`, the `elideFor` and `operatorNS` parameters on
+  `DesiredBaseline`, and the `operatorNS` parameter on `CanonicalSuffix` were
+  all dropped alongside.
+
 ### Changed
 
 - **Cluster vnet stamps and policy name collapse to bare (ADR 0033 Amendment).**

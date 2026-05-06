@@ -10,7 +10,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Bare label form** — a join label without a namespace prefix: `kube-vnet/net.<vnet-name>=<direction>`. Used by pods *in the VirtualNetwork's home namespace*. (Pods in the home namespace may also use the prefixed form — see [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).) Compare *prefixed label form*.
 
-**Baseline** — the `NetworkPolicy` named `kube-vnet` that the operator installs in every managed namespace. `policyTypes: [Ingress]`, no allow rules → deny-all ingress. The `podSelector` excludes pods that are receivers (direction `both` or `ingress`) on any vnet listed in `--elide-baseline-for` (default `cluster`); all other pods are selected and denied. Egress is unrestricted by the baseline. Owned by the `NamespaceReconciler`. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+**Baseline** — the `NetworkPolicy` named `kube-vnet` that the operator installs in every managed namespace. `policyTypes: [Ingress]`, no allow rules → deny-all ingress. `podSelector: {}` selects every pod in the namespace; vnet members get additive allows via their membership policies (per NetworkPolicy union, those allows override the baseline's deny-all). Egress is unrestricted by the baseline. Owned by the `NamespaceReconciler`. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md).
 
 **Binding** — short for `VirtualNetworkBinding`. Also the CRD's short name (`kubectl get vnb`).
 
@@ -32,7 +32,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Home namespace** — the namespace a `VirtualNetwork` resource lives in. Pods in the home namespace can join with either the bare or the prefixed label form; the home namespace is always implicitly in `allowedNamespaces`.
 
-**Ingress isolation** *(historical)* — under earlier ADRs the per-namespace baseline shape was selected by a `kube-vnet/ingress-isolation` annotation with values `none`/`namespace`/`pod`. [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) replaced that with a uniform deny-all baseline plus a configurable `--elide-baseline-for` exemption list driven by per-pod system-vnet membership. The annotation, the `IsolationMode` enum, and the `--ingress-isolation*` flags are gone. The three modes survive as presets in [ADR 0031](adr/0031-baseline-tier-resolution.md)'s `operator.clusterBaseline.ingressIsolationLevel` chart value.
+**Ingress isolation** *(historical)* — under earlier ADRs the per-namespace baseline shape was selected by a `kube-vnet/ingress-isolation` annotation with values `none`/`namespace`/`pod`. [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) replaced that with a uniform deny-all baseline driven by per-pod system-vnet membership. The annotation, the `IsolationMode` enum, and the `--ingress-isolation*` flags are gone. ADR 0030 also introduced a `--elide-baseline-for` exemption list, since removed by [ADR 0035](adr/0035-removal-of-elide-baseline-for.md). The three modes survive as presets in [ADR 0031](adr/0031-baseline-tier-resolution.md)'s `operator.clusterBaseline.ingressIsolationLevel` chart value.
 
 **InvalidJoiner** — a pod that carries the prefixed join label but lives in a non-permitted namespace (excluded, disabled-annotated, or not in `allowedNamespaces`). Surfaced on the VirtualNetwork's `Degraded` condition with reason `InvalidJoiners` and a per-pod sub-reason (`NamespaceExcluded`, `NamespaceNotAllowed`).
 
@@ -46,7 +46,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Membership policy** — the per-vnet, per-namespace `NetworkPolicy` the operator generates. Names follow the dot-separated scheme `kube-vnet-<vnet>-<8hex>` (bare), `kube-vnet-<homeNS>.<vnet>-<8hex>` (prefixed), or `kube-vnet-<homeNS>.<vnet>.b.<binding>-<8hex>` (binding-driven) — see [ADR 0011 + naming addendums]. Selects members via the `kube-vnet.system/net.<vnet>` label (operator-stamped); allows ingress from other members across all member-bearing namespaces. Ingress-only ([ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)).
 
-**`NamespaceReconciler`** — the controller-runtime reconciler in `internal/controller/namespace_reconciler.go` that watches `corev1.Namespace` and applies the deny-all baseline (with `--elide-baseline-for` exemptions) to every managed namespace. **Sole owner** of the baseline lifecycle. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+**`NamespaceReconciler`** — the controller-runtime reconciler in `internal/controller/namespace_reconciler.go` that watches `corev1.Namespace` and applies the uniform deny-all baseline to every managed namespace. **Sole owner** of the baseline lifecycle. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md).
 
 **Namespaced resource** — a Kubernetes resource that lives in a namespace (`Pod`, `NetworkPolicy`, `VirtualNetwork`). Compare *cluster-scoped resource*.
 

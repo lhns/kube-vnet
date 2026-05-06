@@ -182,7 +182,7 @@ Bindings are an escape hatch — the join label is the recommended primary mecha
 
 Without baseline isolation, `allowedNamespaces` and the membership rules above would be decorative. Kubernetes' default is allow-all: a pod with no `NetworkPolicy` selecting it can reach any other pod.
 
-Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), kube-vnet installs a single uniform baseline in every managed namespace: deny-all ingress (`policyTypes: [Ingress]`, no allow rules). The baseline's `podSelector` excludes pods that are *receivers* (direction `both` or `ingress`) on any vnet listed in the operator flag `--elide-baseline-for` (default: `cluster`). Everything else falls through to deny-all; vnet members get additive allows from their membership policies, and pods that aren't members of anything get nothing through.
+Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md), kube-vnet installs a single uniform baseline in every managed namespace: deny-all ingress (`policyTypes: [Ingress]`, no allow rules) selecting every pod. Vnet members get additive allows from their membership policies; pods that aren't members of anything get nothing through.
 
 **Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
 
@@ -198,31 +198,12 @@ metadata:
     kube-vnet/managed-by: kube-vnet
     kube-vnet/role: baseline
 spec:
-  podSelector:
-    matchExpressions:
-      # one entry per vnet in --elide-baseline-for; bare entries are
-      # resolved to canonical FQ at render time (per ADR 0033)
-      - key: kube-vnet.system/net.cluster
-        operator: NotIn
-        values: [both, ingress]
+  podSelector: {}            # selects every pod in the namespace
   policyTypes: [Ingress]
   # no `ingress:` rules — deny-all
 ```
 
-See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
-
-### Tuning what the baseline excludes
-
-The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) accepts a comma-separated list of vnet name suffixes. Each entry is canonicalized to a FQ system-label key per baseline at render time using the same rule the resolution controller applies to pod-input labels (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)):
-
-| Entry | Canonical FQ key in baseline for NS `X` |
-|---|---|
-| `cluster` (bare or `<X>.cluster`) | `kube-vnet.system/net.cluster` — bare. The cluster vnet is the cluster-wide singleton; per [ADR 0033 (Amendment)](adr/0033-canonical-fq-system-labels.md) it always collapses to bare regardless of input form. |
-| `namespace` (bare, system) | `kube-vnet.system/net.X.namespace` — per-rendering-NS. |
-| bare user vnet `<vnet>` | `kube-vnet.system/net.X.<vnet>` — same per-NS rule as `namespace`. |
-| `<homeNS>.<name>` (FQ) | `kube-vnet.system/net.<homeNS>.<name>` — pass-through. |
-
-The unified rule: **bare → `<thisNS>.<suffix>`** for everything except `cluster`. Pods set to `both` or `ingress` on any listed vnet are dropped from the baseline's selector. The default `cluster` covers the common case where pods join the operator-managed `cluster` system vnet to receive cluster-wide ingress.
+See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md). The previous `--elide-baseline-for` flag (which added `NotIn` matchExpressions to skip the baseline for cluster-receiver pods) was removed: it had no observable effect on connectivity because NetworkPolicy union semantics already make the baseline's deny-all redundant for any pod selected by a membership policy.
 
 ### Operator default vnet memberships
 
@@ -242,11 +223,12 @@ See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (superseded
 
 ## How the policies compose
 
-The whole policy set is **two layers stacked**, plus one knob that says "skip the floor for these pods":
+The whole policy set is **two layers stacked**:
 
-1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet` per managed namespace. `policyTypes: [Ingress]`, zero allow rules. Selects every pod in the namespace *except* those matching the elide-list `NotIn` exclusion. Egress is never restricted by the baseline.
+1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet` per managed namespace. `policyTypes: [Ingress]`, zero allow rules, `PodSelector: {}` (selects every pod). Egress is never restricted by the baseline.
 2. **Membership policies (additive allows)** — one per `(vnet, namespace)`. Select pods that carry `kube-vnet.system/net.<homeNS>.<vnet>` in `[both, ingress]` and add `from:` rules naming peers across all member-bearing namespaces. They only ever *add* to allowed traffic.
-3. **Elide list (skip the floor for always-open vnets)** — `--elide-baseline-for=<csv>` (default `cluster`) tells the baseline to exclude pods that are receivers on any of the listed vnets. The corresponding membership policy (e.g. `kube-vnet.cluster-<hash>`) replaces the baseline for those pods.
+
+For "always-open" patterns like the cluster system vnet (every pod is on `cluster=both`), there's no third layer needed: the cluster membership policy's `from:` rules name every cluster-vnet sender, which under `cluster=default-both` resolves to ≈ every pod. The baseline's deny-all is overridden by the membership's allows via NetworkPolicy union. (Earlier versions had a `--elide-baseline-for` flag here; removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md) — it had no observable effect.)
 
 ### The composition rule, in one sentence
 
@@ -258,18 +240,18 @@ NetworkPolicy is additive: a pod's effective allowed ingress is the **union** of
 ┌─────────────────────────── namespace: webapp ─────────────────────────────┐
 │                                                                           │
 │   pod orders [system: net.payments=both, net.cluster=egress]              │
-│   selected by: ┌─ baseline (NotIn cluster=both/ingress → INCLUDED) ─┐    │
+│   selected by: ┌─ baseline (selects every pod)                       ┐    │
 │                ├─ kube-vnet.payments-<hash> (membership: payments)   ┤    │
 │                └─ (no cluster membership policy: pod is egress-only) ┘    │
 │   effective:   deny-all  ⊕  allow-from-payments-peers  =  payments-only   │
 │                                                                           │
 │   pod metrics [system: net.cluster=both]                                  │
-│   selected by: ┌─ baseline (NotIn cluster=both/ingress → EXCLUDED)   ┐    │
+│   selected by: ┌─ baseline (selects every pod)                       ┐    │
 │                └─ kube-vnet.cluster-<hash> (membership: cluster)     ┘    │
-│   effective:   allow-from-cluster-peers  =  allow-from-anywhere           │
+│   effective:   deny-all  ⊕  allow-from-cluster-peers  =  allow-from-cluster│
 │                                                                           │
 │   pod cron-x [no system labels (no memberships, or unresolved)]           │
-│   selected by: └─ baseline (no exclusion match → INCLUDED)           ┘    │
+│   selected by: └─ baseline (selects every pod)                       ┘    │
 │   effective:   deny-all (no allows added)                                 │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
@@ -282,32 +264,14 @@ NetworkPolicy is additive: a pod's effective allowed ingress is the **union** of
 |---|---|---|---|
 | (none — unresolved or no memberships) | yes | — | denied (deny-all only) |
 | `net.payments=both` | yes | `kube-vnet.payments-<hash>` | from same-payments peers only |
-| `net.cluster=both` (`cluster` in elide list) | no (excluded) | `kube-vnet.cluster-<hash>` | from any cluster peer (= allow-from-anywhere) |
-| `net.payments=both, net.cluster=both` | no (cluster elide excludes) | both `payments` and `cluster` membership policies | union: from payments peers OR cluster peers — i.e. allow-from-anywhere |
+| `net.cluster=both` | yes | `kube-vnet.cluster-<hash>` | from any cluster peer (≈ allow-from-anywhere when cluster is universal) |
+| `net.payments=both, net.cluster=both` | yes | both `payments` and `cluster` membership policies | union: from payments peers OR cluster peers (≈ allow-from-anywhere) |
 
 Cross-namespace ingress always requires the receiving pod to be a vnet member whose membership policy allows the sender; the deny-all baseline blocks anything else.
 
-### Multi-vnet elide list
-
-A natural question: if `--elide-baseline-for` accepts multiple vnets, how does the baseline's `podSelector` represent that without conflating "exclude on any" with "exclude on all"?
-
-Each elide entry emits one `matchExpression` with `operator: NotIn` and `values: [both, ingress]`. The `NotIn` operator matches a pod whose label is **absent** OR whose value isn't in the list. Multiple `matchExpressions` in a `LabelSelector` combine with **AND**. So for `--elide-baseline-for=cluster,public` the baseline says: "select the pod when `net.cluster` is not-a-receiver AND `net.public` is not-a-receiver." Negate that — the case where the pod is *excluded* from the baseline — and you get "the pod is a receiver on cluster OR public." Exactly what the flag promises.
-
-A truth-table for two listed vnets:
-
-| Pod's system labels | `cluster NotIn` matches? | `public NotIn` matches? | Selected by baseline? |
-|---|---|---|---|
-| (none) | yes (label absent) | yes (label absent) | ✅ — deny-all applies |
-| `cluster=both` | no | yes (label absent) | ❌ — excluded |
-| `public=ingress` | yes (label absent) | no | ❌ — excluded |
-| `cluster=both, public=both` | no | no | ❌ — excluded |
-| `cluster=egress` (egress-only sender) | yes (`egress` not in `[both, ingress]`) | yes (label absent) | ✅ — deny-all applies |
-
-So a multi-vnet elide list works as you'd expect, with no surprises from the AND'd-matchExpressions semantic.
-
 ### Unresolved pods get the deny floor (fail-closed)
 
-A pod that hasn't yet been processed by `ResolutionReconciler` carries no `kube-vnet.system/*` labels. It doesn't match any membership policy's selector and doesn't trip any elide-list `NotIn` exclusion (each `NotIn` matches when the label is absent), so the baseline selects it → deny-all. This is the safety net during the resolution race window. Once resolution stamps the system labels (typically within milliseconds of pod creation), the pod transitions to whatever its memberships dictate. See [`architecture.md`](architecture.md) for how the resolution controller decides what to stamp.
+A pod that hasn't yet been processed by `ResolutionReconciler` carries no `kube-vnet.system/*` labels. It doesn't match any membership policy's selector, so the baseline selects it (the baseline selects every pod) → deny-all. This is the safety net during the resolution race window. Once resolution stamps the system labels (typically within milliseconds of pod creation), the pod transitions to whatever its memberships dictate. See [`architecture.md`](architecture.md) for how the resolution controller decides what to stamp.
 
 ---
 
