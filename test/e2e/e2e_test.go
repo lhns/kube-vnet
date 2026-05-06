@@ -288,6 +288,12 @@ func TestE2E_Relabel_DropsAccess(t *testing.T) {
 	}
 	// Strip the join label from the client. Note kubectl label syntax: KEY-
 	kubectlMust(t, "label", "pod", "-n", ns, "client", "kube-vnet/net.net1-")
+	// Wait for the resolution controller to strip the canonical FQ system
+	// label before probing — cannotReach is fail-fast on success and would
+	// otherwise race the operator (per ADR 0034's pod-edit window). The
+	// system label key matches what the membership policy's `from:` selector
+	// matches on, so its absence is the right convergence oracle.
+	waitForLabelGone(t, ns, "client", "kube-vnet.system/net."+ns+".net1", 30*time.Second)
 	if !cannotReach(t, ns, "client", ip, denyProbe) {
 		t.Fatalf("client should be blocked after losing the join label")
 	}

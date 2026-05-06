@@ -96,10 +96,11 @@ func TestMain(m *testing.M) {
 	}
 
 	testNSReconciler = &NamespaceReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		NSFilter:  NewNamespaceFilter(nil),
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		NSFilter:          NewNamespaceFilter(nil),
+		OperatorNamespace: "kube-vnet-system-test",
 	}
 	if err := testNSReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)

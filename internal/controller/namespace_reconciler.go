@@ -34,10 +34,11 @@ import (
 // VirtualNetworkReconciler provides for membership policies.
 type NamespaceReconciler struct {
 	client.Client
-	APIReader        client.Reader
-	Scheme           *runtime.Scheme
-	NSFilter         *NamespaceFilter
-	BaselineElideFor []string // vnet keys whose receivers are excluded from the baseline
+	APIReader         client.Reader
+	Scheme            *runtime.Scheme
+	NSFilter          *NamespaceFilter
+	BaselineElideFor  []string // vnet keys whose receivers are excluded from the baseline
+	OperatorNamespace string   // chart's release NS; used to canonicalize the bare `cluster` elide entry per ADR 0033
 }
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -73,7 +74,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	desired := DesiredBaseline(ns.Name, r.BaselineElideFor)
+	desired := DesiredBaseline(ns.Name, r.OperatorNamespace, r.BaselineElideFor)
 
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,

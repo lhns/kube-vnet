@@ -213,7 +213,16 @@ See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
 ### Tuning what the baseline excludes
 
-The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) accepts a comma-separated list of vnet names (bare for system vnets like `cluster`/`namespace`, FQ `<homeNS>.<vnet>` for user vnets). Bare entries are resolved to canonical FQ keys per baseline at render time (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)) — `cluster` becomes `kube-vnet.system/net.<operatorNS>.cluster`, `namespace` becomes `kube-vnet.system/net.<thisNS>.namespace`. Pods set to `both` or `ingress` on any listed vnet are dropped from the baseline's selector. The default `cluster` covers the common case where pods join the operator-managed `cluster` system vnet to receive cluster-wide ingress.
+The `--elide-baseline-for` operator flag (Helm: `operator.elideBaselineFor`) accepts a comma-separated list of vnet name suffixes. Each entry is canonicalized to a FQ system-label key per baseline at render time using the same rule the resolution controller applies to pod-input labels (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)):
+
+| Entry | Canonical FQ key in baseline for NS `X` |
+|---|---|
+| `cluster` (bare, system) | `kube-vnet.system/net.<operatorNS>.cluster` — the **only** entry that anchors on the operator NS rather than `X`. |
+| `namespace` (bare, system) | `kube-vnet.system/net.X.namespace` — per-rendering-NS. |
+| bare user vnet `<vnet>` | `kube-vnet.system/net.X.<vnet>` — same per-NS rule as `namespace`. |
+| `<homeNS>.<name>` (FQ) | `kube-vnet.system/net.<homeNS>.<name>` — pass-through. |
+
+The unified rule: **bare → `<thisNS>.<suffix>`** for everything except `cluster`. Pods set to `both` or `ingress` on any listed vnet are dropped from the baseline's selector. The default `cluster` covers the common case where pods join the operator-managed `cluster` system vnet to receive cluster-wide ingress.
 
 ### Operator default vnet memberships
 

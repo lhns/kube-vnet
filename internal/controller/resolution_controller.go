@@ -243,31 +243,39 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 }
 
 // canonicalKeyFromPodLabelSuffix translates a pod-label suffix (the part
-// after `kube-vnet/net.`) into the canonical FQ VnetKey. Per ADR 0033:
-//   - bare `namespace`            → `<podNS>.namespace`
-//   - bare `cluster`              → `<operatorNS>.cluster`
-//   - bare user vnet `<name>`     → `<podNS>.<name>` (bare-form pod label is
-//                                   only valid in the vnet's home NS, which
-//                                   is the pod's NS by definition for bare)
-//   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ)
+// after `kube-vnet/net.`) into the canonical FQ VnetKey. Thin wrapper that
+// supplies the receiver's OperatorNamespace; logic lives in the free
+// CanonicalSuffix function so the baseline generator can reuse the same rule.
 func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS string) VnetKey {
-	if dot := strings.IndexByte(suffix, '.'); dot >= 0 {
-		// Already prefixed; no further normalization.
-		return VnetKey(suffix)
+	return VnetKey(CanonicalSuffix(suffix, podNS, r.OperatorNamespace))
+}
+
+// CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
+// or `kube-vnet.system/net.`) into the canonical FQ form per ADR 0033.
+// The same rule applies to pod-input labels (resolution controller) and to
+// `--elide-baseline-for` entries (baseline generator):
+//
+//   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
+//   - bare `cluster`              → `<operatorNS>.cluster` (the lone exception:
+//                                   cluster vnet's home is the operator NS,
+//                                   not the rendering scope)
+//   - bare `namespace`            → `<scopeNS>.namespace`
+//   - bare user vnet `<name>`     → `<scopeNS>.<name>`
+//
+// `scopeNS` is the pod's NS (resolution) or the baseline's NS (elide list).
+// If `operatorNS` is empty (test/out-of-cluster fallback), bare `cluster`
+// stays bare so the policy generator can still match.
+func CanonicalSuffix(suffix, scopeNS, operatorNS string) string {
+	if strings.IndexByte(suffix, '.') >= 0 {
+		return suffix
 	}
-	switch suffix {
-	case SystemVnetNamespace:
-		return VnetKey(podNS + "." + SystemVnetNamespace)
-	case SystemVnetCluster:
-		opNS := r.OperatorNamespace
-		if opNS == "" {
-			// Fallback: stamp bare so the policy generator can still match
-			// during tests / out-of-cluster runs that don't wire OperatorNamespace.
-			return VnetKey(SystemVnetCluster)
+	if suffix == SystemVnetCluster {
+		if operatorNS == "" {
+			return SystemVnetCluster
 		}
-		return VnetKey(opNS + "." + SystemVnetCluster)
+		return operatorNS + "." + SystemVnetCluster
 	}
-	return VnetKey(podNS + "." + suffix)
+	return scopeNS + "." + suffix
 }
 
 // canonicalVnetKey computes the canonical FQ VnetKey for any vnet

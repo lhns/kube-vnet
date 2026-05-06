@@ -169,9 +169,30 @@ func canReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) boo
 	return false
 }
 
+// waitForLabelGone polls the pod until the named metadata label is absent,
+// or until timeout. Used to gate cannotReach assertions on the resolution
+// controller having propagated a relabel — the system label is the same
+// oracle the membership policy's selector matches on. Without this gate,
+// cannotReach (which is fail-fast on success) races the operator and may
+// see a pre-removal wget land before the label has been stripped.
+func waitForLabelGone(t *testing.T, ns, pod, labelKey string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, code := kubectl(t, "get", "pod", "-n", ns, pod, "-o", "jsonpath={.metadata.labels}")
+		if code == 0 && !strings.Contains(out, labelKey) {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for label %s to be removed from %s/%s", labelKey, ns, pod)
+}
+
 // cannotReach returns true if every wget attempt within `timeout` fails.
 // Used to assert deny — needs a long enough window that we're confident
-// policies have converged.
+// policies have converged. Callers asserting deny after a state change
+// (e.g. removing a join label) should first call waitForLabelGone to gate
+// on resolution propagation, otherwise the first poll will race the operator.
 func cannotReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

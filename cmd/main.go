@@ -116,11 +116,12 @@ func main() {
 	}
 
 	nsReconciler := &controller.NamespaceReconciler{
-		Client:           mgr.GetClient(),
-		APIReader:        mgr.GetAPIReader(),
-		Scheme:           mgr.GetScheme(),
-		NSFilter:         nsFilter,
-		BaselineElideFor: splitAndTrim(elideBaselineFor),
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		NSFilter:          nsFilter,
+		BaselineElideFor:  splitAndTrim(elideBaselineFor),
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")

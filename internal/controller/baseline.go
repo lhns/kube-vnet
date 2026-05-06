@@ -18,18 +18,24 @@ const BaselinePolicyName = "kube-vnet"
 // Default operator config sets elideFor to `[cluster]` so the cluster-vnet
 // "everyone reachable" pattern doesn't carry a redundant baseline policy.
 //
-// elideFor entries are vnet keys (label suffixes after `kube-vnet.system/net.`).
-// A pod with `kube-vnet.system/net.<vnet>` set to `both` or `ingress` for any
-// vnet in elideFor is excluded from the baseline.
+// elideFor entries are vnet name suffixes (the part after
+// `kube-vnet.system/net.`). They follow the same canonicalization rule the
+// resolution controller uses for pod-input labels (CanonicalSuffix), with
+// `ns` substituted for the pod's NS:
+//
+//   - `cluster`            → kube-vnet.system/net.<operatorNS>.cluster (lone exception)
+//   - `namespace`          → kube-vnet.system/net.<ns>.namespace       (per-NS)
+//   - bare user vnet name  → kube-vnet.system/net.<ns>.<name>          (per-NS)
+//   - `<homeNS>.<name>`    → kube-vnet.system/net.<homeNS>.<name>       (FQ pass-through)
 //
 // Callers that want "no kube-vnet objects in this namespace" must check
 // IsManaged separately; the disabled-namespaces path bypasses
 // DesiredBaseline entirely.
-func DesiredBaseline(ns string, elideFor []string) *networkingv1.NetworkPolicy {
+func DesiredBaseline(ns, operatorNS string, elideFor []string) *networkingv1.NetworkPolicy {
 	matchExpressions := make([]metav1.LabelSelectorRequirement, 0, len(elideFor))
-	for _, vnet := range elideFor {
+	for _, suffix := range elideFor {
 		matchExpressions = append(matchExpressions, metav1.LabelSelectorRequirement{
-			Key:      LabelSystemNetPrefix + vnet,
+			Key:      LabelSystemNetPrefix + CanonicalSuffix(suffix, ns, operatorNS),
 			Operator: metav1.LabelSelectorOpNotIn,
 			Values:   []string{string(DirectionBoth), string(DirectionIngress)},
 		})

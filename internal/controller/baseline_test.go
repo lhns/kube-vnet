@@ -8,8 +8,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const testOperatorNS = "kube-vnet-system"
+
 func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
-	p := DesiredBaseline("platform", nil)
+	p := DesiredBaseline("platform", testOperatorNS, nil)
 	if p == nil {
 		t.Fatalf("DesiredBaseline returned nil")
 	}
@@ -22,12 +24,9 @@ func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
 	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress] only, got %v", p.Spec.PolicyTypes)
 	}
-	// Deny-all baseline: no ingress rules.
 	if len(p.Spec.Ingress) != 0 {
 		t.Errorf("expected no ingress rules (deny-all), got %+v", p.Spec.Ingress)
 	}
-	// Empty elide list → empty matchExpressions on the podSelector,
-	// meaning the baseline selects every pod.
 	if len(p.Spec.PodSelector.MatchExpressions) != 0 {
 		t.Errorf("expected empty matchExpressions with no elide, got %+v", p.Spec.PodSelector.MatchExpressions)
 	}
@@ -37,8 +36,9 @@ func TestDesiredBaseline_DenyAllWithEmptyElide(t *testing.T) {
 }
 
 func TestDesiredBaseline_ElideForCluster(t *testing.T) {
-	p := DesiredBaseline("platform", []string{"cluster"})
-	// Deny-all + one matchExpression excluding cluster receivers.
+	// `cluster` is the lone bare suffix that anchors on operatorNS, not on
+	// the rendering NS — per ADR 0033's CanonicalSuffix rule.
+	p := DesiredBaseline("platform", testOperatorNS, []string{"cluster"})
 	if len(p.Spec.Ingress) != 0 {
 		t.Errorf("expected deny-all, got %+v", p.Spec.Ingress)
 	}
@@ -47,8 +47,9 @@ func TestDesiredBaseline_ElideForCluster(t *testing.T) {
 			len(p.Spec.PodSelector.MatchExpressions), p.Spec.PodSelector.MatchExpressions)
 	}
 	expr := p.Spec.PodSelector.MatchExpressions[0]
-	if expr.Key != "kube-vnet.system/net.cluster" {
-		t.Errorf("expr key = %q, want kube-vnet.system/net.cluster", expr.Key)
+	wantKey := "kube-vnet.system/net." + testOperatorNS + ".cluster"
+	if expr.Key != wantKey {
+		t.Errorf("expr key = %q, want %q", expr.Key, wantKey)
 	}
 	if expr.Operator != metav1.LabelSelectorOpNotIn {
 		t.Errorf("expr operator = %v, want NotIn", expr.Operator)
@@ -59,8 +60,59 @@ func TestDesiredBaseline_ElideForCluster(t *testing.T) {
 	}
 }
 
+func TestDesiredBaseline_ElideForNamespace_PerNS(t *testing.T) {
+	// Bare `namespace` follows the bare → `<thisNS>.<suffix>` rule.
+	// Different rendering namespaces must produce different keys.
+	cases := []struct {
+		ns      string
+		wantKey string
+	}{
+		{"platform", "kube-vnet.system/net.platform.namespace"},
+		{"webapp", "kube-vnet.system/net.webapp.namespace"},
+	}
+	for _, tc := range cases {
+		p := DesiredBaseline(tc.ns, testOperatorNS, []string{"namespace"})
+		if len(p.Spec.PodSelector.MatchExpressions) != 1 {
+			t.Fatalf("ns=%s: expected one matchExpression, got %d", tc.ns, len(p.Spec.PodSelector.MatchExpressions))
+		}
+		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != tc.wantKey {
+			t.Errorf("ns=%s: key = %q, want %q", tc.ns, got, tc.wantKey)
+		}
+	}
+}
+
+func TestDesiredBaseline_ElideForBareUserVnet_PerNS(t *testing.T) {
+	// A bare user-vnet name follows the same rule as `namespace`: per-NS render.
+	p := DesiredBaseline("platform", testOperatorNS, []string{"foo"})
+	if len(p.Spec.PodSelector.MatchExpressions) != 1 {
+		t.Fatalf("expected one matchExpression")
+	}
+	wantKey := "kube-vnet.system/net.platform.foo"
+	if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != wantKey {
+		t.Errorf("key = %q, want %q", got, wantKey)
+	}
+}
+
+func TestDesiredBaseline_ElideForFQ_PassThrough(t *testing.T) {
+	// Already-FQ entries pass through. Includes `<homeNS>.namespace` (a
+	// specific NS's namespace vnet) and `<homeNS>.<vnet>` (a specific user vnet).
+	p := DesiredBaseline("platform", testOperatorNS, []string{"payments.namespace", "monitoring.observability"})
+	if len(p.Spec.PodSelector.MatchExpressions) != 2 {
+		t.Fatalf("expected two matchExpressions, got %d", len(p.Spec.PodSelector.MatchExpressions))
+	}
+	wantKeys := map[string]bool{
+		"kube-vnet.system/net.payments.namespace":       true,
+		"kube-vnet.system/net.monitoring.observability": true,
+	}
+	for _, expr := range p.Spec.PodSelector.MatchExpressions {
+		if !wantKeys[expr.Key] {
+			t.Errorf("unexpected key %q", expr.Key)
+		}
+	}
+}
+
 func TestDesiredBaseline_ElideMultipleVnets(t *testing.T) {
-	p := DesiredBaseline("platform", []string{"cluster", "public"})
+	p := DesiredBaseline("platform", testOperatorNS, []string{"cluster", "namespace"})
 	if len(p.Spec.PodSelector.MatchExpressions) != 2 {
 		t.Errorf("expected two matchExpressions, got %d", len(p.Spec.PodSelector.MatchExpressions))
 	}
