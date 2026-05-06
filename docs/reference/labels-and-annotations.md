@@ -47,7 +47,7 @@ labels:
 
 The dot separator distinguishes the two forms. Three or more dots in the part after `net.` would be ambiguous; VirtualNetwork names cannot contain dots (CRD CEL rule), so the encoding stays unambiguous.
 
-**Long form in the home namespace.** A pod in the vnet's home namespace can use the prefixed form (or both forms simultaneously), which lets a templated workload reuse a single label key across namespaces. If a home-namespace pod carries both forms with conflicting direction values, the operator surfaces `Degraded`/`ConflictingDirections` and excludes the pod from membership. See [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).
+**Long form in the home namespace.** A pod in the vnet's home namespace can use the prefixed form (or both forms simultaneously), which lets a templated workload reuse a single label key across namespaces. Both inputs canonicalize to the same FQ key at stamp time per [ADR 0033](../adr/0033-canonical-fq-system-labels.md), so disagreeing direction values on the two forms intersect fail-closed (no separate `ConflictingDirections` reason). See [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).
 
 For the rationale, see [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) (one label per network), [ADR 0004](../adr/0004-bare-vs-namespace-prefixed-join-label.md) (bare vs prefixed), and [ADR 0021](../adr/0021-direction-modes-on-join-labels.md) (direction values).
 
@@ -180,23 +180,11 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **Meaning** | "This NetworkPolicy belongs to `<homeNS>/<vnet-name>`." |
 | **Used by** | `cleanupForDeleted` (selects all this vnet's policies cluster-wide) and `deleteStale`. The operator's solution to Kubernetes' lack of cross-namespace owner references. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md). |
 
-### `kube-vnet/binding=<binding-name>`
-
-| | |
-|---|---|
-| **On** | Per-binding membership policies only — i.e. policies generated for a `VirtualNetworkBinding`. |
-| **Value** | The binding's `metadata.name`. |
-| **Set by** | The operator. |
-| **Meaning** | "This NetworkPolicy is the binding-driven membership policy for the named binding." |
-| **Used by** | Traceability and cleanup. `kubectl get networkpolicy -A -l kube-vnet/binding=<name>` returns exactly the policy a binding produced. |
-
-Per-binding policies are named `kube-vnet-<vnet>-b-<binding>` and live in the binding's own namespace.
-
 ### `kube-vnet/role=membership` and `kube-vnet/role=baseline`
 
 | | |
 |---|---|
-| **On** | `kube-vnet/role=membership` on per-vnet membership policies (label-driven and binding-driven alike). `kube-vnet/role=baseline` on the `kube-vnet` baseline. |
+| **On** | `kube-vnet/role=membership` on the per-`(vnet, namespace)` membership policy (covers label-driven and binding-driven members alike — there is no separate per-binding policy per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). `kube-vnet/role=baseline` on the `kube-vnet` baseline. |
 | **Set by** | The operator. |
 | **Meaning** | Discriminates the two policy classes the operator owns. |
 | **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |

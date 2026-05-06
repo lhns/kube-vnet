@@ -139,10 +139,11 @@ func main() {
 	}
 
 	resReconciler := &controller.ResolutionReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		NSFilter:    nsFilter,
-		LabelPrefix: labelPrefix,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		NSFilter:          nsFilter,
+		LabelPrefix:       labelPrefix,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")

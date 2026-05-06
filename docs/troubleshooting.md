@@ -19,7 +19,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
 - [My VirtualNetworkBinding doesn't attach any pods](#my-virtualnetworkbinding-doesnt-attach-any-pods)
 - [Binding shows Ready=False, NamespaceNotAllowed](#binding-shows-readyfalse-namespacenotallowed)
-- [Degraded with UnknownDirection or ConflictingDirections](#degraded-with-unknowndirection-or-conflictingdirections)
+- [Degraded with UnknownDirection or ResolutionConflict](#degraded-with-unknowndirection-or-conflictingdirections)
 - ["kubectl get vnet" shows READY=False](#kubectl-get-vnet-shows-readyfalse)
 - ["Degraded" condition is True — what does each reason mean?](#degraded-condition-is-true--what-does-each-reason-mean)
 - [Operator logs are noisy with conflict / "object has been modified" errors](#operator-logs-are-noisy-with-conflict--object-has-been-modified-errors)
@@ -323,13 +323,13 @@ Check the `Ready` condition's reason:
 | `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
 | `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
 
-Once the binding is `Ready=True`, look for its generated policy:
+Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:
 
 ```bash
-kubectl get networkpolicy -A -l kube-vnet/binding=<binding-name>
+kubectl get networkpolicy -A -l kube-vnet/network=<homeNS>.<vnet>
 ```
 
-The policy is named `kube-vnet-<vnet>-b-<binding>` and lives in the binding's own namespace.
+The membership policy is named `kube-vnet.<homeNS>.<vnet>-<8hex>` and lives in each member-bearing namespace.
 
 ---
 
@@ -352,7 +352,7 @@ The binding is honored only when the target vnet permits its namespace — same 
 
 ---
 
-## Degraded with UnknownDirection or ConflictingDirections
+## Degraded with UnknownDirection or ResolutionConflict
 
 `UnknownDirection`: at least one pod has a join label whose value isn't `both`/`ingress`/`egress`/`none`. The pod is excluded from membership; fix the typo. Legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.
 
@@ -360,9 +360,9 @@ The binding is honored only when the target vnet permits its namespace — same 
 kubectl describe vnet -n <ns> <name>   # the message names the offending pods
 ```
 
-`ConflictingDirections`: a pod in the home namespace carries both the bare and the prefixed form of the join label, with different direction values (or one explicitly `none` and the other a member direction). The operator can't decide what the pod intends, so it excludes the pod and surfaces the conflict.
+`ResolutionConflict`: at least one pod has cross-source disagreement on this vnet's `Direction` value (e.g. a `VirtualNetworkBinding` says `both` while a pod label says `egress`, or two bindings disagree). The resolver intersects fail-closed and stamps the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` so the conflict is auditable.
 
-Pick one form per pod (or set both forms to the same value). See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
+Pick a single source per pod (drop the conflicting binding or fix the pod label). Bare-vs-prefixed disagreement on the same pod is *not* a conflict anymore — both inputs canonicalize to the same key and intersect cleanly per [ADR 0033](adr/0033-canonical-fq-system-labels.md).
 
 ---
 
@@ -388,7 +388,7 @@ The reason explains what to fix.
 | `NoIssues` | (`Degraded=False`) — clean. | — |
 | `InvalidJoiners` | At least one pod carries the appropriate join label but is in a non-permitted or excluded namespace. The vnet's status message names the offending pods. | Either (a) extend `allowedNamespaces` to include the pod's namespace, (b) move the pod, or (c) remove the join label from the pod if it shouldn't be a member. The Degraded message also distinguishes whether the underlying reason was `NamespaceNotAllowed` (not in `allowedNamespaces`) or `NamespaceExcluded` (in `--disabled-namespaces` or annotated `kube-vnet/disabled=true`). |
 | `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none`. The pod is excluded from membership. (The legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.) | Fix the value on the offending pod (named in the Degraded message). |
-| `ConflictingDirections` | A home-namespace pod carries both the bare and the prefixed form of the join label with conflicting direction values. The pod is excluded from membership. | Pick one form, or set both forms to the same value. See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md). |
+| `ResolutionConflict` | At least one pod has cross-source disagreement on this vnet's `Direction` (binding-vs-label or binding-vs-binding). The resolver intersects fail-closed; the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. | Drop the conflicting binding or fix the pod label so a single source determines the direction. See [ADR 0033](adr/0033-canonical-fq-system-labels.md). |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 | `NameCollision` | Same as Ready. | Same fix. |

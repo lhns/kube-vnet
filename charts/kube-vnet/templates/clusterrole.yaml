@@ -56,7 +56,7 @@ rules:
     verbs: [get, patch, update]
   - apiGroups: [kube-vnet.lhns.de]
     resources: [virtualnetworks]
-    verbs: [create, get, list, patch, update, watch]
+    verbs: [create, delete, get, list, patch, update, watch]
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [create, delete, get, list, patch, update, watch]

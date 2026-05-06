@@ -170,7 +170,7 @@ The operator emits Events on every VirtualNetwork it reconciles. Events have a d
 | `ApplyFailed` | Warning | A `NetworkPolicy` apply call returned an error. Fires immediately at the failure site, regardless of subsequent condition state. The event message includes the policy ref and the apiserver error. |
 | `PolicyRestored` | Warning | The operator just re-created a `NetworkPolicy` that was absent immediately before its apply call. Indicates an out-of-band deletion was detected and reverted. The message includes the policy ref. See [ADR 0019](../adr/0019-baseline-durability.md) and [`../security.md`](../security.md). |
 
-The condition reasons that drive these events include `PoliciesGenerated`, `NoMembers`, `InvalidJoiners`, `UnknownDirection`, `ConflictingDirections`, `InvalidName`, `HomeNamespaceExcluded`, `NamespaceNotAllowed`, `NamespaceExcluded`, `ApplyFailed`, `NoIssues`. The Go-level constants are in `internal/controller/virtualnetwork_controller.go` (`Reason*`).
+The condition reasons that drive these events include `PoliciesGenerated`, `NoMembers`, `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NamespaceNotAllowed`, `NamespaceExcluded`, `ApplyFailed`, `NoIssues`. The Go-level constants are in `internal/controller/virtualnetwork_controller.go` (`Reason*`).
 
 (A `NameCollision` event reason is planned alongside the same-named `Degraded` reason for the case where a user-managed `NetworkPolicy` blocks an operator name.)
 
@@ -240,6 +240,6 @@ Each `VirtualNetwork.status.conditions` carries `Ready` and `Degraded`. Full rea
 | `Ready` | True | `PoliciesGenerated`, `NoMembers` |
 | `Ready` | False | `ApplyFailed`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
 | `Degraded` | False | `NoIssues` |
-| `Degraded` | True | `InvalidJoiners`, `UnknownDirection`, `ConflictingDirections`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
+| `Degraded` | True | `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
 
 `kubectl wait --for=condition=Ready vnet/<name> -n <ns>` works because of this standard pattern.

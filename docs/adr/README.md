@@ -38,6 +38,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 30. [0030 — Unified vnet-membership model with resolution layer](0030-unified-vnet-membership-with-resolution.md) — *resolution-lattice section partially superseded by 0031*
 31. [0031 — Baseline-tier resolution: replace bindings/CVNB with explicit defaults vs bindings](0031-baseline-tier-resolution.md)
 32. [0032 — Removing a chart-shipped CRD requires a two-release deprecation dance](0032-chart-crd-removal-two-release-pattern.md)
+33. [0033 — Canonical fully-qualified system labels; per-binding policies removed](0033-canonical-fq-system-labels.md)
 
 ## Format
 

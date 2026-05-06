@@ -50,6 +50,10 @@ type ResolutionReconciler struct {
 	Scheme      *runtime.Scheme
 	NSFilter    *NamespaceFilter
 	LabelPrefix string
+	// OperatorNamespace is the chart's release namespace, where the cluster
+	// system vnet lives. Used to canonicalize the cluster-vnet membership
+	// label key on every pod that inherits the cluster baseline (per ADR 0033).
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -143,7 +147,7 @@ func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *co
 			continue
 		}
 		out = append(out, ResolutionRule{
-			Vnet:      vnetKeyForBinding(m.VirtualNetworkRef, pod.Namespace),
+			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "ClusterVirtualNetworkBaseline/default",
 		})
@@ -165,7 +169,7 @@ func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *
 			continue
 		}
 		out = append(out, ResolutionRule{
-			Vnet:      vnetKeyForBinding(m.VirtualNetworkRef, pod.Namespace),
+			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
 		})
@@ -199,7 +203,7 @@ func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod
 			continue
 		}
 		out = append(out, ResolutionRule{
-			Vnet:      vnetKeyForBinding(b.Spec.VirtualNetworkRef, pod.Namespace),
+			Vnet:      r.canonicalVnetKey(b.Spec.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "VirtualNetworkBinding/" + b.Name,
 		})
@@ -208,7 +212,10 @@ func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod
 }
 
 // podLabelRules reads the pod's own kube-vnet/net.<suffix>=<direction>
-// labels. Pod-tier source.
+// labels. Pod-tier source. Per ADR 0033, the suffix can be either bare
+// (`<vnet>` — only valid for the vnet's home NS or for system vnets) or
+// prefixed (`<homeNS>.<vnet>`); both forms canonicalize to the same FQ
+// VnetKey.
 func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 	prefix := r.LabelPrefix
 	if prefix == "" {
@@ -225,8 +232,9 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			continue
 		}
 		suffix := strings.TrimPrefix(k, userNetPrefix)
+		key := r.canonicalKeyFromPodLabelSuffix(suffix, pod.Namespace)
 		out = append(out, ResolutionRule{
-			Vnet:      VnetKey(suffix),
+			Vnet:      key,
 			Direction: dir,
 			Source:    "<pod-label>",
 		})
@@ -234,17 +242,50 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 	return out
 }
 
-// vnetKeyForBinding computes the label suffix the binding's target vnet
-// produces from the pod's namespace's perspective. System vnets ("namespace"
-// and "cluster") are always bare (never prefixed), even when the binding
-// targets a vnet object in a different namespace from the pod's. User vnets
-// follow the existing bare/prefixed convention from JoinLabelKey.
-func vnetKeyForBinding(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
-	if isSystemVnetName(ref.Name) {
-		return VnetKey(ref.Name)
+// canonicalKeyFromPodLabelSuffix translates a pod-label suffix (the part
+// after `kube-vnet/net.`) into the canonical FQ VnetKey. Per ADR 0033:
+//   - bare `namespace`            → `<podNS>.namespace`
+//   - bare `cluster`              → `<operatorNS>.cluster`
+//   - bare user vnet `<name>`     → `<podNS>.<name>` (bare-form pod label is
+//                                   only valid in the vnet's home NS, which
+//                                   is the pod's NS by definition for bare)
+//   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ)
+func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS string) VnetKey {
+	if dot := strings.IndexByte(suffix, '.'); dot >= 0 {
+		// Already prefixed; no further normalization.
+		return VnetKey(suffix)
 	}
-	if ref.Namespace == podNS {
-		return VnetKey(ref.Name)
+	switch suffix {
+	case SystemVnetNamespace:
+		return VnetKey(podNS + "." + SystemVnetNamespace)
+	case SystemVnetCluster:
+		opNS := r.OperatorNamespace
+		if opNS == "" {
+			// Fallback: stamp bare so the policy generator can still match
+			// during tests / out-of-cluster runs that don't wire OperatorNamespace.
+			return VnetKey(SystemVnetCluster)
+		}
+		return VnetKey(opNS + "." + SystemVnetCluster)
+	}
+	return VnetKey(podNS + "." + suffix)
+}
+
+// canonicalVnetKey computes the canonical FQ VnetKey for any vnet
+// reference, given the pod's namespace as the resolution context. Per
+// ADR 0033, the output is always `<homeNS>.<name>` — system vnets included
+// — where `homeNS` is the namespace the vnet lives in (the pod's NS for
+// the per-NS `namespace` system vnet; the operator's release NS for
+// `cluster`; the ref's own namespace for user vnets).
+func (r *ResolutionReconciler) canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
+	if ref.Name == SystemVnetNamespace {
+		return VnetKey(podNS + "." + SystemVnetNamespace)
+	}
+	if ref.Name == SystemVnetCluster {
+		opNS := r.OperatorNamespace
+		if opNS == "" {
+			opNS = ref.Namespace
+		}
+		return VnetKey(opNS + "." + SystemVnetCluster)
 	}
 	return VnetKey(ref.Namespace + "." + ref.Name)
 }

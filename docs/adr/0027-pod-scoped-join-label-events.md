@@ -1,6 +1,6 @@
 # 0027 — Pod-scoped events for join-label diagnostics
 
-Status: Accepted
+Status: Accepted (note: `ConflictingDirections` mentioned in this ADR's vnet-status taxonomy is renamed to `ResolutionConflict` per [ADR 0033](0033-canonical-fq-system-labels.md), now sourced from the resolver's cross-source conflicts rather than the bare-vs-prefixed pair check. The pod-event surface this ADR introduces is unchanged.)
 
 Date: 2026-05-04
 

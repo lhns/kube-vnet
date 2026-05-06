@@ -10,6 +10,44 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Changed
+
+- **Canonical fully-qualified system labels and uniform membership-policy
+  naming (ADR 0033).** The `ResolutionReconciler` now stamps every pod
+  membership as `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` (canonical
+  FQ form) regardless of whether the pod is in the vnet's home namespace or
+  uses the bare or prefixed pod-input label. The policy generator emits one
+  membership policy per `(vnet, namespace)` named uniformly
+  `kube-vnet.<homeNS>.<vnet>-<8hex>` — the bare-form output policy
+  (`kube-vnet.<vnet>-<8hex>`) and the per-binding policy
+  (`kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>`) are no longer emitted.
+  `VirtualNetworkBinding`-driven members are stamped with the same canonical
+  FQ system label and are covered by the regular per-`(vnet, namespace)`
+  membership policy. Pod-input ergonomic from ADR 0022 is preserved (bare and
+  prefixed pod labels are both still accepted); only the operator's *output*
+  is normalized. Baseline-spec membership keys stay bare for the user-facing
+  shorthand (`cluster`, `namespace`, or FQ `<homeNS>.<vnet>`); the operator
+  resolves bare entries to canonical FQ at render time.
+
+- **`ConflictingDirections` Degraded reason replaced by `ResolutionConflict`.**
+  Bare-vs-prefixed disagreement on the same pod is no longer a conflict —
+  both inputs canonicalize to the same key and intersect cleanly. The new
+  `ResolutionConflict` reason fires for cross-source disagreements that the
+  resolver has to intersect fail-closed (binding-vs-label, binding-vs-binding
+  on the same pod). The per-pod annotation
+  `kube-vnet.system/conflict.<homeNS>.<vnet>` continues to mark the granular
+  conflict surface; the metric `kube_vnet_resolution_conflicts_total` is
+  unchanged.
+
+- **Hard cleanup guarantee for managed resources (ADR 0033).** Every vnet
+  reconcile diffs the desired-vs-actual managed-policy set and deletes any
+  policy not in the desired set within one cycle. Stale bare-form and
+  per-binding policies left over from earlier releases are removed
+  deterministically on the first post-upgrade reconcile. The
+  `SystemVnetReconciler` now also deletes the per-NS `namespace` system vnet
+  on a managed → disabled namespace transition (the cluster vnet in the
+  operator's release namespace is intentionally exempt).
+
 ### Added
 
 - **End-user RBAC: aggregated ClusterRoles for the kube-vnet CRDs.** The

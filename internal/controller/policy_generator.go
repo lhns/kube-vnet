@@ -144,18 +144,8 @@ func (d Direction) Bare() Direction {
 	return d
 }
 
-// KeyForm distinguishes the bare and namespace-prefixed forms of the join
-// label key. The bare form is only valid in the VirtualNetwork's home
-// namespace; the prefixed form works in any namespace.
-type KeyForm int
-
-const (
-	KeyBare     KeyForm = 0
-	KeyPrefixed KeyForm = 1
-)
-
 // InvalidJoiner records a pod that was rejected as a member (wrong namespace,
-// unknown direction, conflicting forms in home, etc.).
+// unknown direction, etc.).
 type InvalidJoiner struct {
 	PodNamespace string
 	PodName      string
@@ -164,33 +154,17 @@ type InvalidJoiner struct {
 
 // GenerateInput is the pure input to the policy generator.
 //
-// MembersByNS is keyed by namespace, then by KeyForm (which form of the join
-// label the pod uses — only the home namespace ever has KeyBare entries),
-// then by Direction. The leaf is the list of pod names (informational —
-// generated selectors match by label, not by name).
-//
-// BindingsByNS is keyed by namespace, with the list of label-free
-// VirtualNetworkBinding-driven members in that namespace. Each binding
-// contributes one membership policy (with the binding's podSelector
-// verbatim) AND one peer entry in every other policy's peer rules.
+// MembersByNS is keyed by namespace, then by Direction. Per ADR 0033, every
+// member is selected via a single canonical FQ system label key
+// (`kube-vnet.system/net.<homeNS>.<vnet>`), regardless of whether the pod's
+// stamp came from a user label, a `VirtualNetworkBinding`, or a baseline.
+// Bindings no longer produce a separate generator-input axis; they stamp the
+// same canonical system label as everything else and are picked up here as
+// regular members.
 type GenerateInput struct {
-	VNet         *vnetv1alpha1.VirtualNetwork
-	LabelPrefix  string
-	MembersByNS  map[string]map[KeyForm]map[Direction][]string
-	BindingsByNS map[string][]BindingSpec
-}
-
-// BindingSpec is the generator's view of one VirtualNetworkBinding (already
-// scoped to bindings that target the current VirtualNetwork and live in a
-// namespace permitted by spec.allowedNamespaces).
-type BindingSpec struct {
-	// Name is the binding's metadata.name. Used to build the per-binding
-	// policy name.
-	Name string
-	// Direction is the parsed direction the binding establishes.
-	Direction Direction
-	// PodSelector is the binding's spec.podSelector (verbatim).
-	PodSelector metav1.LabelSelector
+	VNet        *vnetv1alpha1.VirtualNetwork
+	LabelPrefix string
+	MembersByNS map[string]map[Direction][]string
 }
 
 // GenerateOutput holds the desired NetworkPolicies.
@@ -203,8 +177,9 @@ type GenerateOutput struct {
 // "<prefix>net.<vnet>" works. The prefixed form
 // "<prefix>net.<homeNS>.<vnet>" works in any namespace including the home one.
 //
-// This is the user-facing input scheme. The resolution controller stamps the
-// equivalent under the operator-output prefix; see SystemLabelKey.
+// This is the user-facing input scheme (per ADR 0022 — both forms are
+// accepted on inputs). The resolution controller normalizes both to the
+// canonical FQ form on the operator-output side; see SystemLabelKey.
 func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
 	if inPodNS == homeNS {
 		return prefix + "net." + vnet
@@ -212,61 +187,23 @@ func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
 	return prefix + "net." + homeNS + "." + vnet
 }
 
-// JoinLabelKeyByForm returns the join label key for a (vnet, namespace, form).
-// The bare form is only meaningful in the home namespace; callers shouldn't
-// produce KeyBare entries for foreign namespaces.
-func JoinLabelKeyByForm(prefix, homeNS, vnet string, form KeyForm) string {
-	if form == KeyBare {
-		return prefix + "net." + vnet
-	}
-	return prefix + "net." + homeNS + "." + vnet
-}
-
-// SystemLabelKeyByForm is like JoinLabelKeyByForm but always emits keys under
-// the operator's `kube-vnet.system/net.` prefix. Used by the policy generator
-// to build NetworkPolicy podSelectors that match the labels stamped by the
-// resolution controller. See ADR 0030.
-//
-// System vnets ("namespace", "cluster") always use bare form regardless of
-// the form argument — resolution stamps them as bare for every pod.
-func SystemLabelKeyByForm(homeNS, vnet string, form KeyForm) string {
-	if isSystemVnetName(vnet) || form == KeyBare {
-		return LabelSystemNetPrefix + vnet
-	}
+// SystemLabelKey returns the canonical operator-stamped label key for a
+// vnet, in the form `kube-vnet.system/net.<homeNS>.<vnet>`. Per ADR 0033,
+// this is the only shape used on the output side — pod stamps and policy
+// selectors both use it. System vnets follow the same rule (homeNS is the
+// pod's NS for `namespace`; the operator's release NS for `cluster`).
+func SystemLabelKey(homeNS, vnet string) string {
 	return LabelSystemNetPrefix + homeNS + "." + vnet
 }
 
-// PolicyName returns the deterministic NetworkPolicy name for the bare-form
-// membership policy of (vnet, homeNS). Shape: `kube-vnet.<vnet>-<8hex>`.
-// The prefix is dot-separated to keep visual structure clean even when
-// vnet/namespace names contain dashes (e.g. `netpol-demo`).
-//
-// Bare-form policies only exist in the vnet's home namespace; the policy's
-// `metadata.namespace` is implicitly homeNS, so it doesn't appear in the name.
+// PolicyName returns the deterministic NetworkPolicy name. Per ADR 0033 the
+// shape is uniformly `kube-vnet.<homeNS>.<vnet>-<8hex>` for every vnet
+// (user and system). The 8-hex suffix is a SHA-256-based identity hash that
+// disambiguates against name collisions; see ADR 0011 for the truncate-and-
+// hash overflow handler.
 func PolicyName(vnet, homeNS string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s-%s",
-		vnet, policyHash("bare", homeNS, vnet)))
-}
-
-// PolicyNameFor returns the deterministic NetworkPolicy name for a given
-// (vnet, homeNS, key form). Shapes:
-//
-//	bare:     kube-vnet.<vnet>-<8hex>
-//	prefixed: kube-vnet.<homeNS>.<vnet>-<8hex>
-//
-// The prefixed shape mirrors the join-label key `kube-vnet/net.<homeNS>.<vnet>`,
-// using `.` as a separator (forbidden inside DNS-1123 labels, so unambiguous).
-// The hash disambiguates internal-component boundaries within either shape.
-//
-// All receiver-capable direction classes (`both` and `ingress`) share a
-// single self-policy per (ns, form). `egress`-only members produce no
-// self-policy. See ADR 0021 (Addendum) for the consolidation rationale.
-func PolicyNameFor(vnet, homeNS string, form KeyForm) string {
-	if form == KeyBare {
-		return PolicyName(vnet, homeNS)
-	}
 	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s-%s",
-		homeNS, vnet, policyHash("prefixed", homeNS, vnet)))
+		homeNS, vnet, policyHash("membership", homeNS, vnet)))
 }
 
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.
@@ -340,15 +277,17 @@ func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == Directi
 // joining a vnet still resolves DNS, reaches the apiserver, talks to the
 // internet — exactly the pre-membership posture for egress.
 //
-// Per (namespace, key-form), up to two policies are produced — one for
-// receiver-capable members (direction `both` and `ingress`) and one for
-// initiator-only members (direction `egress`) iff that pod itself needs
-// no ingress restrictions… actually direction `egress` produces NO
-// self-policy because such pods don't accept ingress and we don't restrict
-// their egress. So in practice: at most one self-policy per (ns, form)
-// for the receiver-capable members. The home namespace can have entries
-// under both KeyBare and KeyPrefixed when both forms are in use,
-// doubling the per-namespace cap to 2.
+// Per ADR 0033, exactly one membership policy is produced per
+// (vnet, member-namespace) — namely each namespace where at least one pod
+// has direction `both` or `ingress` for the canonical system label
+// `kube-vnet.system/net.<homeNS>.<vnet>`. Egress-only members produce no
+// self-policy (they accept no ingress and we don't restrict egress) but
+// still appear in other namespaces' policies as `from:` peers.
+//
+// `VirtualNetworkBinding`-driven members are handled identically to label-
+// driven members: the resolution controller stamps the canonical system
+// label on selected pods, and they show up in MembersByNS like everything
+// else. No per-binding policy is emitted.
 //
 // Owner references are set only on policies in the home namespace
 // (Kubernetes rejects cross-namespace owner refs).
@@ -361,22 +300,12 @@ func Generate(in GenerateInput) GenerateOutput {
 	homeNS := vnet.Namespace
 	netID := homeNS + "." + vnet.Name
 
-	// Sort namespaces for deterministic output. The union of label-driven
-	// and binding-driven membership defines the namespaces that participate.
+	// Member namespaces: any NS that has at least one pod with non-empty
+	// direction-bucket. Sorted for deterministic output.
 	nsSet := map[string]struct{}{}
-	for ns, byForm := range in.MembersByNS {
-		for _, byDir := range byForm {
-			for _, pods := range byDir {
-				if len(pods) > 0 {
-					nsSet[ns] = struct{}{}
-					break
-				}
-			}
-		}
-	}
-	for ns, bs := range in.BindingsByNS {
-		for _, b := range bs {
-			if b.Direction != DirectionNone {
+	for ns, byDir := range in.MembersByNS {
+		for _, pods := range byDir {
+			if len(pods) > 0 {
 				nsSet[ns] = struct{}{}
 				break
 			}
@@ -393,221 +322,78 @@ func Generate(in GenerateInput) GenerateOutput {
 		return out
 	}
 
-	// Pre-build peer rules.
-	//
-	// For each peer namespace + form combination that has at least one
-	// initiator, we'll emit one ingress.from peer rule. Same for receivers
-	// in egress.to.
-	type peerKey struct {
-		ns   string
-		form KeyForm
-	}
-
-	// Collect (peerNS, peerForm) tuples that can initiate (sources of ingress).
-	// Membership policies are ingress-only now, so we don't track receivers.
-	initiators := []peerKey{}
+	// Pre-build peer rules: one ingress.from peer per namespace that has at
+	// least one initiator (`both` or `egress`). All peers share the same
+	// canonical FQ system-label selector key.
+	selectorKey := SystemLabelKey(homeNS, vnet.Name)
+	peerFroms := make([]networkingv1.NetworkPolicyPeer, 0, len(memberNamespaces))
 	for _, peerNS := range memberNamespaces {
-		byForm := in.MembersByNS[peerNS]
-		for _, form := range []KeyForm{KeyBare, KeyPrefixed} {
-			byDir, ok := byForm[form]
-			if !ok {
-				continue
-			}
-			if hasInitiator(byDir) {
-				initiators = append(initiators, peerKey{peerNS, form})
-			}
+		if !hasInitiator(in.MembersByNS[peerNS]) {
+			continue
 		}
-	}
-
-	makePeer := func(pk peerKey, values []string) networkingv1.NetworkPolicyPeer {
-		key := SystemLabelKeyByForm(homeNS, vnet.Name, pk.form)
-		return networkingv1.NetworkPolicyPeer{
+		peerFroms = append(peerFroms, networkingv1.NetworkPolicyPeer{
 			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{NamespaceMetadataNameLabel: pk.ns},
+				MatchLabels: map[string]string{NamespaceMetadataNameLabel: peerNS},
 			},
 			PodSelector: &metav1.LabelSelector{
 				MatchExpressions: []metav1.LabelSelectorRequirement{{
-					Key:      key,
+					Key:      selectorKey,
 					Operator: metav1.LabelSelectorOpIn,
-					Values:   values,
+					Values:   peerInitiatorValues,
 				}},
 			},
-		}
+		})
 	}
 
-	peerFroms := make([]networkingv1.NetworkPolicyPeer, 0, len(initiators))
-	for _, pk := range initiators {
-		peerFroms = append(peerFroms, makePeer(pk, peerInitiatorValues))
-	}
-
-	// Bindings contribute additional peer entries (initiators only — we don't
-	// restrict egress, so receivers don't need to appear in any peer list).
-	// Bindings with DirectionNone are skipped.
-	type bindingPeer struct {
-		ns       string
-		selector metav1.LabelSelector
-	}
-	bindingInitiators := []bindingPeer{}
-	bindingNSes := make([]string, 0, len(in.BindingsByNS))
-	for ns := range in.BindingsByNS {
-		bindingNSes = append(bindingNSes, ns)
-	}
-	sort.Strings(bindingNSes)
-	for _, ns := range bindingNSes {
-		bs := in.BindingsByNS[ns]
-		// Stable order by binding name within a namespace.
-		sortedBs := make([]BindingSpec, len(bs))
-		copy(sortedBs, bs)
-		sort.Slice(sortedBs, func(i, j int) bool { return sortedBs[i].Name < sortedBs[j].Name })
-		for _, b := range sortedBs {
-			if b.Direction == DirectionNone {
-				continue
-			}
-			if b.Direction == DirectionBoth || b.Direction == DirectionEgress {
-				bindingInitiators = append(bindingInitiators, bindingPeer{ns, b.PodSelector})
-			}
-		}
-	}
-	makeBindingPeer := func(bp bindingPeer) networkingv1.NetworkPolicyPeer {
-		sel := bp.selector
-		return networkingv1.NetworkPolicyPeer{
-			NamespaceSelector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{NamespaceMetadataNameLabel: bp.ns},
-			},
-			PodSelector: &sel,
-		}
-	}
-	for _, bp := range bindingInitiators {
-		peerFroms = append(peerFroms, makeBindingPeer(bp))
-	}
-
-	// Note: membership policies are strictly ingress-only. The operator never
-	// adds egress restrictions; egress (DNS, the apiserver, the public
-	// internet, other namespaces) is unrestricted from the operator's
-	// perspective. See ADR 0025.
-
+	// One membership policy per receiver-bearing namespace.
 	policies := []networkingv1.NetworkPolicy{}
 	for _, ns := range memberNamespaces {
-		byForm := in.MembersByNS[ns]
-		for _, form := range []KeyForm{KeyBare, KeyPrefixed} {
-			byDir, ok := byForm[form]
-			if !ok {
-				continue
-			}
-			selectorKey := SystemLabelKeyByForm(homeNS, vnet.Name, form)
-			// One self-policy per (ns, form), selecting all receiver-capable
-			// members (`both` and `ingress`, plus the legacy `true` alias).
-			// Direction `egress`-only members don't get a self-policy:
-			// they accept no ingress and we don't restrict egress. They
-			// still appear in *other* pods' ingress.from peer lists via
-			// peerInitiatorValues.
-			if !hasReceiver(byDir) {
-				continue
-			}
-			policy := networkingv1.NetworkPolicy{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: networkingv1.SchemeGroupVersion.String(),
-					Kind:       "NetworkPolicy",
-				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: ns,
-					Name:      PolicyNameFor(vnet.Name, homeNS, form),
-					Labels: map[string]string{
-						LabelManagedBy: LabelManagedByValue,
-						LabelNetwork:   netID,
-						LabelRole:      LabelRoleMembership,
-					},
-				},
-				Spec: networkingv1.NetworkPolicySpec{
-					PodSelector: metav1.LabelSelector{
-						MatchExpressions: []metav1.LabelSelectorRequirement{{
-							Key:      selectorKey,
-							Operator: metav1.LabelSelectorOpIn,
-							Values:   selfValuesReceiver,
-						}},
-					},
-					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-				},
-			}
-			if len(peerFroms) > 0 {
-				policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
-			}
-
-			if ns == homeNS {
-				policy.OwnerReferences = []metav1.OwnerReference{{
-					APIVersion:         vnetv1alpha1.GroupVersion.String(),
-					Kind:               "VirtualNetwork",
-					Name:               vnet.Name,
-					UID:                vnet.UID,
-					Controller:         ptrTrue(),
-					BlockOwnerDeletion: ptrTrue(),
-				}}
-			}
-			policies = append(policies, policy)
+		byDir := in.MembersByNS[ns]
+		if !hasReceiver(byDir) {
+			continue
 		}
-	}
-
-	// Per-binding policies. One policy per binding (in the binding's own
-	// namespace). The policy's podSelector is the binding's verbatim
-	// podSelector; ingress/egress shape follows the binding's direction.
-	for _, ns := range bindingNSes {
-		bs := in.BindingsByNS[ns]
-		sortedBs := make([]BindingSpec, len(bs))
-		copy(sortedBs, bs)
-		sort.Slice(sortedBs, func(i, j int) bool { return sortedBs[i].Name < sortedBs[j].Name })
-		for _, b := range sortedBs {
-			// Same logic as label-driven members: bindings whose direction
-			// doesn't accept ingress (`egress` or `none`) get no self-policy.
-			if !dirHasIngress(b.Direction) {
-				continue
-			}
-			policy := networkingv1.NetworkPolicy{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: networkingv1.SchemeGroupVersion.String(),
-					Kind:       "NetworkPolicy",
+		policy := networkingv1.NetworkPolicy{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: networkingv1.SchemeGroupVersion.String(),
+				Kind:       "NetworkPolicy",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: ns,
+				Name:      PolicyName(vnet.Name, homeNS),
+				Labels: map[string]string{
+					LabelManagedBy: LabelManagedByValue,
+					LabelNetwork:   netID,
+					LabelRole:      LabelRoleMembership,
 				},
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: ns,
-					Name:      BindingPolicyName(homeNS, vnet.Name, ns, b.Name),
-					Labels: map[string]string{
-						LabelManagedBy: LabelManagedByValue,
-						LabelNetwork:   netID,
-						LabelRole:      LabelRoleMembership,
-						LabelBinding:   b.Name,
-					},
+			},
+			Spec: networkingv1.NetworkPolicySpec{
+				PodSelector: metav1.LabelSelector{
+					MatchExpressions: []metav1.LabelSelectorRequirement{{
+						Key:      selectorKey,
+						Operator: metav1.LabelSelectorOpIn,
+						Values:   selfValuesReceiver,
+					}},
 				},
-				Spec: networkingv1.NetworkPolicySpec{
-					PodSelector: b.PodSelector,
-					PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-				},
-			}
-			if len(peerFroms) > 0 {
-				policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
-			}
-			policies = append(policies, policy)
+				PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+			},
 		}
+		if len(peerFroms) > 0 {
+			policy.Spec.Ingress = []networkingv1.NetworkPolicyIngressRule{{From: peerFroms}}
+		}
+		if ns == homeNS {
+			policy.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion:         vnetv1alpha1.GroupVersion.String(),
+				Kind:               "VirtualNetwork",
+				Name:               vnet.Name,
+				UID:                vnet.UID,
+				Controller:         ptrTrue(),
+				BlockOwnerDeletion: ptrTrue(),
+			}}
+		}
+		policies = append(policies, policy)
 	}
 	out.Policies = policies
 	return out
-}
-
-// LabelBinding marks per-VirtualNetworkBinding membership policies with the
-// binding's name (for traceability and easy GC of policies whose binding
-// vanished).
-const LabelBinding = "kube-vnet/binding"
-
-// BindingPolicyName returns the deterministic policy name for a
-// VirtualNetworkBinding-driven membership policy. Shape:
-//
-//	kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>
-//
-// The `.b.` marker distinguishes binding policies from prefixed-form
-// membership (`kube-vnet.<homeNS>.<vnet>-<hash>`). The hash disambiguates
-// against pathological inputs where `.` parsing could otherwise be ambiguous.
-func BindingPolicyName(homeNS, vnet, bindingNS, binding string) string {
-	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s.b.%s-%s",
-		homeNS, vnet, binding,
-		policyHash("binding", homeNS, vnet, bindingNS, binding)))
 }
 
 func ptrTrue() *bool { b := true; return &b }

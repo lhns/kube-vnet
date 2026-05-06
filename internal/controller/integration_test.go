@@ -39,7 +39,7 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 		if p.Labels[LabelManagedBy] != LabelManagedByValue {
 			return fmt.Errorf("missing managed-by label")
 		}
-		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.payments" {
+		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net."+ns+".payments" {
 			return fmt.Errorf("podSelector key=%s", got)
 		}
 		// Membership policies are ingress-only (ADR 0025): one ingress allow
@@ -107,12 +107,12 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 
 	eventually(t, 10*time.Second, func() error {
 		homeKey := PolicyName("shared", home)
-		foreignKey := PolicyNameFor("shared", home, KeyPrefixed)
+		foreignKey := PolicyName("shared", home)
 		hp, err := findPolicy(ctx, home, homeKey)
 		if err != nil {
 			return err
 		}
-		if got := hp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net.shared" {
+		if got := hp.Spec.PodSelector.MatchExpressions[0].Key; got != "kube-vnet.system/net."+home+".shared" {
 			return fmt.Errorf("home key=%s", got)
 		}
 		fp, err := findPolicy(ctx, foreign, foreignKey)
@@ -187,7 +187,7 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 		if _, err := findPolicy(ctx, home, PolicyName("doomed", home)); err != nil {
 			return err
 		}
-		if _, err := findPolicy(ctx, foreign, PolicyNameFor("doomed", home, KeyPrefixed)); err != nil {
+		if _, err := findPolicy(ctx, foreign, PolicyName("doomed", home)); err != nil {
 			return err
 		}
 		return nil
@@ -202,7 +202,7 @@ func TestIntegration_Delete_RemovesAllPolicies(t *testing.T) {
 		if _, err := findPolicy(ctx, home, PolicyName("doomed", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("home policy still exists: err=%v", err)
 		}
-		if _, err := findPolicy(ctx, foreign, PolicyNameFor("doomed", home, KeyPrefixed)); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, foreign, PolicyName("doomed", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("foreign policy still exists: err=%v", err)
 		}
 		return nil
@@ -417,7 +417,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 
 	eventually(t, 10*time.Second, func() error {
 		// Prod produces a policy with the prefixed key.
-		pp, err := findPolicy(ctx, prod, PolicyNameFor("selvnet", home, KeyPrefixed))
+		pp, err := findPolicy(ctx, prod, PolicyName("selvnet", home))
 		if err != nil {
 			return err
 		}
@@ -426,7 +426,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 			return fmt.Errorf("prod policy key=%s want %s", got, want)
 		}
 		// Dev does NOT produce a policy.
-		if _, err := findPolicy(ctx, dev, PolicyNameFor("selvnet", home, KeyPrefixed)); !apierrors.IsNotFound(err) {
+		if _, err := findPolicy(ctx, dev, PolicyName("selvnet", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("dev policy should not exist; err=%v", err)
 		}
 		// Vnet status: Degraded=True with reason InvalidJoiners (the dev pod).
@@ -678,7 +678,7 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 		}
 		// And the policy in foreign uses the prefixed join key as its selector,
 		// which by construction won't match bystander's labels.
-		fp, err := findPolicy(ctx, foreign, PolicyNameFor("shared", home, KeyPrefixed))
+		fp, err := findPolicy(ctx, foreign, PolicyName("shared", home))
 		if err != nil {
 			return err
 		}
@@ -797,7 +797,7 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 
 	eventually(t, 10*time.Second, func() error {
 		// The -prefixed policy is what matches this pod.
-		_, err := findPolicy(ctx, ns, PolicyNameFor("v", ns, KeyPrefixed))
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
 	// And status should list the pod as a member.
@@ -819,35 +819,34 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 	})
 }
 
-// TestIntegration_LongForm_BothInHome_Conflict: a pod in the home namespace
-// with both forms present and conflicting direction values surfaces as
-// ConflictingDirections.
-func TestIntegration_LongForm_BothInHome_Conflict(t *testing.T) {
+// TestIntegration_LongForm_BothInHome_Intersect: a pod in the home namespace
+// with both bare and prefixed forms for the same vnet (ADR 0022) — both
+// canonicalize to the same FQ VnetKey at stamp time (ADR 0033), and the
+// resolver intersects disagreements. Pod has bare=both + prefixed=ingress
+// → effective ingress (intersection of both ∩ ingress). The pod is a member
+// (with direction ingress); no Degraded condition fires. This replaces the
+// pre-ADR-0033 ConflictingDirections behavior.
+func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 	ctx := context.Background()
-	ns := uniqueNS(t, "conflict")
+	ns := uniqueNS(t, "longform")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
 	})
 	mustCreate(t, makePod(ns, "p", map[string]string{
-		"kube-vnet/net.v":          "both",
+		"kube-vnet/net.v":            "both",
 		"kube-vnet/net." + ns + ".v": "ingress",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
-		v := &vnetv1alpha1.VirtualNetwork{}
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
-			return fmt.Errorf("Degraded != True")
+		if got := p.Labels["kube-vnet.system/net."+ns+".v"]; got != "ingress" {
+			return fmt.Errorf("system label = %q, want ingress (intersection of both ∩ ingress)", got)
 		}
-		for _, c := range v.Status.Conditions {
-			if c.Type == "Degraded" && strings.Contains(c.Message, ns+"/p") {
-				return nil
-			}
-		}
-		return fmt.Errorf("Degraded does not surface %s/p: %+v", ns, v.Status.Conditions)
+		return nil
 	})
 }
 

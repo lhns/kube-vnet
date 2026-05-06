@@ -70,10 +70,10 @@ func TestIntegration_Resolution_ClusterBaselineStamped(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if got := p.Labels["kube-vnet.system/net.namespace"]; got != "both" {
+		if got := p.Labels["kube-vnet.system/net."+ns+".namespace"]; got != "both" {
 			return fmt.Errorf("namespace label = %q, want both; labels=%v", got, p.Labels)
 		}
-		if got := p.Labels["kube-vnet.system/net.cluster"]; got != "egress" {
+		if got := p.Labels["kube-vnet.system/net.kube-vnet-system-test.cluster"]; got != "egress" {
 			return fmt.Errorf("cluster label = %q, want egress; labels=%v", got, p.Labels)
 		}
 		if p.Annotations[AnnotationResolvedGeneration] == "" {
@@ -100,7 +100,7 @@ func TestIntegration_Resolution_PodLabelOverridesDefault(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if got := p.Labels["kube-vnet.system/net.cluster"]; got != "both" {
+		if got := p.Labels["kube-vnet.system/net.kube-vnet-system-test.cluster"]; got != "both" {
 			return fmt.Errorf("cluster label = %q, want both (pod-label override)", got)
 		}
 		return nil
@@ -125,7 +125,7 @@ func TestIntegration_Resolution_NoneOptsOut(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if _, ok := p.Labels["kube-vnet.system/net.namespace"]; ok {
+		if _, ok := p.Labels["kube-vnet.system/net."+ns+".namespace"]; ok {
 			return fmt.Errorf("namespace label should be absent (=none opt-out), got labels=%v", p.Labels)
 		}
 		return nil
@@ -159,8 +159,8 @@ func TestIntegration_Resolution_VirtualNetworkBindingStamped(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		// Bare form because pod and vnet share the same namespace.
-		if got := p.Labels["kube-vnet.system/net.payments"]; got != "both" {
+		// Canonical FQ system label (per ADR 0033).
+		if got := p.Labels["kube-vnet.system/net."+ns+".payments"]; got != "both" {
 			return fmt.Errorf("payments label = %q, want both", got)
 		}
 		return nil
@@ -204,7 +204,7 @@ func TestIntegration_Resolution_BindingConflictIntersection(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if got := p.Labels["kube-vnet.system/net.v"]; got != "ingress" {
+		if got := p.Labels["kube-vnet.system/net."+ns+".v"]; got != "ingress" {
 			return fmt.Errorf("v label = %q, want ingress (intersection of both + ingress per ADR 0031); labels=%v", got, p.Labels)
 		}
 		return nil
@@ -240,7 +240,7 @@ func TestIntegration_Resolution_BindingDeletionStripsLabel(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if got := p.Labels["kube-vnet.system/net.v"]; got != "both" {
+		if got := p.Labels["kube-vnet.system/net."+ns+".v"]; got != "both" {
 			return fmt.Errorf("not yet stamped: %v", p.Labels)
 		}
 		return nil
@@ -255,7 +255,7 @@ func TestIntegration_Resolution_BindingDeletionStripsLabel(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if _, ok := p.Labels["kube-vnet.system/net.v"]; ok {
+		if _, ok := p.Labels["kube-vnet.system/net."+ns+".v"]; ok {
 			return fmt.Errorf("label should have been stripped, got %v", p.Labels)
 		}
 		return nil
@@ -294,7 +294,7 @@ func TestIntegration_Resolution_NamespaceBaselineOverridesCluster(t *testing.T) 
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 			return err
 		}
-		if got := p.Labels["kube-vnet.system/net.cluster"]; got != "both" {
+		if got := p.Labels["kube-vnet.system/net.kube-vnet-system-test.cluster"]; got != "both" {
 			return fmt.Errorf("cluster label = %q, want both (NS baseline override of default-egress)", got)
 		}
 		return nil
@@ -321,7 +321,7 @@ func TestIntegration_Resolution_BareNoneBlocksLowerTiers(t *testing.T) {
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
-	if got, ok := p.Labels["kube-vnet.system/net.cluster"]; ok {
+	if got, ok := p.Labels["kube-vnet.system/net.kube-vnet-system-test.cluster"]; ok {
 		t.Errorf("cluster system label should be absent (cluster baseline pinned bare none), got %q; labels=%v", got, p.Labels)
 	}
 }
@@ -356,7 +356,7 @@ func TestIntegration_Resolution_BindingLabelConflictIntersection(t *testing.T) {
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
-	if got, ok := p.Labels["kube-vnet.system/net.v"]; ok {
+	if got, ok := p.Labels["kube-vnet.system/net."+ns+".v"]; ok {
 		t.Errorf("v system label should be absent (intersection of ingress + egress = none), got %q; labels=%v", got, p.Labels)
 	}
 }

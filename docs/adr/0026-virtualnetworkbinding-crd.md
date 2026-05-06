@@ -1,6 +1,6 @@
 # 0026 — `VirtualNetworkBinding` CRD as the no-label alternative
 
-Status: Accepted (constrained further by [ADR 0031](0031-baseline-tier-resolution.md) — `podSelector` is required to be non-empty; the empty-selector case moves to `VirtualNetworkBaseline`)
+Status: Accepted (constrained further by [ADR 0031](0031-baseline-tier-resolution.md) — `podSelector` is required to be non-empty; the empty-selector case moves to `VirtualNetworkBaseline`. Refined by [ADR 0033](0033-canonical-fq-system-labels.md) — per-binding membership policies are no longer emitted; bindings now stamp the canonical FQ `kube-vnet.system/net.<homeNS>.<vnet>` label on selected pods like everything else, and the regular per-vnet membership policy covers them.)
 
 ## Context
 

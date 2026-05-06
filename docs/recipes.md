@@ -383,7 +383,7 @@ Effect:
 
 - The binding selects pods in `webapp` whose labels match `app: thirdparty-billing-agent`. Those pods are members of `platform/payments` for the binding's `direction` (default `both`).
 - The binding's status reports `Ready=True, PodsAttached` (or `NoPodsMatch`/`VirtualNetworkNotFound`/`NamespaceNotAllowed`/etc; see [`troubleshooting.md`](troubleshooting.md#my-virtualnetworkbinding-doesnt-attach-any-pods)).
-- The generator emits one extra membership policy in `webapp`, named `kube-vnet-payments-b-payments-thirdparty`, labeled `kube-vnet/binding=payments-thirdparty`.
+- The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.platform.payments=both` on the selected pods. Those pods are then covered by the regular per-`(vnet, namespace)` membership policy in `webapp` named `kube-vnet.platform.payments-<8hex>` — no separate per-binding policy is emitted (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)).
 
 ```bash
 # Inspect bindings cluster-wide.
@@ -392,8 +392,8 @@ kubectl get vnb -A
 # See which pods this binding attached.
 kubectl get vnb -n webapp payments-thirdparty -o jsonpath='{.status.attachedPods}'
 
-# Inspect the binding-driven policy.
-kubectl get networkpolicy -A -l kube-vnet/binding=payments-thirdparty
+# Inspect the membership policy that covers those pods.
+kubectl get networkpolicy -A -l kube-vnet/network=platform.payments
 ```
 
 Constraints worth knowing:

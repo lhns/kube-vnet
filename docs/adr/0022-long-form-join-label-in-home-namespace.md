@@ -1,6 +1,6 @@
 # 0022 — Long-form join label accepted in the home namespace
 
-Status: Accepted
+Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — the input ergonomic this ADR introduced is preserved; both bare and prefixed pod-input labels are still accepted. The operator's *output* (system labels stamped on pods, membership policy names) now normalizes to canonical fully-qualified `<homeNS>.<vnet>` form, so the previous output-side dual-policy emission is gone.)
 
 ## Context
 

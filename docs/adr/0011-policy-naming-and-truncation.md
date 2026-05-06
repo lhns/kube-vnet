@@ -1,6 +1,6 @@
 # 0011 — Policy naming and truncation
 
-Status: Accepted
+Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — policy names are now uniformly `kube-vnet.<homeNS>.<vnet>-<8hex>`; the bare-form `kube-vnet.<vnet>-<8hex>` and per-binding `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>` shapes documented here are obsolete. The truncate-and-hash logic this ADR contributes survives unchanged.)
 
 ## Context
 
