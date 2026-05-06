@@ -39,6 +39,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 31. [0031 — Baseline-tier resolution: replace bindings/CVNB with explicit defaults vs bindings](0031-baseline-tier-resolution.md)
 32. [0032 — Removing a chart-shipped CRD requires a two-release deprecation dance](0032-chart-crd-removal-two-release-pattern.md)
 33. [0033 — Canonical fully-qualified system labels; per-binding policies removed](0033-canonical-fq-system-labels.md)
+34. [0034 — Mutating admission webhook for synchronous pod-tier resolution (Proposed)](0034-admission-webhook-for-pod-resolution.md)
 
 ## Format
 

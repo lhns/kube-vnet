@@ -200,7 +200,7 @@ Resolve direction values into separate boolean labels for ingress and egress. Ge
 
 Webhook stamps labels on pod admission, closing the race window completely.
 
-**Deferred.** Webhook footprint (cert lifecycle, failure-policy, restart safety) is non-trivial. The race window via controller-managed stamping is bounded and fail-closed for new pods. If the eventual-consistency model proves insufficient for users with hard-security needs, a webhook can be added later as opt-in.
+**Deferred.** Webhook footprint (cert lifecycle, failure-policy, restart safety) is non-trivial. The race window via controller-managed stamping is bounded and fail-closed for new pods. If the eventual-consistency model proves insufficient for users with hard-security needs, a webhook can be added later as opt-in. Design captured in [ADR 0034](0034-admission-webhook-for-pod-resolution.md) (Proposed).
 
 ### Pod-level "no defaults" shortcut label
 
