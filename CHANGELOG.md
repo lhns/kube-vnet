@@ -10,6 +10,33 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cluster membership policy was silently not emitted.** The ADR 0033
+  Amendment (commit `6547290`) updated `CanonicalSuffix`, `canonicalVnetKey`,
+  and `PolicyName` to collapse the cluster vnet's canonical key to bare, but
+  missed `SystemLabelKey`. Result: `discoverMembers` was looking for the
+  FQ-keyed label (`kube-vnet.system/net.<operatorNS>.cluster`) while pods
+  carried the bare-keyed one (`kube-vnet.system/net.cluster`); the cluster
+  vnet appeared to have zero members and the operator emitted no membership
+  policy. Manifested with `ingressIsolationLevel=cluster` as cross-namespace
+  traffic being silently denied. Fixed by adding the same bare-collapse
+  special case to `SystemLabelKey`.
+- **Cluster vnet didn't re-reconcile on pod label changes.** A related
+  regression: `podEventHandler` parsed the bare cluster label `cluster`
+  into `(podNS, "cluster")` and enqueued a request for the cluster vnet at
+  the wrong namespace. The reconciler silently no-ops on the missing vnet
+  → the cluster vnet's policy didn't refresh until the next controller
+  resync (~10h). Fixed by adding `OperatorNamespace` back to
+  `VirtualNetworkReconciler` and routing bare-cluster suffixes to
+  `{operatorNS, cluster}` explicitly.
+- **`BareJoinLabelVnetNotFound` false-positive for `cluster` system vnet.**
+  Pods opting into the cluster system vnet via the legitimate bare label
+  `kube-vnet/net.cluster=<dir>` were emitting a misleading "vnet not found"
+  Warning event because `diagBare` looked for a `cluster` vnet in the pod's
+  namespace (the cluster system vnet lives in the operator NS only).
+  Fixed by short-circuiting reserved system-vnet names in `diagBare`.
+
 ### Removed
 
 - **`--elide-baseline-for` operator flag and `operator.elideBaselineFor` chart

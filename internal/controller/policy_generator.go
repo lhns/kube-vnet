@@ -188,11 +188,15 @@ func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
 }
 
 // SystemLabelKey returns the canonical operator-stamped label key for a
-// vnet, in the form `kube-vnet.system/net.<homeNS>.<vnet>`. Per ADR 0033,
-// this is the only shape used on the output side — pod stamps and policy
-// selectors both use it. System vnets follow the same rule (homeNS is the
-// pod's NS for `namespace`; the operator's release NS for `cluster`).
+// vnet. Per ADR 0033, the form is `kube-vnet.system/net.<homeNS>.<vnet>`;
+// per the ADR 0033 Amendment, the cluster system vnet collapses to bare
+// `kube-vnet.system/net.cluster` (cluster is the cluster-wide singleton —
+// the prefix carries no information). The resolution controller stamps
+// pods with the same shape, so the policy generator's selectors line up.
 func SystemLabelKey(homeNS, vnet string) string {
+	if vnet == SystemVnetCluster {
+		return LabelSystemNetPrefix + SystemVnetCluster
+	}
 	return LabelSystemNetPrefix + homeNS + "." + vnet
 }
 

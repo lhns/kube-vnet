@@ -91,12 +91,13 @@ func main() {
 	}
 
 	r := &controller.VirtualNetworkReconciler{
-		Client:      mgr.GetClient(),
-		APIReader:   mgr.GetAPIReader(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("kube-vnet"),
-		LabelPrefix: labelPrefix,
-		NSFilter:    nsFilter,
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("kube-vnet"),
+		LabelPrefix:       labelPrefix,
+		NSFilter:          nsFilter,
+		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up controller")

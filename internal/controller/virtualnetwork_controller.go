@@ -70,6 +70,12 @@ type VirtualNetworkReconciler struct {
 	Recorder    record.EventRecorder
 	LabelPrefix string
 	NSFilter    *NamespaceFilter
+	// OperatorNamespace is the chart's release namespace, where the cluster
+	// system vnet lives. Used by podEventHandler to route bare-cluster pod
+	// label changes to the correct vnet location (per ADR 0033 Amendment).
+	// Empty in test environments — handler falls back to old per-pod-NS
+	// routing, which no-ops but matches pre-Amendment behavior.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch
@@ -683,6 +689,17 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // affected vnet (per ADR 0030).
 func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.EventHandler {
 	enqueueOne := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS, suffix string) {
+		// Cluster is the cluster-wide singleton; per ADR 0033 Amendment its
+		// canonical suffix is bare `cluster`. The vnet lives in the operator's
+		// release NS, not in podNS — route accordingly. Without this special
+		// case, bare-cluster labels would hit case-1 below and enqueue the
+		// wrong-NS request that the reconciler silently no-ops on.
+		if suffix == SystemVnetCluster && r.OperatorNamespace != "" {
+			q.Add(reconcile.Request{NamespacedName: types.NamespacedName{
+				Namespace: r.OperatorNamespace, Name: SystemVnetCluster,
+			}})
+			return
+		}
 		parts := strings.SplitN(suffix, ".", 2)
 		switch len(parts) {
 		case 1:

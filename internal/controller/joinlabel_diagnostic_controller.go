@@ -121,8 +121,16 @@ func (r *JoinLabelDiagnosticReconciler) Reconcile(ctx context.Context, req ctrl.
 }
 
 // diagBare handles the bare form `kube-vnet/net.<X>`. The label is meaningful
-// only when a VirtualNetwork named X exists in the pod's own namespace.
+// only when a VirtualNetwork named X exists in the pod's own namespace, OR
+// when X is a reserved system-vnet name (`cluster` or `namespace`). The
+// `cluster` system vnet lives in the operator NS (not in the pod's NS), so a
+// naive Get-in-pod-NS would false-positive `BareJoinLabelVnetNotFound` on
+// every cluster-membership pod.
 func (r *JoinLabelDiagnosticReconciler) diagBare(ctx context.Context, pod *corev1.Pod, labelKey, vnetName string) {
+	if vnetName == SystemVnetCluster || vnetName == SystemVnetNamespace {
+		// Reserved system-vnet name; the bare label is always legitimate.
+		return
+	}
 	v := &vnetv1alpha1.VirtualNetwork{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: vnetName}, v)
 	if err == nil {

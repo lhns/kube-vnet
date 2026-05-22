@@ -82,12 +82,13 @@ func TestMain(m *testing.M) {
 	}
 
 	r := &VirtualNetworkReconciler{
-		Client:      mgr.GetClient(),
-		APIReader:   mgr.GetAPIReader(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("kube-vnet-test"),
-		LabelPrefix: DefaultLabelPrefix,
-		NSFilter:    NewNamespaceFilter(nil),
+		Client:            mgr.GetClient(),
+		APIReader:         mgr.GetAPIReader(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("kube-vnet-test"),
+		LabelPrefix:       DefaultLabelPrefix,
+		NSFilter:          NewNamespaceFilter(nil),
+		OperatorNamespace: "kube-vnet-system-test",
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup controller: %v\n", err)

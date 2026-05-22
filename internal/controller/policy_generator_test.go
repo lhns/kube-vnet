@@ -402,3 +402,52 @@ func equalStringSlice(a, b []string) bool {
 	}
 	return true
 }
+
+// TestGenerate_ClusterVnet_BareSelectorAndName covers the ADR 0033 Amendment
+// end-to-end at the generator level: the cluster vnet's emitted policy uses
+// bare `kube-vnet.system/net.cluster` as both the podSelector key and the
+// peer from podSelector key, and the policy name is bare `kube-vnet.cluster`.
+// Regression test for the bug where SystemLabelKey was missed and the
+// cluster vnet silently emitted no working policy.
+func TestGenerate_ClusterVnet_BareSelectorAndName(t *testing.T) {
+	out := Generate(GenerateInput{
+		VNet:        newVNet(SystemVnetCluster, "kube-vnet-system"),
+		MembersByNS: bidiMembers(map[string][]string{"traefik": {"traefik-1"}, "webapp": {"server-1"}}),
+	})
+	if len(out.Policies) != 2 {
+		t.Fatalf("expected 2 policies (one per member NS), got %d", len(out.Policies))
+	}
+	wantName := "kube-vnet." + SystemVnetCluster
+	wantKey := "kube-vnet.system/net." + SystemVnetCluster
+	for _, p := range out.Policies {
+		if !strings.HasPrefix(p.Name, wantName+"-") {
+			t.Errorf("policy name %q does not start with %q", p.Name, wantName+"-")
+		}
+		if got := p.Spec.PodSelector.MatchExpressions[0].Key; got != wantKey {
+			t.Errorf("ns=%s podSelector key=%q want %q", p.Namespace, got, wantKey)
+		}
+		for i, peer := range p.Spec.Ingress[0].From {
+			if got := peer.PodSelector.MatchExpressions[0].Key; got != wantKey {
+				t.Errorf("ns=%s ingress[0].from[%d].podSelector key=%q want %q",
+					p.Namespace, i, got, wantKey)
+			}
+		}
+	}
+}
+
+// TestSystemLabelKey_ClusterCollapses covers the ADR 0033 Amendment:
+// cluster collapses to bare, every other vnet keeps the FQ form.
+func TestSystemLabelKey_ClusterCollapses(t *testing.T) {
+	cases := []struct {
+		homeNS, vnet, want string
+	}{
+		{"kube-vnet-system", "cluster", "kube-vnet.system/net.cluster"},   // bare
+		{"traefik", "namespace", "kube-vnet.system/net.traefik.namespace"}, // per-NS
+		{"platform", "payments", "kube-vnet.system/net.platform.payments"}, // user vnet FQ
+	}
+	for _, tc := range cases {
+		if got := SystemLabelKey(tc.homeNS, tc.vnet); got != tc.want {
+			t.Errorf("SystemLabelKey(%q, %q) = %q, want %q", tc.homeNS, tc.vnet, got, tc.want)
+		}
+	}
+}
