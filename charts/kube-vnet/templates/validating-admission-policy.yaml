@@ -1,7 +1,7 @@
 {{- /*
 Validating admission for kube-vnet join-label values.
 
-Rejects Pod create/update where any label key matching `<labelPrefix>net.*`
+Rejects Pod create/update where any label key matching `kube-vnet/net.*`
 has a value outside the recognized direction enum: `both`, `ingress`,
 `egress`, `none`. Legacy aliases `true`, `false`, and the empty string
 were dropped per ADR 0030 (and the ADR 0021 2026-05-05 addendum).
@@ -36,7 +36,7 @@ spec:
     # double-quotes so CEL parses it as a string literal rather than as
     # `kube-vnet / net .` (identifier / division / identifier / accessor).
     - name: joinKeyPrefix
-      expression: {{ printf "\"%snet.\"" (default "kube-vnet/" .Values.operator.labelPrefix) | quote }}
+      expression: '"kube-vnet/net."'
     - name: validValues
       expression: '["both","ingress","egress","none"]'
   validations:

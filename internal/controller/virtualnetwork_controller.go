@@ -65,11 +65,10 @@ type VirtualNetworkReconciler struct {
 	// object and need a strongly-consistent read to make a follow-up decision
 	// (e.g. baseline GC must not skip due to a stale cache showing the just-
 	// deleted membership policy as present).
-	APIReader   client.Reader
-	Scheme      *runtime.Scheme
-	Recorder    record.EventRecorder
-	LabelPrefix string
-	NSFilter    *NamespaceFilter
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	NSFilter  *NamespaceFilter
 	// OperatorNamespace is the chart's release namespace, where the cluster
 	// system vnet lives. Used by podEventHandler to route bare-cluster pod
 	// label changes to the correct vnet location (per ADR 0033 Amendment).
@@ -153,7 +152,6 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	out := Generate(GenerateInput{
 		VNet:        vnet,
-		LabelPrefix: r.labelPrefix(),
 		MembersByNS: members,
 	})
 
@@ -233,17 +231,6 @@ func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string
 	return ns, nil
 }
 
-// labelPrefix returns the configured label prefix or the default, normalized to end in "/".
-func (r *VirtualNetworkReconciler) labelPrefix() string {
-	if r.LabelPrefix == "" {
-		return DefaultLabelPrefix
-	}
-	if !strings.HasSuffix(r.LabelPrefix, "/") {
-		return r.LabelPrefix + "/"
-	}
-	return r.LabelPrefix
-}
-
 // permits decides whether pods in `ns` are allowed to join `vnet` per spec.allowedNamespaces.
 // The home namespace is always permitted. The Selector path requires fetching the namespace
 // to read its labels; this is cached by the controller-runtime informer.
@@ -300,7 +287,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	members = map[string]map[Direction][]string{}
 	sysKey := SystemLabelKey(vnet.Namespace, vnet.Name)
 
-	userPrefix := r.labelPrefix()
+	userPrefix := DefaultLabelPrefix
 	userBareKey := userPrefix + "net." + vnet.Name
 	userPrefixedKey := userPrefix + "net." + vnet.Namespace + "." + vnet.Name
 	systemVnet := isSystemVnetName(vnet.Name)
@@ -650,10 +637,9 @@ func JoinLabelPodPredicate(labelPrefix string) predicate.Predicate {
 // SetupWithManager wires watches: VirtualNetwork (primary), Pod (label-prefix predicate
 // + handler.Funcs to see old+new on Update), NetworkPolicy (managed-by predicate, drift).
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	prefix := r.labelPrefix()
-	keyPrefix := prefix + "net."
+	keyPrefix := DefaultLabelPrefix + "net."
 
-	podPredicate := JoinLabelPodPredicate(prefix)
+	podPredicate := JoinLabelPodPredicate(DefaultLabelPrefix)
 
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue

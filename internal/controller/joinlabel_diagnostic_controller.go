@@ -51,24 +51,13 @@ const (
 // ADR 0027.
 type JoinLabelDiagnosticReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	Recorder    record.EventRecorder
-	LabelPrefix string
-	NSFilter    *NamespaceFilter
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+	NSFilter *NamespaceFilter
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
-
-func (r *JoinLabelDiagnosticReconciler) labelPrefix() string {
-	if r.LabelPrefix == "" {
-		return DefaultLabelPrefix
-	}
-	if !strings.HasSuffix(r.LabelPrefix, "/") {
-		return r.LabelPrefix + "/"
-	}
-	return r.LabelPrefix
-}
 
 func (r *JoinLabelDiagnosticReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
@@ -94,7 +83,7 @@ func (r *JoinLabelDiagnosticReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, nil
 	}
 
-	prefix := r.labelPrefix()
+	prefix := DefaultLabelPrefix
 	keyPrefix := prefix + "net."
 
 	for k, v := range pod.Labels {
@@ -145,7 +134,7 @@ func (r *JoinLabelDiagnosticReconciler) diagBare(ctx context.Context, pod *corev
 		"label %q points at no VirtualNetwork in namespace %q. The bare form is only honored in the vnet's home namespace. "+
 			"To join a vnet hosted in another namespace, use the prefixed form %q instead.",
 		labelKey, pod.Namespace,
-		fmt.Sprintf("%snet.<homeNS>.%s", r.labelPrefix(), vnetName),
+		fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, vnetName),
 	)
 }
 
@@ -218,6 +207,6 @@ func (r *JoinLabelDiagnosticReconciler) permits(ctx context.Context, v *vnetv1al
 func (r *JoinLabelDiagnosticReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("joinlabel-diagnostic").
-		For(&corev1.Pod{}, builder.WithPredicates(JoinLabelPodPredicate(r.labelPrefix()))).
+		For(&corev1.Pod{}, builder.WithPredicates(JoinLabelPodPredicate(DefaultLabelPrefix))).
 		Complete(r)
 }

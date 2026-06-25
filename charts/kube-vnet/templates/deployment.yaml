@@ -39,7 +39,6 @@ spec:
             {{- end }}
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.operator.healthProbeBindAddress }}
-            - --label-prefix={{ .Values.operator.labelPrefix }}
             {{- with .Values.operator.disabledNamespaces }}
             - --disabled-namespaces={{ join "," . }}
             {{- end }}

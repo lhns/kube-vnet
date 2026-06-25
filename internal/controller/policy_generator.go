@@ -163,7 +163,6 @@ type InvalidJoiner struct {
 // regular members.
 type GenerateInput struct {
 	VNet        *vnetv1alpha1.VirtualNetwork
-	LabelPrefix string
 	MembersByNS map[string]map[Direction][]string
 }
 
@@ -303,10 +302,6 @@ func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == Directi
 // Owner references are set only on policies in the home namespace
 // (Kubernetes rejects cross-namespace owner refs).
 func Generate(in GenerateInput) GenerateOutput {
-	prefix := in.LabelPrefix
-	if prefix == "" {
-		prefix = DefaultLabelPrefix
-	}
 	vnet := in.VNet
 	homeNS := vnet.Namespace
 	netID := homeNS + "." + vnet.Name

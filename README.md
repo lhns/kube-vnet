@@ -259,7 +259,6 @@ For more, see [`docs/concepts.md`](docs/concepts.md), [`docs/install.md`](docs/i
 | `--metrics-bind-address` | `:8080` | Prometheus metrics endpoint |
 | `--health-probe-bind-address` | `:8081` | health/readiness endpoint |
 | `--leader-elect` | `false` | enable leader election (turn on for HA) |
-| `--label-prefix` | `kube-vnet/` | prefix for the join label keys |
 | `--disabled-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
 
 Baseline contents come from the `ClusterVirtualNetworkBaseline` CR, configured in the chart via `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}`. See [`docs/reference/configuration.md`](docs/reference/configuration.md).

@@ -10,6 +10,25 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Removed
+
+- **`--label-prefix` flag and `operator.labelPrefix` chart value removed.**
+  The flag governed only the pod-input join label prefix (`<prefix>net.<vnet>`),
+  not the operator-output labels (`kube-vnet/managed-by`, etc.), system labels
+  (`kube-vnet.system/*`), or the `kube-vnet/disabled` namespace annotation —
+  making it a partial knob that never actually isolated the operator from a
+  hypothetical second `kube-vnet/`-using operator. Every comparable operator
+  (cert-manager, prometheus-operator, istio) hardcodes its label prefix as
+  part of its identity; kube-vnet now does the same. If you had set a custom
+  prefix, switch your pods' join labels back to `kube-vnet/net.<vnet>` before
+  upgrade.
+
+### Changed
+
+- **`POD_NAMESPACE` env var centralized at operator startup.** Previously
+  read inline at every reconciler construction; now read once into a local,
+  with a single warning emitted if unset. Behavior unchanged.
+
 ### Added
 
 - **Helm pre-delete hook cleans up operator-managed NetworkPolicies on

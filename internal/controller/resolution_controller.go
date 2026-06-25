@@ -47,9 +47,8 @@ const AnnotationResolvedGeneration = "kube-vnet.system/resolved-generation"
 // re-resolved. Disabled namespaces are skipped entirely.
 type ResolutionReconciler struct {
 	client.Client
-	Scheme      *runtime.Scheme
-	NSFilter    *NamespaceFilter
-	LabelPrefix string
+	Scheme   *runtime.Scheme
+	NSFilter *NamespaceFilter
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -213,11 +212,7 @@ func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod
 // prefixed (`<homeNS>.<vnet>`); both forms canonicalize to the same FQ
 // VnetKey.
 func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
-	prefix := r.LabelPrefix
-	if prefix == "" {
-		prefix = DefaultLabelPrefix
-	}
-	userNetPrefix := prefix + "net."
+	userNetPrefix := DefaultLabelPrefix + "net."
 	var out []ResolutionRule
 	for k, v := range pod.Labels {
 		if !strings.HasPrefix(k, userNetPrefix) {

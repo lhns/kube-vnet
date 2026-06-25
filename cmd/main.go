@@ -42,7 +42,6 @@ func main() {
 		metricsAddr        string
 		probeAddr          string
 		enableLeaderElect  bool
-		labelPrefix        string
 		disabledNamespaces string
 		showVersion        bool
 	)
@@ -50,7 +49,6 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
-	flag.StringVar(&labelPrefix, "label-prefix", controller.DefaultLabelPrefix, "label prefix for join labels (must end with /)")
 	flag.StringVar(&disabledNamespaces, "disabled-namespaces",
 		"kube-system,kube-public,kube-node-lease",
 		"comma-separated namespaces the operator never touches (no baseline, no "+
@@ -70,12 +68,25 @@ func main() {
 	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	// POD_NAMESPACE is the operator's release namespace, sourced from the
+	// downward API on the Deployment. It anchors the cluster system vnet
+	// (per ADR 0033 Amendment), the bare-cluster pod-event routing (per
+	// the 059764d fix), and leader-election lease placement. If unset, the
+	// operator runs but several features degrade silently — surface a clear
+	// warning at startup instead of repeating empty-check logic in each
+	// reconciler.
+	operatorNS := os.Getenv("POD_NAMESPACE")
+	if operatorNS == "" {
+		setupLog.Info("POD_NAMESPACE unset; cluster system vnet ownership, " +
+			"bare-cluster pod-event routing, and leader-election will " +
+			"degrade — set it via the downward API on the operator Deployment")
+	}
+
 	disabled := splitAndTrim(disabledNamespaces)
-	if ownNS := os.Getenv("POD_NAMESPACE"); ownNS != "" {
-		disabled = append(disabled, ownNS)
+	if operatorNS != "" {
+		disabled = append(disabled, operatorNS)
 	}
 	nsFilter := controller.NewNamespaceFilter(disabled)
-
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                  scheme,
@@ -83,7 +94,7 @@ func main() {
 		HealthProbeBindAddress:  probeAddr,
 		LeaderElection:          enableLeaderElect,
 		LeaderElectionID:        "kube-vnet.lhns.de",
-		LeaderElectionNamespace: os.Getenv("POD_NAMESPACE"),
+		LeaderElectionNamespace: operatorNS,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
@@ -95,9 +106,8 @@ func main() {
 		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		Recorder:          mgr.GetEventRecorderFor("kube-vnet"),
-		LabelPrefix:       labelPrefix,
 		NSFilter:          nsFilter,
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		OperatorNamespace: operatorNS,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up controller")
@@ -132,10 +142,9 @@ func main() {
 	}
 
 	resReconciler := &controller.ResolutionReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		NSFilter:    nsFilter,
-		LabelPrefix: labelPrefix,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: nsFilter,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")
@@ -147,7 +156,7 @@ func main() {
 		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		NSFilter:          nsFilter,
-		OperatorNamespace: os.Getenv("POD_NAMESPACE"),
+		OperatorNamespace: operatorNS,
 	}
 	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up system vnet reconciler")
@@ -155,11 +164,10 @@ func main() {
 	}
 
 	diagReconciler := &controller.JoinLabelDiagnosticReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("kube-vnet-joinlabel"),
-		LabelPrefix: labelPrefix,
-		NSFilter:    nsFilter,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("kube-vnet-joinlabel"),
+		NSFilter: nsFilter,
 	}
 	if err := diagReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up join-label diagnostic reconciler")
@@ -177,7 +185,6 @@ func main() {
 
 	setupLog.Info("starting kube-vnet operator",
 		"version", version, "commit", commit, "buildDate", date,
-		"labelPrefix", labelPrefix,
 		"disabled", fmt.Sprintf("%v", disabled))
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "manager exited with error")

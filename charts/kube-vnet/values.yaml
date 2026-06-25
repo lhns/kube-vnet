@@ -14,9 +14,6 @@ replicaCount: 1
 
 # Operator flags. See README "Configuration" for the full description of each.
 operator:
-  # Label-key prefix for join labels. Must end with "/".
-  labelPrefix: "kube-vnet/"
-
   # Namespaces the operator never touches at all (no baseline, no membership
   # policies, pods not eligible peers in any vnet, bindings ignored). Mirrors
   # the per-namespace `kube-vnet/disabled=true` annotation. The Helm release

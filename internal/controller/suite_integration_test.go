@@ -86,7 +86,6 @@ func TestMain(m *testing.M) {
 		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		Recorder:          mgr.GetEventRecorderFor("kube-vnet-test"),
-		LabelPrefix:       DefaultLabelPrefix,
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
 	}
@@ -112,7 +111,6 @@ func TestMain(m *testing.M) {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		Recorder:    mgr.GetEventRecorderFor("kube-vnet-joinlabel-test"),
-		LabelPrefix: DefaultLabelPrefix,
 		NSFilter:    NewNamespaceFilter(nil),
 	}
 	if err := diagReconciler.SetupWithManager(mgr); err != nil {
@@ -125,7 +123,6 @@ func TestMain(m *testing.M) {
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
 		NSFilter:    NewNamespaceFilter(nil),
-		LabelPrefix: DefaultLabelPrefix,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup resolution reconciler: %v\n", err)
