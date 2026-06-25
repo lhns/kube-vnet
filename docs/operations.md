@@ -251,6 +251,29 @@ kubectl get vnet -A
 
 If `READY` for any vnet is False, see [`troubleshooting.md`](troubleshooting.md).
 
+### "I just ran `helm uninstall` — did the cleanup actually happen?"
+
+The chart's pre-delete hook (ADR 0036) removes operator-managed NetworkPolicies before Helm tears down the controller. To verify after-the-fact:
+
+```bash
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
+# Expected: No resources found in all namespaces.
+```
+
+If the query returns any policies, one of these happened:
+
+- You used `helm uninstall --no-hooks` (the hook never fired).
+- You removed the operator via `kubectl delete -k` / `kubectl delete crd` instead of `helm uninstall` — chart hooks only run for `helm uninstall`.
+- The pre-delete hook Job failed mid-stream. Check `helm history kube-vnet -n kube-vnet-system` to confirm the release status, and look for a leftover Job in the release namespace: `kubectl get jobs -n kube-vnet-system -l app.kubernetes.io/component=cleanup`.
+
+In any of those cases, clean up manually with the same selector the hook uses:
+
+```bash
+kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
+```
+
+After this, every previously-managed namespace returns to Kubernetes default-allow ingress. CRDs and CR instances (with `helm.sh/resource-policy: keep`) are intentionally preserved so a future `helm install` resumes cleanly — see ADR 0036.
+
 ### "I'm rolling out a new operator version"
 
 Helm:
