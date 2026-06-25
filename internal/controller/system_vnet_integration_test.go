@@ -27,9 +27,6 @@ func TestIntegration_SystemVnet_NamespaceCreation(t *testing.T) {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetNamespace}, v)
 	})
 
-	if got := v.Labels[LabelSystem]; got != LabelSystemValue {
-		t.Errorf("system label = %q, want %q", got, LabelSystemValue)
-	}
 	if got := v.Labels[LabelManagedBy]; got != LabelManagedByValue {
 		t.Errorf("managed-by label = %q, want %q", got, LabelManagedByValue)
 	}
@@ -82,7 +79,6 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 			Name:      SystemVnetCluster,
 			Namespace: ns,
 			Labels: map[string]string{
-				LabelSystem:    LabelSystemValue,
 				LabelManagedBy: LabelManagedByValue,
 			},
 		},

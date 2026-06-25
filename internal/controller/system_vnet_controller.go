@@ -37,7 +37,7 @@ const (
 // Reconciler is keyed on the cluster-scoped Namespace name. Two trigger paths:
 //   - Namespace events: ensure the per-namespace `namespace` vnet (if managed)
 //     and ensure the cluster vnet (if this is the operator's namespace).
-//   - VirtualNetwork events filtered by LabelSystem: re-enqueue the namespace
+//   - VirtualNetwork events filtered by LabelManagedBy: re-enqueue the namespace
 //     so a deleted system vnet is recreated.
 //
 // See ADR 0030.
