@@ -218,6 +218,33 @@ jobs:
       - name: run e2e tests
         run: go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
 
+      - name: helm uninstall + assert cleanup
+        run: |
+          set -euxo pipefail
+
+          # Real helm uninstall. The ADR 0036 pre-delete hook should fire,
+          # delete every operator-managed NetworkPolicy cluster-wide, then
+          # Helm tears down the rest of the release.
+          helm uninstall kube-vnet --namespace kube-vnet-system --wait --timeout 3m
+
+          # apiserver finalizer processing can lag a moment after the hook's
+          # `kubectl delete --wait=true` returns. 5s is generous.
+          sleep 5
+
+          # ASSERT: zero operator-managed NetworkPolicies remain anywhere.
+          # If the hook silently no-op'd (wrong selector, RBAC error swallowed,
+          # selector mismatch with what the operator actually emitted), this
+          # catches it.
+          remaining=$(kubectl get networkpolicy -A \
+            -l kube-vnet.system/managed-by=kube-vnet \
+            --no-headers 2>/dev/null | wc -l)
+          if [ "$remaining" -ne 0 ]; then
+            echo "FAIL: $remaining operator-managed NetworkPolicies survived helm uninstall."
+            kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet -o yaml
+            exit 1
+          fi
+          echo "OK: 0 operator-managed NetworkPolicies post-uninstall."
+
       - name: dump diagnostics on failure
         if: failure()
         run: |
@@ -233,6 +260,9 @@ jobs:
           kubectl get vnet -A -o yaml || true
           echo "===== networkpolicies ====="
           kubectl get networkpolicy -A -o yaml || true
+          echo "===== cleanup hook Job(s) ====="
+          kubectl get jobs -A -l app.kubernetes.io/component=cleanup -o yaml 2>&1 || true
+          kubectl logs -n kube-vnet-system -l app.kubernetes.io/component=cleanup --tail=200 2>&1 || true
 
   # e2e-helm-namespace mirrors e2e-helm but installs with
   # ingressIsolationLevel=namespace and runs the namespace-isolation test
