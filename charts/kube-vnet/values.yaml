@@ -162,6 +162,9 @@ terminationGracePeriodSeconds: 10
 cleanup:
   enabled: true
   image:
-    repository: bitnami/kubectl
-    tag: "1.30"
+    # Official kubectl image published by the Kubernetes SIG Release team
+    # (not a single-vendor dep). Available from K8s 1.30+ release cycle.
+    # See: https://github.com/kubernetes/release/blob/master/cmd/kubepkg/cmd/kubectl.go
+    repository: registry.k8s.io/kubectl
+    tag: "v1.30.0"
     pullPolicy: IfNotPresent
