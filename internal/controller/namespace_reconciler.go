@@ -31,7 +31,7 @@ import (
 //   - Otherwise apply the deny-all baseline.
 //
 // The reconciler also watches `NetworkPolicy` events scoped to baseline
-// policies (label `kube-vnet/role=baseline`) so a manual delete of the
+// policies (label `kube-vnet.system/role=baseline`) so a manual delete of the
 // baseline is detected and the policy is re-applied within one reconcile
 // cycle. This mirrors the drift-correction behavior the
 // VirtualNetworkReconciler provides for membership policies.

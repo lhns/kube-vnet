@@ -1,6 +1,6 @@
 # 0010 — Cross-namespace cleanup via the network label
 
-Status: Accepted
+Status: Accepted (cleanup label key renamed from `kube-vnet/network` to `kube-vnet.system/network` per [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md); the cross-namespace cleanup mechanism described here is unchanged)
 
 ## Context
 
@@ -14,11 +14,11 @@ When a VirtualNetwork is deleted, every `NetworkPolicy` it generated must be rem
   ```yaml
   metadata:
     labels:
-      kube-vnet/managed-by: kube-vnet
-      kube-vnet/network: <homeNamespace>.<vnetName>
+      kube-vnet.system/managed-by: kube-vnet
+      kube-vnet.system/network: <homeNamespace>.<vnetName>
   ```
 
-- On VirtualNetwork deletion (or 404 on a Get during reconcile), the operator lists all policies cluster-wide matching `kube-vnet/network=<home>.<name>` and deletes them.
+- On VirtualNetwork deletion (or 404 on a Get during reconcile), the operator lists all policies cluster-wide matching `kube-vnet.system/network=<home>.<name>` and deletes them.
 - The same label is the source of truth for stale-policy detection during normal reconciliation: list by label, diff against the desired set, delete the difference.
 
 ## Consequences
@@ -26,4 +26,4 @@ When a VirtualNetwork is deleted, every `NetworkPolicy` it generated must be rem
 - **Pro**: Cross-namespace cleanup is robust without requiring privileged tricks or finalizers in foreign namespaces.
 - **Pro**: A label-list query is cheap and uses the existing watch cache.
 - **Con**: If the operator is offline when a VirtualNetwork is deleted, foreign-namespace policies linger until the next reconcile of that VirtualNetwork (which won't happen if it's already gone). Mitigated by the periodic 10-minute resync detecting the 404 and triggering cleanup. Long offline windows could leak policies; envtest can cover this (deferred per ADR 0014).
-- **Convention**: User-applied policies must NOT carry the `kube-vnet/managed-by=kube-vnet` label, or the operator will treat them as its own and delete them. Documented in the README.
+- **Convention**: User-applied policies must NOT carry the `kube-vnet.system/managed-by=kube-vnet` label, or the operator will treat them as its own and delete them. Documented in the README.

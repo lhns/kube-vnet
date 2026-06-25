@@ -62,7 +62,7 @@ kube_vnet_networks_total
 |---|---|
 | **Type** | Gauge |
 | **Labels** | none |
-| **Description** | Number of `NetworkPolicy` resources currently labeled `kube-vnet/managed-by=kube-vnet` (membership policies + baselines combined). |
+| **Description** | Number of `NetworkPolicy` resources currently labeled `kube-vnet.system/managed-by=kube-vnet` (membership policies + baselines combined). |
 | **When it changes** | Updated by `MetricsCollector` every 30 seconds. |
 
 Sample query — current managed-policy count:

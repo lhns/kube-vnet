@@ -333,7 +333,7 @@ func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 	var lastOut string
 	for time.Now().Before(deadline) {
 		out, _ := kubectl(t, "get", "networkpolicy", "-n", ns,
-			"-l", "kube-vnet/role=membership", "-o", "name")
+			"-l", "kube-vnet.system/role=membership", "-o", "name")
 		lastOut = strings.TrimSpace(out)
 		if lastOut == "" {
 			return

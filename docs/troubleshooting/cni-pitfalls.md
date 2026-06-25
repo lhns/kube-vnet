@@ -11,7 +11,7 @@ For the symptom-first index, see [`../troubleshooting.md`](../troubleshooting.md
 1. **Confirm the operator's policies exist.**
 
    ```bash
-   kubectl get netpol -A -l kube-vnet/managed-by=kube-vnet
+   kubectl get netpol -A -l kube-vnet.system/managed-by=kube-vnet
    ```
 
    If the expected baseline + membership policies are missing, the issue is the operator (open the [troubleshooting index](../troubleshooting.md)). If they're present, continue.

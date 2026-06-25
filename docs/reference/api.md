@@ -162,7 +162,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | True | `ResolutionConflict` | "<N> pod(s) with cross-source resolution conflicts: <ns/pod>, …" | At least one pod has conflicting `Direction` values from two distinct resolution sources for this vnet (e.g. a binding says `both` while a pod label says `egress`, or two bindings disagree). The conflict is intersected fail-closed and the per-pod conflict annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. See [ADR 0033](../adr/0033-canonical-fq-system-labels.md). |
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
-| True | `NameCollision` | (planned; tracked) | A user-managed `NetworkPolicy` with the same name kube-vnet wants to use exists and doesn't carry the `kube-vnet/managed-by` label. The operator refuses to overwrite. |
+| True | `NameCollision` | (planned; tracked) | A user-managed `NetworkPolicy` with the same name kube-vnet wants to use exists and doesn't carry the `kube-vnet.system/managed-by` label. The operator refuses to overwrite. |
 
 The full machine-readable reason constants live in `internal/controller/virtualnetwork_controller.go` (the `Reason*` block).
 
@@ -197,7 +197,7 @@ status:
       name: kube-vnet-payments-webapp
 ```
 
-This list does **not** include the `kube-vnet` baseline (see [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)). The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet/role=baseline`).
+This list does **not** include the `kube-vnet` baseline (see [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)). The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet.system/role=baseline`).
 
 ### `status.observedGeneration`
 
@@ -234,7 +234,7 @@ There is currently no admission webhook. The CEL rule covers the only known inva
 | Pod added/labeled | Pod-watch fires; reconciler enqueues the relevant vnet(s); membership updated; policy created/updated; baseline installed in the namespace if it wasn't already. |
 | Pod removed/un-labeled | Same as above; membership updated; policy may shrink (peer rules) or be deleted (if the namespace empties); baseline GC'd if the namespace has no managed members. |
 | Spec edit | Reconciler enqueues; new desired state computed; SSA reconciles; stale policies (e.g. for namespaces no longer in `allowedNamespaces`) deleted. |
-| Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet/network=<homeNS>.<name>` and deletes them all (including in foreign namespaces). Baseline GC'd in each touched namespace. |
+| Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all (including in foreign namespaces). Baseline GC'd in each touched namespace. |
 
 For the full reconciliation algorithm see [`../architecture.md`](../architecture.md).
 

@@ -127,8 +127,8 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// implicitly disabled in cmd/main.go as a privilege boundary, and per-
 	// namespace system vnets in user-disabled namespaces still need to exist
 	// so resolution works the moment the namespace becomes managed again.
-	// The system-vnet VAP keeps the kube-vnet/system label honest.
-	isSystem := vnet.Labels[LabelSystem] == LabelSystemValue
+	// The system-vnet VAP keeps the kube-vnet.system/managed-by label honest.
+	isSystem := vnet.Labels[LabelManagedBy] == LabelManagedByValue
 	homeNS, err := r.getNamespace(ctx, vnet.Namespace)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -748,7 +748,7 @@ func (r *VirtualNetworkReconciler) bindingToVNet(_ context.Context, obj client.O
 }
 
 // policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork
-// via the kube-vnet/network=<homeNS>.<vnet> label.
+// via the kube-vnet.system/network=<homeNS>.<vnet> label.
 func (r *VirtualNetworkReconciler) policyToVNet(_ context.Context, obj client.Object) []reconcile.Request {
 	v := obj.GetLabels()[LabelNetwork]
 	if v == "" {

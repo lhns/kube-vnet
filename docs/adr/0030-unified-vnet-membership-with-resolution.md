@@ -1,6 +1,6 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity)
+Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity; the operator-owned label keys introduced here — `kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system` — were moved to the `kube-vnet.system/` prefix by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md), generalizing the convention already used for stamped pod labels)
 
 Date: 2026-05-05
 
@@ -52,7 +52,7 @@ Two vnets are operator-managed:
 - `namespace` — one per managed namespace. Membership in this vnet at `direction=both` for every pod produces same-NS connectivity (the previous `mode=namespace`).
 - `cluster` — one cluster-wide. Membership at `direction=both` produces allow-from-everywhere ingress (the previous `mode=none`).
 
-Both are real `VirtualNetwork` CRs marked with `kube-vnet/system=true`, recreated on delete, removed on operator uninstall, protected from user mutation by a ValidatingAdmissionPolicy.
+Both are real `VirtualNetwork` CRs marked with `kube-vnet.system/managed-by=kube-vnet`, recreated on delete, removed on operator uninstall, protected from user mutation by a ValidatingAdmissionPolicy.
 
 The previous three isolation modes map to three operator-default-memberships choices:
 

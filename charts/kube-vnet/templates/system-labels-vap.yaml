@@ -1,16 +1,20 @@
 {{- /*
-Validating admission for kube-vnet.system/* labels on Pods.
+Validating admission for kube-vnet.system/* labels on operator-managed
+resources: Pods (resolution-controller-stamped membership labels) and
+NetworkPolicies + VirtualNetworks (operator-owned `managed-by`, `network`,
+`role` labels per ADR 0037).
 
-These labels are operator-managed (stamped by the resolution controller per
-ADR 0030). Users must not set, change, or delete them. The operator's
-ServiceAccount is exempted via a username-prefix check so the resolution
-controller's PATCH calls go through.
+These labels are operator-managed. Users must not set, change, or delete
+them. The operator's ServiceAccount is exempted via a username-prefix check
+so the operator's own writes go through.
 
 Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
-older clusters this template renders nothing; the resolution controller
-will overwrite any user-set value within one reconcile cycle anyway.
+older clusters this template renders nothing; the operator's drift
+correction will overwrite any user-set value within one reconcile cycle
+anyway.
 
-See ADR 0030.
+See ADR 0030 (the convention's origin for pod labels) and ADR 0037 (the
+generalization to NetworkPolicy and VirtualNetwork labels).
 */}}
 {{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
 {{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
@@ -29,6 +33,14 @@ spec:
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
         resources:   ["pods"]
+      - apiGroups:   ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["networkpolicies"]
+      - apiGroups:   ["kube-vnet.lhns.de"]
+        apiVersions: ["v1alpha1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["virtualnetworks"]
   variables:
     # The system-label prefix kube-vnet.system/ is reserved for operator output.
     - name: systemPrefix
@@ -62,7 +74,7 @@ spec:
             (k in object.metadata.?labels.orValue({}))
           )
         )
-      message: "kube-vnet.system/* labels are operator-managed; users must not set, change, or remove them. See ADR 0030."
+      message: "kube-vnet.system/* labels are operator-managed; users must not set, change, or remove them. See ADR 0030 and ADR 0037."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

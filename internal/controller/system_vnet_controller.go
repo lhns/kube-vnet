@@ -20,16 +20,6 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// LabelSystem marks operator-owned "system" VirtualNetwork resources (the
-// per-namespace `namespace` vnet and the cluster-wide `cluster` vnet). User
-// vnets do not carry this label. See ADR 0030.
-const LabelSystem = "kube-vnet/system"
-
-// LabelSystemValue is the value placed on system vnets so they can be
-// label-selected and so a future ValidatingAdmissionPolicy can reject user
-// mutation of them.
-const LabelSystemValue = "true"
-
 // System vnet names. These are reserved — a user-authored VirtualNetwork with
 // the same name in a managed namespace will collide with the operator-managed
 // system vnet (which is recreated on delete). On upgrade, users with such
@@ -97,7 +87,7 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// cluster vnet's home namespace is the operator namespace, which is
 	// implicitly added to disabledNamespaces by cmd/main.go as a privilege
 	// boundary; VirtualNetworkReconciler.Reconcile short-circuits the
-	// home-namespace-excluded check on the kube-vnet/system label so the
+	// home-namespace-excluded check on the kube-vnet.system/managed-by label so the
 	// vnet still reconciles to Ready.
 	if ns.Name == r.OperatorNamespace {
 		if err := r.ensureClusterSystemVnet(ctx); err != nil {
@@ -136,7 +126,7 @@ func (r *SystemVnetReconciler) deleteNamespaceSystemVnet(ctx context.Context, ns
 	// operator created it). A user-authored vnet named `namespace` would be
 	// rejected by the reserved-name VAP, but this guard protects against the
 	// VAP being absent (older clusters) or disabled.
-	if v.Labels[LabelSystem] != LabelSystemValue {
+	if v.Labels[LabelManagedBy] != LabelManagedByValue {
 		return nil
 	}
 	if err := r.Delete(ctx, v); err != nil && !apierrors.IsNotFound(err) {
@@ -165,7 +155,6 @@ func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.Virtua
 			Namespace: namespace,
 			Name:      name,
 			Labels: map[string]string{
-				LabelSystem:    LabelSystemValue,
 				LabelManagedBy: LabelManagedByValue,
 			},
 		},
@@ -182,12 +171,12 @@ func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vne
 }
 
 func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Drift-correct: a VirtualNetwork delete event labelled kube-vnet/system=true
+	// Drift-correct: a VirtualNetwork delete event labelled kube-vnet.system/managed-by=kube-vnet
 	// re-enqueues its namespace (or the operator namespace if it was the cluster
 	// vnet) so the system vnet is recreated on the next reconcile pass.
 	systemPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		l := obj.GetLabels()
-		return l[LabelSystem] == LabelSystemValue
+		return l[LabelManagedBy] == LabelManagedByValue
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).

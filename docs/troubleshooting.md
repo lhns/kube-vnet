@@ -233,7 +233,7 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
    Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a `kube-vnet`-named deny-all baseline. If it's missing, the namespace is `disabled` (operator stays out entirely).
 
    ```bash
-   kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet,kube-vnet/role=baseline
+   kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.system/role=baseline
    ```
 
 3. **If you want every namespace ingress-deny-by-default**, you have it already by default. To open up specific pods, make them members of a vnet (typically the system `cluster` or `namespace` vnet, or a user-defined one).
@@ -241,7 +241,7 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
 4. **Are the membership policies installed in both namespaces?**
 
    ```bash
-   kubectl get networkpolicy -A -l kube-vnet/network=<home-ns>.<vnet>
+   kubectl get networkpolicy -A -l kube-vnet.system/network=<home-ns>.<vnet>
    ```
 
    You should see one per namespace that has members. If a namespace is missing, members in that namespace either don't exist (the pods don't carry the join label) or are silently dropped (excluded namespace; see "My pod has the join label but isn't a member").
@@ -326,7 +326,7 @@ Check the `Ready` condition's reason:
 Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:
 
 ```bash
-kubectl get networkpolicy -A -l kube-vnet/network=<homeNS>.<vnet>
+kubectl get networkpolicy -A -l kube-vnet.system/network=<homeNS>.<vnet>
 ```
 
 The membership policy is named `kube-vnet.<homeNS>.<vnet>-<8hex>` and lives in each member-bearing namespace.
@@ -377,7 +377,7 @@ The reason explains what to fix.
 | `InvalidName` | The vnet's name has a dot or other invalid character. | Recreate the vnet with a DNS-1123 label name (lowercase alphanumeric and hyphens, no dots). |
 | `HomeNamespaceExcluded` | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. | Move the vnet to a managed namespace, or remove the namespace from the disabled list / annotation. |
 | `ApplyFailed` | The operator hit an apiserver error trying to apply a `NetworkPolicy`. | `kubectl logs deploy/kube-vnet-controller -n kube-vnet-system | grep apply` for the error detail. |
-| `NameCollision` | A user-managed `NetworkPolicy` exists with the same name kube-vnet wants to use, and it doesn't carry the `kube-vnet/managed-by` label. | Rename the user policy, or move it elsewhere. |
+| `NameCollision` | A user-managed `NetworkPolicy` exists with the same name kube-vnet wants to use, and it doesn't carry the `kube-vnet.system/managed-by` label. | Rename the user policy, or move it elsewhere. |
 
 ---
 
@@ -509,13 +509,13 @@ kubectl get vnet -n <ns> <name> -o yaml
 kubectl describe vnet -n <ns> <name>
 
 # All operator-managed NetworkPolicies
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 
 # Just the baselines
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet,kube-vnet/role=baseline
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.system/role=baseline
 
 # Just the membership policies for a specific vnet
-kubectl get networkpolicy -A -l kube-vnet/network=<home-ns>.<vnet-name>
+kubectl get networkpolicy -A -l kube-vnet.system/network=<home-ns>.<vnet-name>
 
 # What's the operator running with?
 kubectl get deploy -n kube-vnet-system kube-vnet-controller \

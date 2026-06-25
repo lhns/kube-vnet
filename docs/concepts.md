@@ -186,7 +186,7 @@ Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 003
 
 **Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
 
-The baseline `NetworkPolicy` is named `kube-vnet` and labeled `kube-vnet/managed-by=kube-vnet, kube-vnet/role=baseline`.
+The baseline `NetworkPolicy` is named `kube-vnet` and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -195,8 +195,8 @@ metadata:
   name: kube-vnet
   namespace: <ns>
   labels:
-    kube-vnet/managed-by: kube-vnet
-    kube-vnet/role: baseline
+    kube-vnet.system/managed-by: kube-vnet
+    kube-vnet.system/role: baseline
 spec:
   podSelector: {}            # selects every pod in the namespace
   policyTypes: [Ingress]
@@ -283,11 +283,11 @@ Naming: `kube-vnet.<homeNS>.<vnet>-<8hex>` uniformly. The 8-hex suffix is a SHA-
 
 Labels on every operator-managed `NetworkPolicy`:
 
-- `kube-vnet/managed-by=kube-vnet` — claims operator ownership. Used by drift correction and cleanup.
-- `kube-vnet/network=<homeNS>.<vnet>` — identifies which VirtualNetwork owns the policy. Used for cleanup, including cross-namespace.
-- `kube-vnet/role=membership` (membership policies) or `=baseline` (baseline policies).
+- `kube-vnet.system/managed-by=kube-vnet` — claims operator ownership. Used by drift correction and cleanup.
+- `kube-vnet.system/network=<homeNS>.<vnet>` — identifies which VirtualNetwork owns the policy. Used for cleanup, including cross-namespace.
+- `kube-vnet.system/role=membership` (membership policies) or `=baseline` (baseline policies).
 
-Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet/network` label — see [ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md).
+Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet.system/network` label — see [ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md).
 
 This is why the operator can't do its job from a single cluster-scoped policy: stock `NetworkPolicy` is namespace-local. Each side needs its own policy. (For the future where this changes, see [ADR 0019](adr/0019-baseline-durability.md) on `AdminNetworkPolicy`.)
 
@@ -295,9 +295,9 @@ This is why the operator can't do its job from a single cluster-scoped policy: s
 
 ## Drift correction
 
-The operator watches every `NetworkPolicy` carrying `kube-vnet/managed-by=kube-vnet`. If one is edited or deleted out-of-band:
+The operator watches every `NetworkPolicy` carrying `kube-vnet.system/managed-by=kube-vnet`. If one is edited or deleted out-of-band:
 
-- An update event fires, the policy's `kube-vnet/network` label maps it back to the owning VirtualNetwork, and the reconciler re-applies the desired spec via server-side apply with field manager `kube-vnet`.
+- An update event fires, the policy's `kube-vnet.system/network` label maps it back to the owning VirtualNetwork, and the reconciler re-applies the desired spec via server-side apply with field manager `kube-vnet`.
 - A delete event does the same: the reconciler re-creates the missing policy.
 - On re-creation specifically (i.e. the policy was absent immediately before the apply), a `Warning PolicyRestored` Event is emitted on the owning VirtualNetwork so the deletion-and-restore cycle is visible in `kubectl describe vnet`.
 

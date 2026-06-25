@@ -3,7 +3,7 @@ Validating admission for operator-managed system VirtualNetworks.
 
 The two system vnets `namespace` (one per managed namespace) and `cluster`
 (one cluster-wide) are operator-managed: created and drift-corrected by
-the SystemVnetReconciler, marked with `kube-vnet/system=true`. This VAP
+the SystemVnetReconciler, marked with `kube-vnet.system/managed-by=kube-vnet`. This VAP
 reserves both the names and the system label for the operator.
 
 Three CREATE/UPDATE/DELETE attempts get rejected unless the requester is
@@ -12,8 +12,8 @@ the operator's ServiceAccount:
   1. CREATE/UPDATE/DELETE of any vnet whose name is `namespace` or `cluster`
      (the reserved names — see SystemVnetNamespace/SystemVnetCluster in
      internal/controller/system_vnet_controller.go).
-  2. CREATE of a vnet carrying `kube-vnet/system=true` (label spoofing).
-  3. UPDATE/DELETE of a vnet that already carries `kube-vnet/system=true`.
+  2. CREATE of a vnet carrying `kube-vnet.system/managed-by=kube-vnet` (label spoofing).
+  3. UPDATE/DELETE of a vnet that already carries `kube-vnet.system/managed-by=kube-vnet`.
 
 The operator's ServiceAccount is exempted via username equality.
 
@@ -52,14 +52,14 @@ spec:
       expression: {{ printf "\"system:serviceaccount:%s:%s\""
         (.Release.Namespace)
         (include "kube-vnet.serviceAccountName" .) | quote }}
-    # Whether the affected object carries kube-vnet/system=true. On CREATE
+    # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet. On CREATE
     # only `object` is populated, on DELETE only `oldObject`, on UPDATE both;
     # we OR them so any of the three operations matches an attempt to either
     # set or carry the system label.
     - name: isSystemVnet
       expression: |
-        (object != null && object.metadata.?labels["kube-vnet/system"].orValue("") == "true") ||
-        (oldObject != null && oldObject.metadata.?labels["kube-vnet/system"].orValue("") == "true")
+        (object != null && object.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet") ||
+        (oldObject != null && oldObject.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet")
     # The two reserved names. `request.name` is uniform across CREATE/UPDATE/
     # DELETE (object.metadata.name is empty on DELETE).
     - name: isReservedName
@@ -68,7 +68,7 @@ spec:
     - expression: |
         request.userInfo.username == variables.operatorUser ||
         (!variables.isSystemVnet && !variables.isReservedName)
-      message: "VirtualNetwork names `namespace` and `cluster` are reserved for operator-managed system vnets, as is the `kube-vnet/system=true` label. Only the operator may create, update, or delete these. See ADR 0030."
+      message: "VirtualNetwork names `namespace` and `cluster` are reserved for operator-managed system vnets, as is the `kube-vnet.system/managed-by=kube-vnet` label. Only the operator may create, update, or delete these. See ADR 0030."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

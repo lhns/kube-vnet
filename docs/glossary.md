@@ -68,7 +68,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **System label** — an operator-stamped label of the form `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` (canonical fully-qualified per [ADR 0033](adr/0033-canonical-fq-system-labels.md)). Written by the `ResolutionReconciler` based on the inheritance lattice (cluster baseline → namespace baseline → pod tier where bindings and pod labels intersect). Read by the policy generator's selectors. Protected from user mutation by a ValidatingAdmissionPolicy. See [ADR 0031](adr/0031-baseline-tier-resolution.md) and [ADR 0033](adr/0033-canonical-fq-system-labels.md).
 
-**System vnet** — an operator-managed `VirtualNetwork` resource labeled `kube-vnet/system=true`. Two of them: `namespace` (one per managed namespace) and `cluster` (one in the operator's namespace, with `allowedNamespaces.All=true`). Drift-corrected by the `SystemVnetReconciler`; protected from user mutation by a ValidatingAdmissionPolicy. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+**System vnet** — an operator-managed `VirtualNetwork` resource labeled `kube-vnet.system/managed-by=kube-vnet`. Two of them: `namespace` (one per managed namespace) and `cluster` (one in the operator's namespace, with `allowedNamespaces.All=true`). Drift-corrected by the `SystemVnetReconciler`; protected from user mutation by a ValidatingAdmissionPolicy. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
 
 **vnet** — short for `VirtualNetwork`. Also the CRD's short name (`kubectl get vnet`).
 

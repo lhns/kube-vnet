@@ -25,6 +25,27 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Operator-managed labels moved to `kube-vnet.system/` prefix (ADR 0037).**
+  Per the same convention already used for operator-stamped pod labels
+  (`kube-vnet.system/net.*`, `kube-vnet.system/resolved-generation`), the
+  remaining operator-owned sentinels migrate from the user-surface
+  `kube-vnet/` prefix to the operator-contract `kube-vnet.system/` prefix:
+  `kube-vnet/managed-by` → `kube-vnet.system/managed-by`,
+  `kube-vnet/network` → `kube-vnet.system/network`,
+  `kube-vnet/role` → `kube-vnet.system/role`. The redundant
+  `kube-vnet/system=true` sentinel on operator-created VirtualNetworks is
+  removed and merged into `kube-vnet.system/managed-by=kube-vnet` — the
+  same key now identifies operator-managed `NetworkPolicy` and
+  `VirtualNetwork` resources. The chart's cleanup hook, system-vnet VAP,
+  and the system-labels VAP (now extended to cover `networkpolicies` and
+  `virtualnetworks` admission) flip in lockstep. Clean cutover, no
+  dual-emit: SSA reconciles existing on-disk policies on first operator
+  reconcile after upgrade (the new field-manager declaration strips the
+  old keys). User-facing keys (`kube-vnet/net.<vnet>`,
+  `kube-vnet/disabled`) are unchanged. If you had `kubectl` runbooks
+  selecting on `kube-vnet/managed-by=kube-vnet`, switch them to
+  `kube-vnet.system/managed-by=kube-vnet`.
+
 - **Event recorder migrated to `events.k8s.io/v1`.** controller-runtime's
   `mgr.GetEventRecorderFor` returns a struct explicitly tagged
   `// Deprecated: will be removed in a future release.` (it implements the

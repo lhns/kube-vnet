@@ -7,7 +7,7 @@ Status: Accepted
 Pods need to declare membership in zero or more VirtualNetworks. Two natural encodings:
 
 A. **One label per network**: `kube-vnet/net.payments=true`, `kube-vnet/net.monitoring=true`, …
-B. **One label with a delimited list**: `kube-vnet/networks=payments,monitoring,…`.
+B. **One label with a delimited list**: `kube-vnet.system/networks=payments,monitoring,…`.
 
 ## Decision
 

@@ -100,11 +100,11 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		}
 	})
 
-	t.Run("user creating VirtualNetwork with kube-vnet/system=true is rejected", func(t *testing.T) {
+	t.Run("user creating VirtualNetwork with kube-vnet.system/managed-by=kube-vnet is rejected", func(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		v.Name = "spoof"
 		v.Namespace = ns
-		v.Labels = map[string]string{LabelSystem: LabelSystemValue}
+		v.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
 		err := userClient.Create(ctx, v)
 		if err == nil {
 			_ = userClient.Delete(ctx, v)
@@ -131,7 +131,7 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		v.Name = "cluster"
 		v.Namespace = ns
-		v.Labels = map[string]string{LabelSystem: LabelSystemValue}
+		v.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
 		if err := opClient.Create(ctx, v); err != nil {
 			t.Fatalf("operator SA create: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		v2 := &vnetv1alpha1.VirtualNetwork{}
 		v2.Name = "namespace"
 		v2.Namespace = ns
-		v2.Labels = map[string]string{LabelSystem: LabelSystemValue}
+		v2.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
 		if err := opClient.Create(ctx, v2); err != nil {
 			t.Fatalf("operator SA create namespace-vnet: %v", err)
 		}

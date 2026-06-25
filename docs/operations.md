@@ -231,7 +231,7 @@ Events have a default TTL of 1 hour (apiserver-managed) — they're a notificati
 
 ### "I just installed kube-vnet — why aren't my non-vnet pods isolated?"
 
-By default they are: every managed namespace gets a deny-all baseline. If pods can still reach each other, the most likely cause is that they're members of the same vnet (which adds an allow rule). Check `kubectl get netpol -A -l kube-vnet/role=baseline` to confirm the baseline is present in your namespace.
+By default they are: every managed namespace gets a deny-all baseline. If pods can still reach each other, the most likely cause is that they're members of the same vnet (which adds an allow rule). Check `kubectl get netpol -A -l kube-vnet.system/role=baseline` to confirm the baseline is present in your namespace.
 
 If you want to *open up* a namespace, annotate it `kube-vnet/disabled: "true"` (the operator stays out entirely there) or add it to `--disabled-namespaces` / `operator.disabledNamespaces`.
 

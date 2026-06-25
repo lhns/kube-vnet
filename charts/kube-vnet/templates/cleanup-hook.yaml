@@ -9,7 +9,7 @@ with no controller to recover from any state change.
 
 This template ships a one-shot Job + minimal RBAC bundle, all tagged
 `helm.sh/hook: pre-delete`. The Job runs `kubectl delete networkpolicy -A
---selector kube-vnet/managed-by=kube-vnet` before Helm tears down the
+--selector kube-vnet.system/managed-by=kube-vnet` before Helm tears down the
 release's chart-managed resources. After it succeeds, Helm proceeds with
 the normal uninstall and the cluster collapses back to Kubernetes
 default-allow.
@@ -23,7 +23,7 @@ Toggle via `cleanup.enabled` (default true). Disable only for a controlled
 migration where you need to preserve the policy set across a brief operator
 outage — and clean up manually afterwards:
 
-    kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+    kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 
 See ADR 0036 for the full rationale.
 */ -}}
@@ -108,7 +108,7 @@ spec:
               echo "Deleting operator-managed NetworkPolicies cluster-wide..."
               kubectl delete networkpolicy \
                 --all-namespaces \
-                --selector kube-vnet/managed-by=kube-vnet \
+                --selector kube-vnet.system/managed-by=kube-vnet \
                 --ignore-not-found \
                 --wait=true
               echo "Cleanup complete."

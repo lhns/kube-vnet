@@ -132,10 +132,10 @@ The CRD is **not** removed by `helm uninstall` — Helm preserves CRDs to avoid 
 kubectl delete crd virtualnetworks.kube-vnet.lhns.de
 ```
 
-This will cascade-delete every `VirtualNetwork` resource and (because the per-vnet membership policies have owner references in the home namespace) the operator-managed `NetworkPolicy` resources too. Cross-namespace policies (foreign to the home) need to be cleaned up manually if the operator was already gone — the operator normally handles them via its `kube-vnet/network` label, but it can't if it's already uninstalled. Cleanup pattern:
+This will cascade-delete every `VirtualNetwork` resource and (because the per-vnet membership policies have owner references in the home namespace) the operator-managed `NetworkPolicy` resources too. Cross-namespace policies (foreign to the home) need to be cleaned up manually if the operator was already gone — the operator normally handles them via its `kube-vnet.system/network` label, but it can't if it's already uninstalled. Cleanup pattern:
 
 ```bash
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet -o name \
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet -o name \
   | xargs -I{} kubectl delete -A {}
 ```
 
@@ -281,7 +281,7 @@ kubectl apply -f https://raw.githubusercontent.com/lhns/kube-vnet/main/config/sa
 
 # See what the operator generated
 kubectl get vnet -A
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 ```
 
 If the operator isn't producing policies, see [`troubleshooting.md`](troubleshooting.md).

@@ -149,7 +149,7 @@ podAnnotations: {}
 terminationGracePeriodSeconds: 10
 
 # Helm pre-delete hook that runs `kubectl delete networkpolicy --selector
-# kube-vnet/managed-by=kube-vnet` cluster-wide on `helm uninstall`.
+# kube-vnet.system/managed-by=kube-vnet` cluster-wide on `helm uninstall`.
 #
 # Without it, the deny-all baselines and per-vnet membership policies the
 # operator generated at runtime survive uninstall and keep enforcing — pods
@@ -158,7 +158,7 @@ terminationGracePeriodSeconds: 10
 #
 # Disable only for a controlled migration where you need to preserve the
 # existing policy set across a brief operator outage. Then clean up manually:
-#   kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+#   kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 cleanup:
   enabled: true
   image:

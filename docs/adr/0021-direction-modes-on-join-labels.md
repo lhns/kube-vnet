@@ -72,7 +72,7 @@ X→Y flows iff X has egress capability (`both` or `egress`) AND Y has ingress c
 - **Pro**: Errors surface. Typos no longer silently make pods non-members.
 - **Con**: More policies in the cluster when direction classes are mixed. Up to 3× the policy count per namespace per vnet.
 - **Con**: Reviewers need to learn the four enum values. Mitigated by the `kubectl describe vnet` showing direction-class breakdown in `status.members` (planned).
-- **Con**: Same vnet seen from different direction modes can confuse a quick scan. Mitigated by the `kube-vnet/role=membership` label still distinguishing membership policies from baselines, plus the policy-name suffixes (`-ingress` / `-egress`) being human-meaningful.
+- **Con**: Same vnet seen from different direction modes can confuse a quick scan. Mitigated by the `kube-vnet.system/role=membership` label still distinguishing membership policies from baselines, plus the policy-name suffixes (`-ingress` / `-egress`) being human-meaningful.
 
 ## Cross-references
 

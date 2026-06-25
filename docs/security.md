@@ -95,7 +95,7 @@ The chart ships ClusterRoles aggregated into the upstream `admin`/`edit`/`view` 
 
 A matching `*-viewer` ClusterRole per CRD aggregates into `view` (or, for the cluster baseline, ships unbound).
 
-The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP from ADR 0031 prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet/system=true`.
+The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP from ADR 0031 prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet.system/managed-by=kube-vnet`.
 
 To skip the chart-shipped end-user RBAC entirely (managing it externally via Argo, GitOps, etc.), set `rbac.aggregate=false`.
 

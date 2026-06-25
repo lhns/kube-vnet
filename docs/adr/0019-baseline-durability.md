@@ -14,7 +14,7 @@ The natural intuition is "put the deny rule in another namespace where the app t
 
 For v1alpha1, **lean on drift correction**:
 
-- The reconciler already watches operator-managed `NetworkPolicy` resources (predicate filters on `kube-vnet/managed-by=kube-vnet`).
+- The reconciler already watches operator-managed `NetworkPolicy` resources (predicate filters on `kube-vnet.system/managed-by=kube-vnet`).
 - A delete event fires the policy → vnet mapping (`policyToVNet`) and enqueues the owning VirtualNetwork.
 - The reconciler re-applies the desired policy via SSA on the next reconcile pass.
 - Window between deletion and restore is sub-second to a few seconds in practice.

@@ -135,7 +135,7 @@ Not really. The operator is designed to act cluster-wide because cross-namespace
 
 ### Will the operator interfere with my existing NetworkPolicies?
 
-No. It only owns objects labeled `kube-vnet/managed-by=kube-vnet`. Your policies are left alone. NetworkPolicies are additive in Kubernetes — your allows compose with the operator's. See [the coexistence recipe](recipes.md#coexisting-with-user-managed-networkpolicy).
+No. It only owns objects labeled `kube-vnet.system/managed-by=kube-vnet`. Your policies are left alone. NetworkPolicies are additive in Kubernetes — your allows compose with the operator's. See [the coexistence recipe](recipes.md#coexisting-with-user-managed-networkpolicy).
 
 ### What about egress to the public internet?
 

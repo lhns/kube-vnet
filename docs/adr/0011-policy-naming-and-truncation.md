@@ -24,7 +24,7 @@ truncated := fullName[:253-len(suffix)] + suffix
 
 The hash makes the truncated form unique even if two long names share a prefix.
 
-The `kube-vnet/managed-by=kube-vnet` and `kube-vnet/network=<home>.<vnet>` labels remain the **actual source of truth** for ownership lookups (per ADR 0010). The name is for human readability; the label is for the operator.
+The `kube-vnet.system/managed-by=kube-vnet` and `kube-vnet.system/network=<home>.<vnet>` labels remain the **actual source of truth** for ownership lookups (per ADR 0010). The name is for human readability; the label is for the operator.
 
 ## Consequences
 

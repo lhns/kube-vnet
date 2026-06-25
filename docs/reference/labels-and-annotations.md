@@ -160,7 +160,7 @@ The target vnet's `spec.allowedNamespaces` is still enforced; bindings in non-pe
 
 These are how the operator identifies what it owns. Don't put them on your own resources — the operator may treat that as drift on its own and overwrite/delete the resource.
 
-### `kube-vnet/managed-by=kube-vnet`
+### `kube-vnet.system/managed-by=kube-vnet`
 
 | | |
 |---|---|
@@ -168,9 +168,9 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **Value** | Always `kube-vnet`. |
 | **Set by** | The operator. |
 | **Meaning** | "This NetworkPolicy is managed by kube-vnet. Drift correction applies." |
-| **Used by** | The operator's NetworkPolicy watch predicates (in both reconcilers); `cleanupForDeleted`; `deleteStale`; the `MetricsCollector`. Also referenced by the user-facing `kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet`. |
+| **Used by** | The operator's NetworkPolicy watch predicates (in both reconcilers); `cleanupForDeleted`; `deleteStale`; the `MetricsCollector`. Also referenced by the user-facing `kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet`. |
 
-### `kube-vnet/network=<homeNS>.<vnet-name>`
+### `kube-vnet.system/network=<homeNS>.<vnet-name>`
 
 | | |
 |---|---|
@@ -180,14 +180,14 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **Meaning** | "This NetworkPolicy belongs to `<homeNS>/<vnet-name>`." |
 | **Used by** | `cleanupForDeleted` (selects all this vnet's policies cluster-wide) and `deleteStale`. The operator's solution to Kubernetes' lack of cross-namespace owner references. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md). |
 
-### `kube-vnet/role=membership` and `kube-vnet/role=baseline`
+### `kube-vnet.system/role=membership` and `kube-vnet.system/role=baseline`
 
 | | |
 |---|---|
-| **On** | `kube-vnet/role=membership` on the per-`(vnet, namespace)` membership policy (covers label-driven and binding-driven members alike — there is no separate per-binding policy per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). `kube-vnet/role=baseline` on the `kube-vnet` baseline. |
+| **On** | `kube-vnet.system/role=membership` on the per-`(vnet, namespace)` membership policy (covers label-driven and binding-driven members alike — there is no separate per-binding policy per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). `kube-vnet.system/role=baseline` on the `kube-vnet` baseline. |
 | **Set by** | The operator. |
 | **Meaning** | Discriminates the two policy classes the operator owns. |
-| **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |
+| **Used by** | (1) The `NamespaceReconciler` watches `NetworkPolicy` events with `role=baseline` so a manual delete of `kube-vnet` is re-applied within one reconcile cycle. (2) Tests scope assertions by it (e.g. `TestE2E_VNetDelete_BlocksTraffic` polls for `role=membership` cleanup separately from baseline lifecycle). (3) `kubectl get netpol -A -l kube-vnet.system/role=baseline` is the standard way to enumerate baseline policies cluster-wide. |
 
 Example: an operator-managed membership policy in `webapp` for vnet `monitoring/observability`:
 
@@ -198,9 +198,9 @@ metadata:
   name: kube-vnet-observability-webapp
   namespace: webapp
   labels:
-    kube-vnet/managed-by: kube-vnet
-    kube-vnet/network: monitoring.observability
-    kube-vnet/role: membership
+    kube-vnet.system/managed-by: kube-vnet
+    kube-vnet.system/network: monitoring.observability
+    kube-vnet.system/role: membership
 ```
 
 And the corresponding baseline in `webapp`:
@@ -212,8 +212,8 @@ metadata:
   name: kube-vnet
   namespace: webapp
   labels:
-    kube-vnet/managed-by: kube-vnet
-    kube-vnet/role: baseline
+    kube-vnet.system/managed-by: kube-vnet
+    kube-vnet.system/role: baseline
 ```
 
 ---
@@ -282,13 +282,13 @@ These follow Kubernetes' [Recommended Labels](https://kubernetes.io/docs/concept
 
 ```bash
 # All operator-managed NetworkPolicies cluster-wide
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 
 # Just the baselines
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet,kube-vnet/role=baseline
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.system/role=baseline
 
 # Just the membership policies for a specific vnet
-kubectl get networkpolicy -A -l kube-vnet/network=platform.payments
+kubectl get networkpolicy -A -l kube-vnet.system/network=platform.payments
 
 # Pods in webapp that are members of any vnet
 kubectl get pods -n webapp -L kube-vnet/net.payments,kube-vnet/net.monitoring,...

@@ -393,7 +393,7 @@ kubectl get vnb -A
 kubectl get vnb -n webapp payments-thirdparty -o jsonpath='{.status.attachedPods}'
 
 # Inspect the membership policy that covers those pods.
-kubectl get networkpolicy -A -l kube-vnet/network=platform.payments
+kubectl get networkpolicy -A -l kube-vnet.system/network=platform.payments
 ```
 
 Constraints worth knowing:
@@ -511,7 +511,7 @@ kind: NetworkPolicy
 metadata:
   name: allow-ingress-nginx
   namespace: webapp
-  # Important: do NOT label this with kube-vnet/managed-by — that would
+  # Important: do NOT label this with kube-vnet.system/managed-by — that would
   # make the operator think it's its own and reset it on drift.
 spec:
   podSelector:
@@ -534,7 +534,7 @@ The webapp pods are now reachable from:
 
 And nothing else (the baseline denies the rest of the ingress; egress is unrestricted by kube-vnet — see the next recipe if you need to restrict it).
 
-**Don't apply the `kube-vnet/managed-by=kube-vnet` label to your custom policies.** That label is the operator's claim of ownership; if your policy has it, the operator will treat it as drift on its own resource and may overwrite or delete it. User policies should have any other labels you want, just not that one.
+**Don't apply the `kube-vnet.system/managed-by=kube-vnet` label to your custom policies.** That label is the operator's claim of ownership; if your policy has it, the operator will treat it as drift on its own resource and may overwrite or delete it. User policies should have any other labels you want, just not that one.
 
 If you accidentally pick a name kube-vnet wants to use (e.g. `kube-vnet` itself, or one of the operator-generated `kube-vnet.<vnet>-<hash>` shapes), the operator surfaces a `NameCollision` Degraded condition and refuses to overwrite — see [`troubleshooting.md`](troubleshooting.md). Rename your policy to resolve.
 
@@ -576,7 +576,7 @@ kind: NetworkPolicy
 metadata:
   name: payments-svc-egress
   namespace: platform
-  # Important: do NOT label with kube-vnet/managed-by.
+  # Important: do NOT label with kube-vnet.system/managed-by.
 spec:
   podSelector:
     matchLabels:

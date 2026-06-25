@@ -68,7 +68,7 @@ Source: `internal/controller/virtualnetwork_controller.go`.
 For each enqueued `VirtualNetwork` request, `Reconcile` does roughly:
 
 1. **Metrics setup**. `start := time.Now()` — `defer observeReconcile(start, err)` records duration and outcome.
-2. **Fetch** the VirtualNetwork. If 404, run `cleanupForDeleted` (removes every `NetworkPolicy` carrying this vnet's `kube-vnet/network` label, including across namespaces) and return.
+2. **Fetch** the VirtualNetwork. If 404, run `cleanupForDeleted` (removes every `NetworkPolicy` carrying this vnet's `kube-vnet.system/network` label, including across namespaces) and return.
 3. **Snapshot** prior `Ready` and `Degraded` condition statuses so we can emit transition events later.
 4. **Validate** the name against `nameRegex` (DNS-1123 label). If it fails, set `Ready=False`/`Degraded=True` with reason `InvalidName`, write status, return. (Defense-in-depth — the CRD's CEL rule should already have rejected this at admission. See [ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md).)
 5. **Check the home namespace** via `r.NSFilter.IsManaged(homeNS)`. If unmanaged, set `Ready=False`/`Degraded=True` reason `HomeNamespaceExcluded`, write status, run `cleanupForDeleted` to drop any leftover policies, return.
@@ -83,7 +83,7 @@ For each enqueued `VirtualNetwork` request, `Reconcile` does roughly:
    - Uncached `Get` (uses `APIReader`) to detect a "policy was just deleted" state → emit a `PolicyRestored` event.
    - Server-side apply with `client.FieldOwner("kube-vnet")` and `client.ForceOwnership`.
    - On failure: increment `kube_vnet_apply_errors_total{kind="membership_policy"}`, emit `ApplyFailed` event, set `Ready=False` reason `ApplyFailed`, return.
-9. **Delete stale** policies (`deleteStale`): list policies with the `kube-vnet/network` label, drop any not in the desired set. The baseline is not part of this; it's owned by the `NamespaceReconciler`.
+9. **Delete stale** policies (`deleteStale`): list policies with the `kube-vnet.system/network` label, drop any not in the desired set. The baseline is not part of this; it's owned by the `NamespaceReconciler`.
 11. **Compute conditions**:
     - `Degraded` = True / `InvalidJoiners` if any pods were rejected; False / `NoIssues` otherwise.
     - `Ready` = True / `NoMembers` if no policies were generated; True / `PoliciesGenerated` otherwise.
@@ -94,7 +94,7 @@ For each enqueued `VirtualNetwork` request, `Reconcile` does roughly:
 
 ### Cleanup paths
 
-- `cleanupForDeleted(ns, name)` — invoked when the VirtualNetwork is gone. Lists policies cluster-wide by `kube-vnet/managed-by=kube-vnet, kube-vnet/network=<ns>.<name>` and deletes them. Baselines are not affected; they're owned by the `NamespaceReconciler` and decided independently of vnet membership.
+- `cleanupForDeleted(ns, name)` — invoked when the VirtualNetwork is gone. Lists policies cluster-wide by `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/network=<ns>.<name>` and deletes them. Baselines are not affected; they're owned by the `NamespaceReconciler` and decided independently of vnet membership.
 - `deleteStale(vnet, desiredKeys)` — invoked during normal reconcile. Same shape but only deletes policies *not* in the new desired set.
 
 ---
@@ -121,11 +121,11 @@ The `VirtualNetworkReconciler.SetupWithManager` wires three watches:
 |---|---|---|
 | `VirtualNetwork` | none (primary) | identity |
 | `Pod` | label-prefix predicate (only events whose pod's labels contain at least one `kube-vnet/net.*` key, on either old or new state) | `handler.Funcs` mapping each `kube-vnet/net.*` label key to the corresponding VirtualNetwork |
-| `NetworkPolicy` | managed-by predicate (`kube-vnet/managed-by=kube-vnet`) | `policyToVNet` mapping the `kube-vnet/network` label to the owning VirtualNetwork |
+| `NetworkPolicy` | managed-by predicate (`kube-vnet.system/managed-by=kube-vnet`) | `policyToVNet` mapping the `kube-vnet.system/network` label to the owning VirtualNetwork |
 
 The Pod watch uses **`handler.Funcs`** instead of `handler.EnqueueRequestsFromMapFunc` because removals matter: if a pod loses its join label, the *current* labels don't reveal which vnet it just left, but the *old* labels do. `handler.Funcs.UpdateFunc` sees both `e.ObjectOld` and `e.ObjectNew` and enqueues the union of vnets referenced by either side. Without this, a pod losing its label would leave the previous vnet's status stale until the 10-minute resync. See [ADR 0013](adr/0013-pod-watch-with-handler-funcs-for-removals.md).
 
-The NetworkPolicy watch is what gives us drift correction: a delete or a hand-edit fires an event, the policy's `kube-vnet/network` label maps it back to a VirtualNetwork, and the reconciler re-applies. See [ADR 0019](adr/0019-baseline-durability.md).
+The NetworkPolicy watch is what gives us drift correction: a delete or a hand-edit fires an event, the policy's `kube-vnet.system/network` label maps it back to a VirtualNetwork, and the reconciler re-applies. See [ADR 0019](adr/0019-baseline-durability.md).
 
 The `NamespaceReconciler` watches `Namespace` plus the deny-all baseline `NetworkPolicy` (label-filtered to managed-by=kube-vnet, role=baseline) for drift correction. The baseline shape is uniform across namespaces (deny-all selecting every pod), so namespace-level events only matter for managed/disabled transitions.
 
@@ -158,7 +158,7 @@ No client, no context, no I/O. The reconciler is responsible for I/O; the genera
 For each namespace with members:
 
 1. Build a peer rule for every member-bearing namespace: `{namespaceSelector: kubernetes.io/metadata.name=<peerNS>, podSelector: Exists kube-vnet.system/net.<homeNS>.<vnet>}`. The peer selector is the canonical FQ system label uniformly (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)).
-2. Build one ingress-only policy per `(vnet, namespace)` with at least one receiver-capable member: name `kube-vnet.<homeNS>.<vnet>-<8hex>` (truncate-and-hash if > 253 chars per [ADR 0011](adr/0011-policy-naming-and-truncation.md)); labels `kube-vnet/managed-by=kube-vnet, kube-vnet/network=<homeNS>.<vnet>, kube-vnet/role=membership`; the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` as the `podSelector` with `In [both, ingress]`; peer rules in `ingress[0].from`. Bindings stamp the same canonical label and are covered by the regular policy — no per-binding policy is emitted. There is no DNS allow rule — egress is unrestricted by the baseline so DNS works without one (see [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)).
+2. Build one ingress-only policy per `(vnet, namespace)` with at least one receiver-capable member: name `kube-vnet.<homeNS>.<vnet>-<8hex>` (truncate-and-hash if > 253 chars per [ADR 0011](adr/0011-policy-naming-and-truncation.md)); labels `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/network=<homeNS>.<vnet>, kube-vnet.system/role=membership`; the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` as the `podSelector` with `In [both, ingress]`; peer rules in `ingress[0].from`. Bindings stamp the same canonical label and are covered by the regular policy — no per-binding policy is emitted. There is no DNS allow rule — egress is unrestricted by the baseline so DNS works without one (see [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)).
 3. If the policy is in the home namespace, attach an `OwnerReference` to the VirtualNetwork. Cross-namespace policies have no owner ref ([ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md)).
 
 The generator is exhaustively unit-tested — see `policy_generator_test.go`. Trivial to extend (a new policy field becomes a new test case + a new line in `Generate`).
@@ -192,7 +192,7 @@ Details: [ADR 0009](adr/0009-server-side-apply-with-field-manager.md).
 
 Kubernetes does **not** support cross-namespace owner references. A namespaced VirtualNetwork in `monitoring` cannot own a `NetworkPolicy` in `platform` via owner refs.
 
-The operator solves this by labeling every operator-managed policy with `kube-vnet/network=<homeNS>.<vnet>`. On VirtualNetwork deletion, `cleanupForDeleted` lists policies cluster-wide by this label and deletes them.
+The operator solves this by labeling every operator-managed policy with `kube-vnet.system/network=<homeNS>.<vnet>`. On VirtualNetwork deletion, `cleanupForDeleted` lists policies cluster-wide by this label and deletes them.
 
 The home-namespace policy *does* have a normal `OwnerReference` to the VirtualNetwork — cleanup of that one is also handled by Kubernetes garbage collection. The label-based cleanup is the cross-namespace fallback. See [ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md).
 
@@ -230,7 +230,7 @@ Per-namespace variation comes from which vnets the *pods* in the namespace are m
                          ▼
    ┌──────────────────────────────────────────────┐
    │ 3. NetworkPolicy watch predicate matches     │
-   │    (kube-vnet/managed-by=kube-vnet)          │
+   │    (kube-vnet.system/managed-by=kube-vnet)          │
    │    → policyToVNet maps to owning VirtualNetwork │
    │    → enqueue                                  │
    └─────────────────────┬────────────────────────┘
@@ -255,7 +255,7 @@ This is a best-effort defense, not a hard guarantee. Hard isolation against name
 `MetricsCollector` is a `manager.Runnable` that ticks every 30 seconds:
 
 - Lists `VirtualNetwork` resources cluster-wide → sets `kube_vnet_networks_total`.
-- Lists `NetworkPolicy` cluster-wide filtered by `kube-vnet/managed-by=kube-vnet` → sets `kube_vnet_managed_policies_total`.
+- Lists `NetworkPolicy` cluster-wide filtered by `kube-vnet.system/managed-by=kube-vnet` → sets `kube_vnet_managed_policies_total`.
 
 Per-reconcile metrics (`kube_vnet_reconciliations_total`, `kube_vnet_reconcile_duration_seconds`, `kube_vnet_members_total{network}`, `kube_vnet_apply_errors_total{kind}`) are updated by the reconciler at the right moment in its loop. See [`reference/metrics-and-events.md`](reference/metrics-and-events.md) for the full list.
 

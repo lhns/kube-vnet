@@ -16,7 +16,7 @@ import (
 )
 
 // TestIntegration_SystemVnet_NamespaceCreation: a managed namespace gets a
-// `namespace` system VirtualNetwork stamped with kube-vnet/system=true.
+// `namespace` system VirtualNetwork stamped with kube-vnet.system/managed-by=kube-vnet.
 func TestIntegration_SystemVnet_NamespaceCreation(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "sys-ns-create")

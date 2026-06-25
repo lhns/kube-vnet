@@ -197,7 +197,7 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
               │  3. SSA-apply each policy with              │  cluster vnet
               │     FieldManager="kube-vnet"                │  has bare name
               │  4. deleteStale() — list policies by        │  per ADR 0033
-              │     kube-vnet/network=<homeNS>.<vnet>       │
+              │     kube-vnet.system/network=<homeNS>.<vnet>       │
               │     label, delete anything not in           │
               │     desired set (hard cleanup, ADR 0033)    │
               │  5. updateStatus — Ready / Degraded         │

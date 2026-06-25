@@ -13,15 +13,22 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
+// Operator-owned label keys live under `kube-vnet.system/` per ADR 0037, the
+// same convention that applies to operator-stamped pod labels
+// (`kube-vnet.system/net.*`). The user-surface prefix `kube-vnet/` is reserved
+// for user inputs (join labels, the `kube-vnet/disabled` annotation).
 const (
-	// LabelManagedBy marks operator-owned NetworkPolicy resources.
-	LabelManagedBy = "kube-vnet/managed-by"
+	// LabelManagedBy marks operator-owned NetworkPolicy resources AND
+	// operator-created VirtualNetwork CRs (the system `namespace` and
+	// `cluster` vnets). Same key, same value, across both resource types —
+	// one canonical sentinel for "this object is operator-managed".
+	LabelManagedBy = "kube-vnet.system/managed-by"
 	// LabelManagedByValue is the value of LabelManagedBy on operator-owned policies.
 	LabelManagedByValue = "kube-vnet"
 	// LabelNetwork identifies the VirtualNetwork that owns a policy: "<homeNS>.<vnet>".
-	LabelNetwork = "kube-vnet/network"
+	LabelNetwork = "kube-vnet.system/network"
 	// LabelRole distinguishes membership policies from the baseline.
-	LabelRole = "kube-vnet/role"
+	LabelRole = "kube-vnet.system/role"
 	// LabelRoleMembership marks per-VirtualNetwork membership policies.
 	LabelRoleMembership = "membership"
 	// LabelRoleBaseline marks the namespace default-deny baseline.

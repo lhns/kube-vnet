@@ -152,7 +152,7 @@ metadata:
 ```bash
 kubectl get vnet -A
 kubectl describe vnet payments -n platform
-kubectl get networkpolicy -A -l kube-vnet/managed-by=kube-vnet
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 ```
 
 ## Cross-namespace reach

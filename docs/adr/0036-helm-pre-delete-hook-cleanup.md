@@ -1,6 +1,6 @@
 # 0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall
 
-Status: Accepted
+Status: Accepted (cleanup selector renamed from `kube-vnet/managed-by=kube-vnet` to `kube-vnet.system/managed-by=kube-vnet` per [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md); the pre-delete hook design described here is unchanged)
 
 Date: 2026-06-25
 
@@ -17,7 +17,7 @@ The result: after uninstall, the cluster is left with frozen enforcement and no 
 - New pods don't get `kube-vnet.system/net.*` labels stamped (the resolution controller is gone). They're selected by the baseline → deny-all → unreachable.
 - Existing pods that should transition (label edits, namespace flips, vnet edits) have no controller to drive the transition. They stay in whatever state they were in at uninstall time.
 
-ADR 0032 documented the same uninstall-cleanliness problem from the *CRD* angle (we keep CRDs across uninstall so reinstall doesn't churn data). The complementary half — the runtime `NetworkPolicy` objects — has been left to manual cleanup: `kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet`. In practice this is too easy to miss, and the symptom (cluster stuck in deny-all) is far from the cause (a missing cleanup command after an uninstall the user did days ago).
+ADR 0032 documented the same uninstall-cleanliness problem from the *CRD* angle (we keep CRDs across uninstall so reinstall doesn't churn data). The complementary half — the runtime `NetworkPolicy` objects — has been left to manual cleanup: `kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet`. In practice this is too easy to miss, and the symptom (cluster stuck in deny-all) is far from the cause (a missing cleanup command after an uninstall the user did days ago).
 
 ## Decision
 
@@ -26,7 +26,7 @@ Ship a Helm `pre-delete` hook bundle in the chart that automates the manual clea
 1. `ServiceAccount` (in the release namespace) — identity for the cleanup pod.
 2. `ClusterRole` — `list`, `delete`, `deletecollection` on `networkpolicies.networking.k8s.io` cluster-wide.
 3. `ClusterRoleBinding` — binds the cluster role to the service account.
-4. `Job` — runs `kubectl delete networkpolicy --all-namespaces --selector kube-vnet/managed-by=kube-vnet --ignore-not-found --wait=true`.
+4. `Job` — runs `kubectl delete networkpolicy --all-namespaces --selector kube-vnet.system/managed-by=kube-vnet --ignore-not-found --wait=true`.
 
 Annotations on every object:
 
@@ -38,7 +38,7 @@ helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 
 Hook weight ordering guarantees the RBAC exists before the Job pod starts. The delete policy makes the hook idempotent across repeat installs (Helm wipes prior hook objects before creating new ones) AND auto-cleans on success. If the Job *fails*, the hook objects stay so the user can `kubectl logs` the Job pod.
 
-The selector `kube-vnet/managed-by=kube-vnet` matches both the baseline (`role=baseline`) and the membership policies (`role=membership`). No other operator artifact carries this label, so the selector is precise.
+The selector `kube-vnet.system/managed-by=kube-vnet` matches both the baseline (`role=baseline`) and the membership policies (`role=membership`). No other operator artifact carries this label, so the selector is precise.
 
 Toggle: `cleanup.enabled` in `values.yaml`, default `true`. Disable for controlled migrations where the operator is being replaced and the existing policy set should persist across the brief outage.
 
@@ -48,7 +48,7 @@ By design:
 
 - **CRDs** (`virtualnetworks`, `virtualnetworkbindings`, `virtualnetworkbaselines`, `clustervirtualnetworkbaselines`). They have `helm.sh/resource-policy: keep` (per ADR 0032) — uninstall preserves them so reinstall lands cleanly.
 - **CR instances** — user-authored vnets, bindings, namespace baselines, and the `ClusterVirtualNetworkBaseline` `default` (also `keep`'d by Helm). Survive uninstall by design.
-- **System-vnet CRs** (`namespace` per-NS, `cluster` in operator NS). Created at runtime by `SystemVnetReconciler`; not chart-templated. The user can delete them manually if they want a truly clean slate (`kubectl delete vnet -A -l kube-vnet/system=true`).
+- **System-vnet CRs** (`namespace` per-NS, `cluster` in operator NS). Created at runtime by `SystemVnetReconciler`; not chart-templated. The user can delete them manually if they want a truly clean slate (`kubectl delete vnet -A -l kube-vnet.system/managed-by=kube-vnet`).
 
 The hook removes only enforcement (`NetworkPolicy`), not configuration (`VirtualNetwork`/baseline CRs).
 
@@ -57,7 +57,7 @@ The hook removes only enforcement (`NetworkPolicy`), not configuration (`Virtual
 - **No more deny-all stuck state** after `helm uninstall`. Effective ingress collapses to Kubernetes default-allow across previously-managed namespaces immediately after the hook runs.
 - **Slight uninstall slowdown**: one extra image pull + one Job pod run (~5–10s on a warm cluster). Acceptable for the safety win.
 - **One additional ClusterRole transiently exists** during uninstall, with `delete` on `networkpolicies` cluster-wide. Scoped tightly: only the cleanup SA holds it, only for the hook's duration, auto-deleted on success.
-- **Failure mode**: if the Job fails (image pull error, apiserver outage, RBAC drift), Helm reports `pre-delete hook failed` and refuses to proceed with the rest of the uninstall. The hook objects stay so the user can `kubectl logs` the Job pod and diagnose. Escape hatch: `helm uninstall --no-hooks` skips the cleanup; manual `kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet` finishes the job.
+- **Failure mode**: if the Job fails (image pull error, apiserver outage, RBAC drift), Helm reports `pre-delete hook failed` and refuses to proceed with the rest of the uninstall. The hook objects stay so the user can `kubectl logs` the Job pod and diagnose. Escape hatch: `helm uninstall --no-hooks` skips the cleanup; manual `kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet` finishes the job.
 - **Existing installations** that were uninstalled before this ADR shipped still have orphan policies. They need a one-time manual cleanup. The hook only fires on future uninstalls.
 
 ## Alternatives considered
