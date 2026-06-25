@@ -54,6 +54,20 @@ rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
     verbs: [list, delete, deletecollection]
+  # Cluster-wide because the hook's ClusterRoleBinding is cluster-wide;
+  # in practice the operator Deployment is in {{ .Release.Namespace }}
+  # and we only act there. Used by the stop-operator initContainer to
+  # delete the operator Deployment before policies, so the operator's
+  # drift correction can't race-recreate the policies the next
+  # container is about to delete.
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, delete]
+  # Used by wait-for-operator-shutdown to confirm pod termination
+  # before proceeding to the policy delete.
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -96,6 +110,63 @@ spec:
     spec:
       serviceAccountName: {{ include "kube-vnet.fullname" . }}-cleanup
       restartPolicy: Never
+      # Three-step sequence guards against the operator's drift
+      # correction racing the policy delete. The operator is still
+      # running when pre-delete hooks fire (Helm only tears down
+      # chart-managed resources after the hook returns); if we just
+      # `kubectl delete networkpolicy` first, the operator watches the
+      # delete events and re-applies the policies via SSA before Helm
+      # finishes uninstalling, leaving orphan baselines stuck in
+      # deny-all forever.
+      #
+      # 1. Delete the operator Deployment so its controllers can't
+      #    react to further events. Helm will see the Deployment
+      #    already gone during the main teardown — fine.
+      # 2. Wait for the operator pod(s) to actually terminate (delete
+      #    is async; pods are cascade-deleted by the controller manager).
+      # 3. Now delete the policies. Nothing left to race with.
+      initContainers:
+        - name: stop-operator
+          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
+          command: [kubectl]
+          args:
+            - delete
+            - deployment
+            - {{ include "kube-vnet.fullname" . }}
+            - --namespace
+            - {{ .Release.Namespace }}
+            - --ignore-not-found
+            - --wait=true
+            - --timeout=60s
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities: { drop: [ALL] }
+        - name: wait-for-operator-shutdown
+          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
+          command: [kubectl]
+          # Component=controller scopes to the operator pods specifically
+          # — our own cleanup Job pod carries component=cleanup so we
+          # don't wait on ourselves.
+          args:
+            - wait
+            - --for=delete
+            - pod
+            - --selector
+            - app.kubernetes.io/name={{ include "kube-vnet.name" . }},app.kubernetes.io/component=controller
+            - --namespace
+            - {{ .Release.Namespace }}
+            - --timeout=60s
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65532
+            capabilities: { drop: [ALL] }
       containers:
         - name: cleanup
           image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
