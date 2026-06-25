@@ -10,6 +10,22 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **Helm pre-delete hook cleans up operator-managed NetworkPolicies on
+  `helm uninstall` (ADR 0036).** Previously, `helm uninstall` left the
+  runtime-created `NetworkPolicy` objects (deny-all baseline + per-vnet
+  membership) in place — with no controller to drive transitions, clusters
+  ended up stuck in deny-all mode and new pods got permanent default-deny.
+  The chart now ships a self-contained pre-delete hook (`Job` + minimal
+  `ClusterRole`/`Binding`/`ServiceAccount`, all tagged
+  `before-hook-creation,hook-succeeded`) that runs
+  `kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet` before
+  Helm tears down the controller. Toggle via `cleanup.enabled` (default
+  `true`). CRDs and CR instances retain their `helm.sh/resource-policy:
+  keep` semantics — they survive uninstall as before so reinstall lands
+  cleanly. Escape hatch: `helm uninstall --no-hooks`.
+
 ### Fixed
 
 - **Cluster membership policy was silently not emitted.** The ADR 0033

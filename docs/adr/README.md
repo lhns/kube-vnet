@@ -41,6 +41,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 33. [0033 — Canonical fully-qualified system labels; per-binding policies removed](0033-canonical-fq-system-labels.md)
 34. [0034 — Mutating admission webhook for synchronous pod-tier resolution (Proposed)](0034-admission-webhook-for-pod-resolution.md)
 35. [0035 — Removal of `--elide-baseline-for`: baseline elide had no observable effect](0035-removal-of-elide-baseline-for.md)
+36. [0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall](0036-helm-pre-delete-hook-cleanup.md)
 
 ## Format
 

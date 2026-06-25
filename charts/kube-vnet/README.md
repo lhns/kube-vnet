@@ -49,6 +49,9 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.leaderElect` | `true` | Enable leader election |
 | `rbac.aggregate` | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to manage all RBAC outside Helm. |
+| `cleanup.enabled` | `true` | Run a pre-delete hook that removes operator-managed NetworkPolicies on `helm uninstall`. Without it the deny-all baselines survive uninstall and keep enforcing. See ADR 0036. |
+| `cleanup.image.repository` | `bitnami/kubectl` | Image for the pre-delete hook Job. |
+| `cleanup.image.tag` | `"1.30"` | Tag for the pre-delete hook image. Pin to a known-good kubectl version. |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |
 | `podMonitor.enabled` | `false` | Create a `PodMonitor` for the Prometheus operator |
 | `resources.*` | small defaults | CPU/memory requests and limits |
