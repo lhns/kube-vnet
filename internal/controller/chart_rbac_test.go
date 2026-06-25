@@ -122,17 +122,25 @@ func extractClusterRoleRules(t *testing.T, in io.Reader) []rbacv1.PolicyRule {
 		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(buf), 4096).Decode(&cr); err != nil {
 			t.Fatalf("decode ClusterRole: %v", err)
 		}
-		if isEndUserAggregatedRole(&cr) {
+		if isAncillaryClusterRole(&cr, raw) {
 			continue
 		}
 		rules = append(rules, cr.Rules...)
 	}
 }
 
-// isEndUserAggregatedRole returns true for the chart's end-user-facing
-// ClusterRoles (Stage A/B of the ADR-0031-RBAC PR). They are not part of
-// the operator's own permissions and don't appear in config/rbac/role.yaml.
-func isEndUserAggregatedRole(cr *rbacv1.ClusterRole) bool {
+// isAncillaryClusterRole returns true for chart ClusterRoles that aren't part
+// of the operator's own persistent permissions and therefore don't appear in
+// config/rbac/role.yaml. Three categories:
+//
+//  1. End-user aggregated roles (ADR 0031 RBAC PR): identified by an
+//     `rbac.authorization.k8s.io/aggregate-to-*` label or the
+//     `-editor`/`-viewer` name suffix.
+//  2. Helm hook-scoped roles (ADR 0036 pre-delete cleanup hook): identified
+//     by the `helm.sh/hook` annotation. They exist only for the duration of a
+//     hook run, get their permissions from their own narrow ClusterRole, and
+//     are deleted by `helm.sh/hook-delete-policy`. Independent lifecycle.
+func isAncillaryClusterRole(cr *rbacv1.ClusterRole, raw map[string]interface{}) bool {
 	for k := range cr.Labels {
 		if strings.HasPrefix(k, "rbac.authorization.k8s.io/aggregate-to-") {
 			return true
@@ -140,6 +148,16 @@ func isEndUserAggregatedRole(cr *rbacv1.ClusterRole) bool {
 	}
 	if strings.HasSuffix(cr.Name, "-editor") || strings.HasSuffix(cr.Name, "-viewer") {
 		return true
+	}
+	// Helm-hook annotations land in the raw map's metadata.annotations.
+	// `cr.Annotations` would also have them, but read from `raw` to stay
+	// future-proof against any annotation that rbacv1.ClusterRole strips.
+	if meta, ok := raw["metadata"].(map[string]interface{}); ok {
+		if anns, ok := meta["annotations"].(map[string]interface{}); ok {
+			if _, ok := anns["helm.sh/hook"]; ok {
+				return true
+			}
+		}
 	}
 	return false
 }
