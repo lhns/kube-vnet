@@ -100,18 +100,23 @@ spec:
         - name: cleanup
           image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
+          # Invoke kubectl directly (no `sh -c` wrapper). The
+          # registry.k8s.io/kubectl image is distroless — it ships the
+          # kubectl binary alone with no shell. The Job's exit code is
+          # kubectl's exit code; the pod's stdout shows what was deleted
+          # (kubectl prints "networkpolicy.networking.k8s.io/<name> deleted"
+          # per match). That's the diagnostic surface we need; no need for
+          # echo wrappers.
           command:
-            - sh
-            - -c
-            - |
-              set -e
-              echo "Deleting operator-managed NetworkPolicies cluster-wide..."
-              kubectl delete networkpolicy \
-                --all-namespaces \
-                --selector kube-vnet.system/managed-by=kube-vnet \
-                --ignore-not-found \
-                --wait=true
-              echo "Cleanup complete."
+            - kubectl
+          args:
+            - delete
+            - networkpolicy
+            - --all-namespaces
+            - --selector
+            - kube-vnet.system/managed-by=kube-vnet
+            - --ignore-not-found
+            - --wait=true
           resources:
             requests:
               cpu: 10m
