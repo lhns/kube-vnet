@@ -85,7 +85,7 @@ func TestMain(m *testing.M) {
 		Client:            mgr.GetClient(),
 		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("kube-vnet-test"),
+		Recorder:          mgr.GetEventRecorder("kube-vnet-test"),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
 	}
@@ -110,7 +110,7 @@ func TestMain(m *testing.M) {
 	diagReconciler := &JoinLabelDiagnosticReconciler{
 		Client:      mgr.GetClient(),
 		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorderFor("kube-vnet-joinlabel-test"),
+		Recorder:    mgr.GetEventRecorder("kube-vnet-joinlabel-test"),
 		NSFilter:    NewNamespaceFilter(nil),
 	}
 	if err := diagReconciler.SetupWithManager(mgr); err != nil {

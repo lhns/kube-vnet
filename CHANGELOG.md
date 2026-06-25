@@ -25,6 +25,17 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Event recorder migrated to `events.k8s.io/v1`.** controller-runtime's
+  `mgr.GetEventRecorderFor` returns a struct explicitly tagged
+  `// Deprecated: will be removed in a future release.` (it implements the
+  legacy core/v1 Events API). The reconcilers now use the modern
+  `events.EventRecorder` interface via `mgr.GetEventRecorder` (dedup +
+  rate limiting + the new API group; same path kube-controller-manager
+  moved to in K8s 1.27+). Each event-emission site gained a short `action`
+  verb (`Apply`, `Restore`, `Reconcile`, `Validate`) per the new signature.
+  No user-visible Event changes — `kubectl describe vnet` still surfaces
+  the same reasons and messages.
+
 - **`POD_NAMESPACE` env var centralized at operator startup.** Previously
   read inline at every reconciler construction; now read once into a local,
   with a single warning emitted if unset. Behavior unchanged.

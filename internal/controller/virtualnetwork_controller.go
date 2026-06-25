@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -67,7 +67,7 @@ type VirtualNetworkReconciler struct {
 	// deleted membership policy as present).
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
-	Recorder  record.EventRecorder
+	Recorder  events.EventRecorder
 	NSFilter  *NamespaceFilter
 	// OperatorNamespace is the chart's release namespace, where the cluster
 	// system vnet lives. Used by podEventHandler to route bare-cluster pod
@@ -164,16 +164,16 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
 			applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Inc()
-			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventApplyFailed,
-				fmt.Sprintf("apply %s/%s: %v", p.Namespace, p.Name, err))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+				"apply %s/%s: %v", p.Namespace, p.Name, err)
 			setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, err.Error())
 			_ = r.updateStatus(ctx, vnet, members, policyRefs)
 			r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 			return ctrl.Result{}, err
 		}
 		if restored {
-			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventPolicyRestored,
-				fmt.Sprintf("recreated previously-deleted policy %s/%s", p.Namespace, p.Name))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+				"recreated previously-deleted policy %s/%s", p.Namespace, p.Name)
 		}
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
@@ -511,9 +511,9 @@ func (r *VirtualNetworkReconciler) emitTransitionEvents(
 		c := findCondition(vnet, "Ready")
 		switch curReady {
 		case metav1.ConditionTrue:
-			r.Recorder.Event(vnet, corev1.EventTypeNormal, EventReady, conditionMessage(c))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeNormal, EventReady, "Reconcile", "%s", conditionMessage(c))
 		case metav1.ConditionFalse:
-			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventNotReady, conditionMessage(c))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventNotReady, "Reconcile", "%s", conditionMessage(c))
 		}
 	}
 	curDegraded := conditionStatus(vnet, "Degraded")
@@ -521,9 +521,9 @@ func (r *VirtualNetworkReconciler) emitTransitionEvents(
 		c := findCondition(vnet, "Degraded")
 		switch curDegraded {
 		case metav1.ConditionTrue:
-			r.Recorder.Event(vnet, corev1.EventTypeWarning, EventDegraded, conditionMessage(c))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventDegraded, "Reconcile", "%s", conditionMessage(c))
 		case metav1.ConditionFalse:
-			r.Recorder.Event(vnet, corev1.EventTypeNormal, EventRecovered, conditionMessage(c))
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeNormal, EventRecovered, "Reconcile", "%s", conditionMessage(c))
 		}
 	}
 }

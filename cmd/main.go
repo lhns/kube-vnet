@@ -105,7 +105,7 @@ func main() {
 		Client:            mgr.GetClient(),
 		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorderFor("kube-vnet"),
+		Recorder:          mgr.GetEventRecorder("kube-vnet"),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
 	}
@@ -133,7 +133,7 @@ func main() {
 	bindingReconciler := &controller.VirtualNetworkBindingReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("kube-vnet-binding"),
+		Recorder: mgr.GetEventRecorder("kube-vnet-binding"),
 		NSFilter: nsFilter,
 	}
 	if err := bindingReconciler.SetupWithManager(mgr); err != nil {
@@ -166,7 +166,7 @@ func main() {
 	diagReconciler := &controller.JoinLabelDiagnosticReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("kube-vnet-joinlabel"),
+		Recorder: mgr.GetEventRecorder("kube-vnet-joinlabel"),
 		NSFilter: nsFilter,
 	}
 	if err := diagReconciler.SetupWithManager(mgr); err != nil {

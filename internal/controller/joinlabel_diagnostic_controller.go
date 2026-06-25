@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,7 +52,7 @@ const (
 type JoinLabelDiagnosticReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 	NSFilter *NamespaceFilter
 }
 
@@ -130,7 +130,7 @@ func (r *JoinLabelDiagnosticReconciler) diagBare(ctx context.Context, pod *corev
 		// Transient API error; the next reconcile will retry.
 		return
 	}
-	r.Recorder.Eventf(pod, corev1.EventTypeWarning, EventBareJoinLabelVnetNotFound,
+	r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, EventBareJoinLabelVnetNotFound, "Validate",
 		"label %q points at no VirtualNetwork in namespace %q. The bare form is only honored in the vnet's home namespace. "+
 			"To join a vnet hosted in another namespace, use the prefixed form %q instead.",
 		labelKey, pod.Namespace,
@@ -145,7 +145,7 @@ func (r *JoinLabelDiagnosticReconciler) diagPrefixed(ctx context.Context, pod *c
 	v := &vnetv1alpha1.VirtualNetwork{}
 	err := r.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: vnetName}, v)
 	if apierrors.IsNotFound(err) {
-		r.Recorder.Eventf(pod, corev1.EventTypeWarning, EventPrefixedJoinLabelVnetNotFound,
+		r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, EventPrefixedJoinLabelVnetNotFound, "Validate",
 			"label %q references VirtualNetwork %q which does not exist. Check the home namespace and vnet name for typos, or create the vnet.",
 			labelKey, fmt.Sprintf("%s/%s", homeNS, vnetName),
 		)
@@ -163,7 +163,7 @@ func (r *JoinLabelDiagnosticReconciler) diagPrefixed(ctx context.Context, pod *c
 	if r.permits(ctx, v, pod.Namespace) {
 		return
 	}
-	r.Recorder.Eventf(pod, corev1.EventTypeWarning, EventJoinLabelNamespaceNotAllowed,
+	r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, EventJoinLabelNamespaceNotAllowed, "Validate",
 		"label %q references VirtualNetwork %q, but its spec.allowedNamespaces does not permit namespace %q. "+
 			"Either extend allowedNamespaces on the vnet or move the pod to a permitted namespace.",
 		labelKey, fmt.Sprintf("%s/%s", homeNS, vnetName), pod.Namespace,
