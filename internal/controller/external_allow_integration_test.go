@@ -388,24 +388,62 @@ func TestIntegration_ExternalAllow_NamedTargetPort_PendingThenReady(t *testing.T
 	}
 	mustCreate(t, pod)
 
-	// Re-trigger reconcile via a no-op Service update (annotate something
-	// inert). This avoids waiting for the 30s requeue.
+	// Pod Create watcher should re-enqueue this Service within ~1s
+	// (no need to wait for the 30s safety-net requeue).
+	pol2 := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	if got := pol2.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
+		t.Errorf("port = %d, want 8080 (resolved from named 'http')", got)
+	}
+}
+
+func TestIntegration_ExternalAllow_NSDisabledMidFlight(t *testing.T) {
+	// Verify that flipping kube-vnet/disabled=true on a managed NS
+	// after policies exist deletes the external-allow policy via the
+	// namespace watcher. The opt-out path mirrors NSFilter.IsManaged,
+	// which is shared with the broader baseline + membership reconcilers.
+	ns := uniqueNS(t, "extallow-disabled-flip")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeLBService(ns, "web")
+	mustCreate(t, svc)
+	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+
+	eventually(t, 5*time.Second, func() error {
+		var nsObj corev1.Namespace
+		if err := testClient.Get(context.Background(), client.ObjectKey{Name: ns}, &nsObj); err != nil {
+			return err
+		}
+		if nsObj.Annotations == nil {
+			nsObj.Annotations = map[string]string{}
+		}
+		nsObj.Annotations["kube-vnet/disabled"] = "true"
+		return testClient.Update(context.Background(), &nsObj)
+	})
+
+	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+}
+
+func TestIntegration_ExternalAllow_SelectorClearedMidFlight(t *testing.T) {
+	// A Service that loses its selector (transitioning to
+	// manually-managed Endpoints) should have its policy cleaned up —
+	// nothing to scope to anymore.
+	ns := uniqueNS(t, "extallow-selclear")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeLBService(ns, "web")
+	mustCreate(t, svc)
+	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+
 	eventually(t, 5*time.Second, func() error {
 		latest := &corev1.Service{}
 		if err := testClient.Get(context.Background(), client.ObjectKeyFromObject(svc), latest); err != nil {
 			return err
 		}
-		if latest.Annotations == nil {
-			latest.Annotations = map[string]string{}
-		}
-		latest.Annotations["test-trigger"] = "1"
+		latest.Spec.Selector = nil
 		return testClient.Update(context.Background(), latest)
 	})
 
-	pol2 := waitForExternalAllowPolicy(t, ns, "web", 35*time.Second)
-	if got := pol2.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
-		t.Errorf("port = %d, want 8080 (resolved from named 'http')", got)
-	}
+	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_NoSelector_NoEmission(t *testing.T) {

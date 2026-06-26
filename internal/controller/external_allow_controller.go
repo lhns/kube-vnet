@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -38,6 +39,16 @@ import (
 //
 // Default-on. Opt-out via the `kube-vnet/external-allow=false` annotation
 // on the Service or on its Namespace.
+//
+// Watches:
+//   - corev1.Service                  primary trigger; ports/selector/type/annotations
+//   - corev1.Namespace                catches mid-flight kube-vnet/disabled or
+//                                     kube-vnet/external-allow flips
+//   - networkingv1.NetworkPolicy      drift correction (filtered by role label)
+//   - corev1.Pod (Create only)        unblocks named-targetPort resolution when a
+//                                     backing pod with the matching container-port
+//                                     name appears (closes the up-to-30s requeue
+//                                     latency for Service-before-Pod ordering)
 //
 // Note: hostPort container detection and hostNetwork pod warnings are
 // deliberately scoped out of v1; NetworkPolicy enforcement on host-network
@@ -326,6 +337,19 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return l[LabelManagedBy] == LabelManagedByValue && l[LabelRole] == LabelRoleExternalAllow
 	})
 
+	// Pod creates only — a new pod is the only event that can unblock a
+	// previously-unresolvable named targetPort. Pod updates/deletes never
+	// help: updates can't add a container port name without recreating the
+	// pod, and deletes remove a (possibly-resolving) endpoint without
+	// adding new ones. Without this watcher, the named-port pending case
+	// recovers only on the 30s requeue.
+	podCreateOnly := predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		UpdateFunc:  func(event.UpdateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("external-allow").
 		For(&corev1.Service{}).
@@ -337,6 +361,11 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToServices),
+		).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.podToServicesWithNamedPorts),
+			builder.WithPredicates(podCreateOnly),
 		).
 		Complete(r)
 }
@@ -371,5 +400,41 @@ func (r *ExternalAllowReconciler) namespaceToServices(ctx context.Context, obj c
 		})
 	}
 	return out
+}
+
+// podToServicesWithNamedPorts enqueues every Service in the new pod's
+// namespace that has at least one named (string-typed) targetPort. Those
+// are the only Services whose policy emission might have been blocked
+// waiting for this pod's container-port names; numeric-targetPort Services
+// don't depend on Pod state at all. Bounded by NS size.
+func (r *ExternalAllowReconciler) podToServicesWithNamedPorts(ctx context.Context, obj client.Object) []reconcile.Request {
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0)
+	for i := range svcs.Items {
+		if !hasNamedTargetPort(&svcs.Items[i]) {
+			continue
+		}
+		out = append(out, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: svcs.Items[i].Namespace,
+				Name:      svcs.Items[i].Name,
+			},
+		})
+	}
+	return out
+}
+
+// hasNamedTargetPort returns true if any Service port uses a string
+// (named) targetPort that needs Pod-side resolution.
+func hasNamedTargetPort(svc *corev1.Service) bool {
+	for _, p := range svc.Spec.Ports {
+		if p.TargetPort.Type == intstr.String && p.TargetPort.StrVal != "" {
+			return true
+		}
+	}
+	return false
 }
 
