@@ -33,6 +33,17 @@ const (
 	LabelRoleMembership = "membership"
 	// LabelRoleBaseline marks the namespace default-deny baseline.
 	LabelRoleBaseline = "baseline"
+	// LabelRoleExternalAllow marks NetworkPolicies emitted by the
+	// ExternalAllowReconciler (ADR 0038) for externally-exposed Services
+	// (type=LoadBalancer/NodePort, or type=ClusterIP with externalIPs set).
+	// They allow `from: ipBlock 0.0.0.0/0` on the Service's targetPort(s),
+	// composing additively with membership/baseline policies so external
+	// traffic reaches the pod while pod-to-pod isolation is preserved.
+	LabelRoleExternalAllow = "external-allow"
+	// LabelSource is the operator-owned reference back to the resource that
+	// caused this policy to be emitted, e.g. "service/traefik". Used by the
+	// external-allow reconciler's cleanup tail-step and as a debugging aid.
+	LabelSource = "kube-vnet.system/source"
 
 	// NamespaceMetadataNameLabel is the well-known label every namespace carries
 	// (k8s >=1.22) — used for namespaceSelector matching.

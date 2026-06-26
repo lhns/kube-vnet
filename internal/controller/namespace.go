@@ -11,6 +11,20 @@ import (
 // `--disabled-namespaces` flag is the cluster-wide equivalent.
 const AnnotationDisabled = "kube-vnet/disabled"
 
+// AnnotationExternalAllow, when set to "false" on a Service or a Namespace,
+// opts that target out of the ExternalAllowReconciler's auto-emit of
+// allow-from-anywhere NetworkPolicies for externally-exposed Services
+// (ADR 0038). Any value other than "false" (absent, empty, "true", anything
+// else) leaves auto-emit on — the annotation is one-way for explicit opt-out.
+const AnnotationExternalAllow = "kube-vnet/external-allow"
+
+// ExternalAllowOptedOut returns true if the resource's annotations explicitly
+// disable external-allow auto-emission. Only the literal "false" value opts
+// out — every other value leaves auto-emit on.
+func ExternalAllowOptedOut(annotations map[string]string) bool {
+	return annotations[AnnotationExternalAllow] == "false"
+}
+
 // NamespaceFilter decides whether kube-vnet manages a given namespace.
 // (The "what shape is the baseline" question that earlier versions answered
 // here is gone — under ADR 0030 + ADR 0035 the baseline is unconditionally

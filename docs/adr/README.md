@@ -43,6 +43,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 35. [0035 — Removal of `--elide-baseline-for`: baseline elide had no observable effect](0035-removal-of-elide-baseline-for.md)
 36. [0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall](0036-helm-pre-delete-hook-cleanup.md)
 37. [0037 — `kube-vnet.system/` prefix convention for operator-owned keys](0037-system-prefix-convention-for-operator-owned-keys.md)
+38. [0038 — Auto-allow externally-exposed Services](0038-auto-allow-externally-exposed-services.md)
 
 ## Format
 

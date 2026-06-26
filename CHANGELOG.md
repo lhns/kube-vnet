@@ -10,6 +10,31 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-allow for externally-exposed Services (ADR 0038).** A new
+  `ExternalAllowReconciler` watches `corev1.Service` and emits a dedicated
+  port-scoped `from: ipBlock 0.0.0.0/0` `NetworkPolicy` for every Service of
+  `type: LoadBalancer`, `type: NodePort`, or `type: ClusterIP` with non-empty
+  `spec.externalIPs`. This closes the longstanding gap where Services of these
+  types were silently unreachable from outside the cluster in kube-vnet-managed
+  namespaces — NetworkPolicy `namespaceSelector` rules only match pod-IP
+  sources, never external traffic (which arrives SNAT'd to a node IP, or as
+  the original external client IP under `externalTrafficPolicy: Local`). The
+  emitted policy is additive: pod-to-pod isolation via vnet membership keeps
+  working unchanged, *and* external traffic on the exposed `targetPort` reaches
+  the pod.
+  - Default-on. Opt out per-Service or per-Namespace via
+    `kubectl annotate ... kube-vnet/external-allow=false`.
+  - Port-scoped to `targetPort` only — admin/metrics ports on the same pod
+    stay protected.
+  - Headless Services, `ExternalName` Services, and Services with no
+    `spec.selector` don't trigger emission (no pod set to scope to).
+  - Emitted policies carry `kube-vnet.system/role=external-allow`; protected
+    by the `system-labels-vap` (extended in ADR 0037); cleaned up by the
+    ADR 0036 pre-delete hook on `helm uninstall`.
+  - New RBAC: `corev1.Services` get/list/watch on the operator's ClusterRole.
+
 ### Removed
 
 - **`--label-prefix` flag and `operator.labelPrefix` chart value removed.**

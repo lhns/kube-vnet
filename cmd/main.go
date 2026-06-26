@@ -163,6 +163,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	extAllowReconciler := &controller.ExternalAllowReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: nsFilter,
+		Recorder: mgr.GetEventRecorder("kube-vnet-external-allow"),
+	}
+	if err := extAllowReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up external-allow reconciler")
+		os.Exit(1)
+	}
+
 	diagReconciler := &controller.JoinLabelDiagnosticReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

@@ -251,6 +251,35 @@ kubectl get vnet -A
 
 If `READY` for any vnet is False, see [`troubleshooting.md`](troubleshooting.md).
 
+### "My LoadBalancer / NodePort service isn't reachable from outside the cluster"
+
+Per ADR 0038, the operator auto-detects externally-exposed Services (`type: LoadBalancer`, `type: NodePort`, or `type: ClusterIP` with `spec.externalIPs` set) and emits a dedicated NetworkPolicy that allows `ipBlock 0.0.0.0/0` on the Service's `targetPort`. This is **on by default** — you should not need to do anything.
+
+Check the policy was emitted:
+
+```bash
+kubectl get netpol -n <svc-ns> -l kube-vnet.system/role=external-allow
+```
+
+If the list is empty, the Service is either not externally exposed (check `spec.type`), has no `spec.selector` (headless or manually-managed Endpoints), or one of the opt-out signals is set:
+
+```bash
+kubectl get svc -n <svc-ns> <svc-name> \
+  -o jsonpath='{.metadata.annotations.kube-vnet/external-allow}{"\n"}'
+kubectl get ns <svc-ns> \
+  -o jsonpath='{.metadata.annotations.kube-vnet/external-allow}{"\n"}'
+# Both should be empty (or anything other than the literal "false").
+```
+
+If you want a tighter source-CIDR allow than `0.0.0.0/0`, opt this Service out and write your own NetworkPolicy:
+
+```bash
+kubectl annotate svc <name> -n <ns> kube-vnet/external-allow=false
+# Then apply your own NetworkPolicy with ipBlock scoped to your LB's source range.
+```
+
+If the policy IS present but external traffic still fails, the issue is below kube-vnet — check CNI enforcement (some CNIs handle `ipBlock` for node-SNAT'd traffic differently), `externalTrafficPolicy`, and the Service's nodePort firewall reachability.
+
 ### "I just ran `helm uninstall` — did the cleanup actually happen?"
 
 The chart's pre-delete hook (ADR 0036) removes operator-managed NetworkPolicies before Helm tears down the controller. To verify after-the-fact:
