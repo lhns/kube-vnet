@@ -121,6 +121,16 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if desired == nil {
 		// Service isn't externally exposed (ClusterIP without externalIPs,
 		// headless, ExternalName, no selector). Clear any stale policy and exit.
+		//
+		// One sub-case is silently confusing: a Service IS externally typed
+		// (LB/NodePort/ClusterIP+externalIPs) but has no spec.selector
+		// (manually-managed Endpoints — the `kubernetes` Service in default,
+		// or a Service abstracting an external database). Surface a Skipped
+		// Event so `kubectl describe svc` explains the gap.
+		if isExternallyExposed(svc) && len(svc.Spec.Selector) == 0 {
+			r.Recorder.Eventf(svc, nil, corev1.EventTypeNormal, "Skipped", "Reconcile",
+				"external-allow skipped: Service has no spec.selector (manually-managed Endpoints); cannot derive a podSelector. Add a selector or write your own NetworkPolicy.")
+		}
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 
