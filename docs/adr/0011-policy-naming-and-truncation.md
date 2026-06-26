@@ -1,6 +1,6 @@
 # 0011 — Policy naming and truncation
 
-Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — policy names are now uniformly `kube-vnet.<homeNS>.<vnet>-<8hex>`; the bare-form `kube-vnet.<vnet>-<8hex>` and per-binding `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>` shapes documented here are obsolete. The truncate-and-hash logic this ADR contributes survives unchanged.)
+Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — policy names are uniformly `kube-vnet.<homeNS>.<vnet>-<8hex>`; the bare-form `kube-vnet.<vnet>-<8hex>` and per-binding `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>` shapes documented here are obsolete. The truncate-and-hash logic this ADR contributes survives unchanged. **Further amended by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md): the shape gains an explicit kind segment — `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` for membership, `kube-vnet.base` for baseline, `kube-vnet.ext.svc.<svcName>-<8hex>` for external-allow, `kube-vnet.ext.host.<port>.<proto>-<8hex>` for hostPort (ADR 0040).**)
 
 ## Context
 

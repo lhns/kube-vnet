@@ -44,6 +44,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 36. [0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall](0036-helm-pre-delete-hook-cleanup.md)
 37. [0037 — `kube-vnet.system/` prefix convention for operator-owned keys](0037-system-prefix-convention-for-operator-owned-keys.md)
 38. [0038 — Auto-allow externally-exposed Services](0038-auto-allow-externally-exposed-services.md)
+39. [0039 — Uniform kind-prefixed naming for operator-emitted NetworkPolicies](0039-uniform-kind-prefixed-policy-naming.md)
 
 ## Format
 

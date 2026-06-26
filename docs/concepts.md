@@ -186,13 +186,13 @@ Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 003
 
 **Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
 
-The baseline `NetworkPolicy` is named `kube-vnet` and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
+The baseline `NetworkPolicy` is named `kube-vnet.base` (per [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)) and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet
+  name: kube-vnet.base
   namespace: <ns>
   labels:
     kube-vnet.system/managed-by: kube-vnet
@@ -225,7 +225,7 @@ See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (superseded
 
 The whole policy set is **two layers stacked**:
 
-1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet` per managed namespace. `policyTypes: [Ingress]`, zero allow rules, `PodSelector: {}` (selects every pod). Egress is never restricted by the baseline.
+1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet.base` per managed namespace. `policyTypes: [Ingress]`, zero allow rules, `PodSelector: {}` (selects every pod). Egress is never restricted by the baseline.
 2. **Membership policies (additive allows)** — one per `(vnet, namespace)`. Select pods that carry `kube-vnet.system/net.<homeNS>.<vnet>` in `[both, ingress]` and add `from:` rules naming peers across all member-bearing namespaces. They only ever *add* to allowed traffic.
 
 For "always-open" patterns like the cluster system vnet (every pod is on `cluster=both`), there's no third layer needed: the cluster membership policy's `from:` rules name every cluster-vnet sender, which under `cluster=default-both` resolves to ≈ every pod. The baseline's deny-all is overridden by the membership's allows via NetworkPolicy union. (Earlier versions had a `--elide-baseline-for` flag here; removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md) — it had no observable effect.)
@@ -241,13 +241,13 @@ NetworkPolicy is additive: a pod's effective allowed ingress is the **union** of
 │                                                                           │
 │   pod orders [system: net.payments=both, net.cluster=egress]              │
 │   selected by: ┌─ baseline (selects every pod)                       ┐    │
-│                ├─ kube-vnet.payments-<hash> (membership: payments)   ┤    │
+│                ├─ kube-vnet.mem.platform.payments-<hash> (membership: payments)   ┤    │
 │                └─ (no cluster membership policy: pod is egress-only) ┘    │
 │   effective:   deny-all  ⊕  allow-from-payments-peers  =  payments-only   │
 │                                                                           │
 │   pod metrics [system: net.cluster=both]                                  │
 │   selected by: ┌─ baseline (selects every pod)                       ┐    │
-│                └─ kube-vnet.cluster-<hash> (membership: cluster)     ┘    │
+│                └─ kube-vnet.mem.cluster-<hash> (membership: cluster)     ┘    │
 │   effective:   deny-all  ⊕  allow-from-cluster-peers  =  allow-from-cluster│
 │                                                                           │
 │   pod cron-x [no system labels (no memberships, or unresolved)]           │
@@ -263,8 +263,8 @@ NetworkPolicy is additive: a pod's effective allowed ingress is the **union** of
 | Pod's system labels | Baseline selects? | Membership policies selecting | Effective ingress |
 |---|---|---|---|
 | (none — unresolved or no memberships) | yes | — | denied (deny-all only) |
-| `net.payments=both` | yes | `kube-vnet.payments-<hash>` | from same-payments peers only |
-| `net.cluster=both` | yes | `kube-vnet.cluster-<hash>` | from any cluster peer (≈ allow-from-anywhere when cluster is universal) |
+| `net.payments=both` | yes | `kube-vnet.mem.platform.payments-<hash>` | from same-payments peers only |
+| `net.cluster=both` | yes | `kube-vnet.mem.cluster-<hash>` | from any cluster peer (≈ allow-from-anywhere when cluster is universal) |
 | `net.payments=both, net.cluster=both` | yes | both `payments` and `cluster` membership policies | union: from payments peers OR cluster peers (≈ allow-from-anywhere) |
 
 Cross-namespace ingress always requires the receiving pod to be a vnet member whose membership policy allows the sender; the deny-all baseline blocks anything else.

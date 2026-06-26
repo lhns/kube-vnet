@@ -1,5 +1,7 @@
 # 0033 — Canonical fully-qualified system labels; per-binding policies removed
 
+> **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.<homeNS>.<vnet>-<8hex>` referenced throughout this ADR is now `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`. The cluster singleton bare-name treatment is preserved inside the new `mem.` prefix: `kube-vnet.cluster-<hash>` → `kube-vnet.mem.cluster-<hash>`. The label keys themselves (`kube-vnet.system/net.*`) are unchanged. See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md).
+
 Status: Accepted
 
 Date: 2026-05-06

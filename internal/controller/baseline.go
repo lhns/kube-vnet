@@ -5,11 +5,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// BaselinePolicyName is the name of the operator-managed default-deny baseline.
-// Per-namespace singleton — namespace scoping handles uniqueness, so no hash
-// suffix is needed. Distinct from every membership/binding name (those all
-// add `-<vnet>...`), so user-chosen vnet/ns combinations cannot collide here.
-const BaselinePolicyName = "kube-vnet"
+// BaselinePolicyName is the name of the operator-managed default-deny
+// baseline policy. Per ADR 0039 the shape is the kind-prefixed
+// `kube-vnet.base` (literal — per-namespace singleton, no identity to
+// hash). The legacy bare `kube-vnet` name is swept by the
+// NamespaceReconciler's migration tail-step on first reconcile after
+// upgrade.
+const BaselinePolicyName = "kube-vnet.base"
+
+// LegacyBaselinePolicyName is the pre-ADR-0039 literal baseline name.
+// Used only by the migration tail-step to identify policies that need
+// cleanup. After the sweep this constant is unused; it stays around for
+// one minor release as an explicit reminder of the migration before
+// being deleted.
+const LegacyBaselinePolicyName = "kube-vnet"
 
 // DesiredBaseline returns the deny-all baseline NetworkPolicy for a managed
 // namespace. Per ADR 0030, the baseline is uniformly deny-all ingress

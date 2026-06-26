@@ -10,6 +10,36 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Changed
+
+- **Uniform kind-prefixed naming for every operator-emitted NetworkPolicy
+  (ADR 0039).** All operator-managed policies now carry a visible kind segment
+  as the second dot-component of their name:
+
+  | Kind | Before | After |
+  |---|---|---|
+  | Baseline | `kube-vnet` | `kube-vnet.base` |
+  | Cluster vnet membership | `kube-vnet.cluster-<8hex>` | `kube-vnet.mem.cluster-<8hex>` |
+  | Namespaced vnet membership | `kube-vnet.<homeNS>.<vnet>-<8hex>` | `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` |
+  | External-allow (Service) | `kube-vnet.external-<svcName>-<8hex>` | `kube-vnet.ext.svc.<svcName>-<8hex>` |
+
+  Three-letter kind slugs (`base`, `mem`, `ext`) make the policy's purpose
+  visible at a glance instead of implicit in segment count, and leave room
+  for the upcoming `ext.host.<port>.<proto>` shape for hostPort policies
+  (ADR 0040).
+
+  Migration is automatic on first reconcile after upgrade — each reconciler
+  emits under the new name and removes the legacy-named policy in the same
+  cycle. **No manual `kubectl delete` is needed.** Label-driven tooling is
+  unaffected because labels (`kube-vnet.system/managed-by`,
+  `kube-vnet.system/role`, `kube-vnet.system/network`) are independent of
+  policy names — the cleanup hook (ADR 0036), system-labels VAP (ADR 0037),
+  and every diagnostic query in the operations playbook keep working
+  unchanged.
+
+  If you maintain dashboards or alerting rules keyed on specific policy
+  names, update them; everything keyed on labels keeps working.
+
 ### Added
 
 - **Auto-allow for externally-exposed Services (ADR 0038).** A new

@@ -221,7 +221,7 @@ func TestExternalAllowPolicyName_DeterministicAndCapped(t *testing.T) {
 	if len(name) > 63 {
 		t.Errorf("name length %d > 63: %q", len(name), name)
 	}
-	if !strings.HasPrefix(name, "kube-vnet.external-") {
+	if !strings.HasPrefix(name, "kube-vnet.ext.svc.") {
 		t.Errorf("missing prefix: %q", name)
 	}
 	// Determinism.

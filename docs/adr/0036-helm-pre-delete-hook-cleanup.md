@@ -12,8 +12,8 @@ Refines: [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (baseline +
 
 The result: after uninstall, the cluster is left with frozen enforcement and no controller to keep it in sync.
 
-- Every previously-managed namespace still has its `kube-vnet` baseline (`PodSelector: {}`, `policyTypes: [Ingress]`, no allow rules → deny-all).
-- Every member-bearing namespace still has its `kube-vnet.<homeNS>.<vnet>-<hash>` membership policies pinning the old peer lists.
+- Every previously-managed namespace still has its `kube-vnet.base` baseline (`PodSelector: {}`, `policyTypes: [Ingress]`, no allow rules → deny-all).
+- Every member-bearing namespace still has its `kube-vnet.mem.<homeNS>.<vnet>-<hash>` membership policies pinning the old peer lists.
 - New pods don't get `kube-vnet.system/net.*` labels stamped (the resolution controller is gone). They're selected by the baseline → deny-all → unreachable.
 - Existing pods that should transition (label edits, namespace flips, vnet edits) have no controller to drive the transition. They stay in whatever state they were in at uninstall time.
 

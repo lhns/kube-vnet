@@ -1,6 +1,6 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity; the operator-owned label keys introduced here — `kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system` — were moved to the `kube-vnet.system/` prefix by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md), generalizing the convention already used for stamped pod labels)
+Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity; the operator-owned label keys introduced here — `kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system` — were moved to the `kube-vnet.system/` prefix by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md), generalizing the convention already used for stamped pod labels; **policy names were updated to include explicit kind prefixes by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) — baseline becomes `kube-vnet.base`, membership becomes `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`**)
 
 Date: 2026-05-05
 

@@ -1,5 +1,7 @@
 # ADR 0038 — Auto-allow externally-exposed Services
 
+> **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.external-<svcName>-<8hex>` referenced in this ADR is now `kube-vnet.ext.svc.<svcName>-<8hex>`. The `kube-vnet.system/source` label value changed from `service/<svcName>` to a bare `<svcName>` in 2c798f2 (label values can't contain `/`). See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) for the new naming convention.
+
 **Status**: Accepted (2026-06-26)
 
 ## Context
@@ -37,7 +39,7 @@ Headless Services (`clusterIP: None`), `ExternalName` Services, and Services wit
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet.external-<service-name>-<8hex>
+  name: kube-vnet.ext.svc.<service-name>-<8hex>
   namespace: <service-NS>
   labels:
     kube-vnet.system/managed-by: kube-vnet

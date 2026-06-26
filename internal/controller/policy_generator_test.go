@@ -238,14 +238,41 @@ func TestPolicyNames_StableAcrossCalls(t *testing.T) {
 }
 
 func TestPolicyNames_Shape(t *testing.T) {
-	// Per ADR 0033, the only membership-policy shape is
-	// kube-vnet.<homeNS>.<vnet>-<8hex>.
-	if got := BaselinePolicyName; got != "kube-vnet" {
-		t.Errorf("baseline = %q want kube-vnet", got)
+	// Per ADR 0039, every operator-emitted policy carries an explicit kind
+	// segment as the second dot-component: base / mem / ext.
+	if got := BaselinePolicyName; got != "kube-vnet.base" {
+		t.Errorf("baseline = %q want kube-vnet.base", got)
 	}
 	got := PolicyName("payments", "platform")
-	if !strings.HasPrefix(got, "kube-vnet.platform.payments-") {
+	if !strings.HasPrefix(got, "kube-vnet.mem.platform.payments-") {
 		t.Errorf("policy shape: %q", got)
+	}
+}
+
+func TestPolicyNames_KindPrefix(t *testing.T) {
+	// Lock in the kind-prefix convention per ADR 0039.
+	cases := []struct {
+		name    string
+		got     string
+		want    string
+		isExact bool // true → check equality; false → check prefix
+	}{
+		{"baseline", BaselinePolicyName, "kube-vnet.base", true},
+		{"membership_namespaced", PolicyName("foo", "bar"), "kube-vnet.mem.bar.foo-", false},
+		{"membership_cluster", PolicyName(SystemVnetCluster, ""), "kube-vnet.mem.cluster-", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.isExact {
+				if c.got != c.want {
+					t.Errorf("got %q, want %q", c.got, c.want)
+				}
+			} else {
+				if !strings.HasPrefix(c.got, c.want) {
+					t.Errorf("got %q, want prefix %q", c.got, c.want)
+				}
+			}
+		})
 	}
 }
 
@@ -417,7 +444,7 @@ func TestGenerate_ClusterVnet_BareSelectorAndName(t *testing.T) {
 	if len(out.Policies) != 2 {
 		t.Fatalf("expected 2 policies (one per member NS), got %d", len(out.Policies))
 	}
-	wantName := "kube-vnet." + SystemVnetCluster
+	wantName := "kube-vnet." + PolicyKindMembership + "." + SystemVnetCluster
 	wantKey := "kube-vnet.system/net." + SystemVnetCluster
 	for _, p := range out.Policies {
 		if !strings.HasPrefix(p.Name, wantName+"-") {

@@ -66,6 +66,20 @@ const (
 
 	// FieldManager is the server-side-apply field manager name used by the operator.
 	FieldManager = "kube-vnet"
+
+	// Policy name kind prefixes per ADR 0039. Every operator-emitted
+	// NetworkPolicy carries one of these as the second dot-segment of its
+	// name, making the kind visible at a glance instead of implicit in
+	// segment count. Format: `kube-vnet.<kind>.<identity>-<8hex>`.
+	PolicyKindBaseline   = "base"
+	PolicyKindMembership = "mem"
+	PolicyKindExternal   = "ext"
+
+	// External-allow source kinds per ADR 0039 / 0040. `svc` covers
+	// Service-fronted exposures (LB/NodePort/ClusterIP+externalIPs);
+	// `host` covers pod-direct exposures (hostPort).
+	PolicySourceKindService  = "svc"
+	PolicySourceKindHostPort = "host"
 )
 
 // Direction is the per-pod direction of a vnet membership. Set as the value
@@ -222,21 +236,41 @@ func SystemLabelKey(homeNS, vnet string) string {
 	return LabelSystemNetPrefix + homeNS + "." + vnet
 }
 
-// PolicyName returns the deterministic NetworkPolicy name. Per ADR 0033 the
-// shape is uniformly `kube-vnet.<homeNS>.<vnet>-<8hex>` for every vnet
-// (user and system). The 8-hex suffix is a SHA-256-based identity hash that
-// disambiguates against name collisions; see ADR 0011 for the truncate-and-
-// hash overflow handler.
+// PolicyName returns the deterministic membership NetworkPolicy name. Per
+// ADR 0039 the shape is `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` for
+// namespaced vnets, or `kube-vnet.mem.cluster-<8hex>` for the cluster
+// singleton (per ADR 0033 amendment — the cluster vnet retains a bare
+// identity inside the mem.<…> prefix because cluster has no homeNS). The
+// 8-hex suffix is a SHA-256-based identity hash that disambiguates against
+// name collisions; see ADR 0011 for the truncate-and-hash overflow handler.
 func PolicyName(vnet, homeNS string) string {
 	if vnet == SystemVnetCluster {
-		// Cluster is the cluster-wide singleton; bare-named everywhere
-		// per ADR 0033 amendment. Hash inputs use empty homeNS so the
-		// name is stable regardless of which NS the operator runs in.
-		return truncatePolicyName(fmt.Sprintf("kube-vnet.%s-%s",
-			SystemVnetCluster, policyHash("membership", "", SystemVnetCluster)))
+		return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s-%s",
+			PolicyKindMembership, SystemVnetCluster, policyHash("membership", "", SystemVnetCluster)))
 	}
-	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s-%s",
-		homeNS, vnet, policyHash("membership", homeNS, vnet)))
+	return truncatePolicyName(fmt.Sprintf("kube-vnet.%s.%s.%s-%s",
+		PolicyKindMembership, homeNS, vnet, policyHash("membership", homeNS, vnet)))
+}
+
+// LegacyPolicyNamePrefix returns the prefix every operator-emitted
+// NetworkPolicy from versions before ADR 0039 carried. Used by the
+// reconciler's migration tail-step to identify old-format policies that
+// need to be cleaned up on first reconcile after upgrade.
+const LegacyPolicyNamePrefix = "kube-vnet"
+
+// IsLegacyMembershipPolicyName returns true if the policy name matches the
+// pre-ADR-0039 membership shape `kube-vnet.<…non-kind-segment…>` and NOT
+// the new shape `kube-vnet.<kind>.<…>`. Used by the migration tail-step.
+func IsLegacyMembershipPolicyName(name string) bool {
+	// New format always has a kind segment second: kube-vnet.base / .mem. / .ext.
+	for _, kind := range []string{PolicyKindBaseline, PolicyKindMembership, PolicyKindExternal} {
+		if strings.HasPrefix(name, "kube-vnet."+kind) {
+			return false
+		}
+	}
+	// Anything else that starts with kube-vnet. (or is the literal old
+	// baseline name "kube-vnet") is legacy.
+	return name == "kube-vnet" || strings.HasPrefix(name, "kube-vnet.")
 }
 
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.

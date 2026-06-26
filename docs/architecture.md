@@ -105,7 +105,7 @@ For each enqueued `VirtualNetwork` request, `Reconcile` does roughly:
 |---|---|---|
 | `VirtualNetworkReconciler` | Per-vnet membership policies (label-driven and binding-driven) | `VirtualNetwork`, `Pod`, `NetworkPolicy`, `VirtualNetworkBinding` events |
 | `VirtualNetworkBindingReconciler` | The binding's own status (`Ready`, `attachedPods`, `observedGeneration`) | `VirtualNetworkBinding`, `Pod` events |
-| `NamespaceReconciler` | The baseline (`kube-vnet`) lifecycle in every managed namespace | `Namespace` events |
+| `NamespaceReconciler` | The baseline (`kube-vnet.base`, per ADR 0039) lifecycle in every managed namespace | `Namespace` events |
 | `SystemVnetReconciler` | The operator-managed `namespace` (per-NS) and `cluster` (cluster-wide) system VirtualNetworks | `Namespace`, `VirtualNetwork` events |
 | `ResolutionReconciler` | The `kube-vnet.system/net.<vnet>=<direction>` labels stamped on every managed pod | `Pod`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` events |
 
@@ -200,7 +200,7 @@ The home-namespace policy *does* have a normal `OwnerReference` to the VirtualNe
 
 ## Baseline lifecycle
 
-The `kube-vnet` baseline is owned exclusively by the `NamespaceReconciler`. Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a single uniform baseline shape:
+The `kube-vnet.base` baseline (per ADR 0039) is owned exclusively by the `NamespaceReconciler`. Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a single uniform baseline shape:
 
 - `policyTypes: [Ingress]`, no allow rules → deny-all ingress.
 - `podSelector: {}` selects every pod in the namespace. Vnet members get additive allows from their membership policies; per NetworkPolicy union semantics those allows override the baseline's deny-all. Per [ADR 0035](adr/0035-removal-of-elide-baseline-for.md), the previous `--elide-baseline-for` exemption mechanism was removed — it had no observable effect on connectivity.

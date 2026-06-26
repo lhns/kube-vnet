@@ -10,7 +10,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Bare label form** — a join label without a namespace prefix: `kube-vnet/net.<vnet-name>=<direction>`. Used by pods *in the VirtualNetwork's home namespace*. (Pods in the home namespace may also use the prefixed form — see [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).) Compare *prefixed label form*.
 
-**Baseline** — the `NetworkPolicy` named `kube-vnet` that the operator installs in every managed namespace. `policyTypes: [Ingress]`, no allow rules → deny-all ingress. `podSelector: {}` selects every pod in the namespace; vnet members get additive allows via their membership policies (per NetworkPolicy union, those allows override the baseline's deny-all). Egress is unrestricted by the baseline. Owned by the `NamespaceReconciler`. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md).
+**Baseline** — the `NetworkPolicy` named `kube-vnet.base` (per [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)) that the operator installs in every managed namespace. `policyTypes: [Ingress]`, no allow rules → deny-all ingress. `podSelector: {}` selects every pod in the namespace; vnet members get additive allows via their membership policies (per NetworkPolicy union, those allows override the baseline's deny-all). Egress is unrestricted by the baseline. Owned by the `NamespaceReconciler`. See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md).
 
 **Binding** — short for `VirtualNetworkBinding`. Also the CRD's short name (`kubectl get vnb`).
 
