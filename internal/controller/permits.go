@@ -41,16 +41,22 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 	if vnetName == SystemVnetCluster {
 		return true, nil
 	}
-	if podNS == homeNS {
-		return true, nil
-	}
 
+	// Verify the vnet exists BEFORE the home-NS short-circuit. A pod in
+	// NS X with a label like `kube-vnet/net.ghost=both` would canonicalize
+	// to key `X.ghost`; the home-NS check would otherwise say "yes,
+	// permitted" even though there's no `ghost` vnet anywhere — which
+	// would lie via the stamp. Caught by
+	// TestIntegration_Resolution_VnetMissing_NoStamp.
 	var v vnetv1alpha1.VirtualNetwork
 	if err := c.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: vnetName}, &v); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
 		return false, err
+	}
+	if podNS == v.Namespace {
+		return true, nil
 	}
 	return matchesAllowedNamespaces(ctx, c, v.Spec.AllowedNamespaces, podNS)
 }

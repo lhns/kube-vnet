@@ -85,6 +85,17 @@ func TestPermits(t *testing.T) {
 			want:    true,
 		},
 		{
+			// Regression: prior implementation short-circuited on home-NS
+			// before verifying vnet existence, causing the stamp to lie
+			// for pod-labels referencing non-existent vnets in the pod's
+			// own NS. Vnet missing → not permitted, even from home NS.
+			name:    "home_NS_but_vnet_missing",
+			objects: nil,
+			vnetKey: VnetKey("platform.payments"),
+			podNS:   "platform",
+			want:    false,
+		},
+		{
 			name:    "non_home_NS_with_nil_allowed",
 			objects: []runtime.Object{mkVnet("payments", "platform", nil)},
 			vnetKey: VnetKey("platform.payments"),
