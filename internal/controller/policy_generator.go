@@ -41,8 +41,13 @@ const (
 	// traffic reaches the pod while pod-to-pod isolation is preserved.
 	LabelRoleExternalAllow = "external-allow"
 	// LabelSource is the operator-owned reference back to the resource that
-	// caused this policy to be emitted, e.g. "service/traefik". Used by the
-	// external-allow reconciler's cleanup tail-step and as a debugging aid.
+	// caused this policy to be emitted — the bare resource name (e.g.
+	// `traefik`). Used by the external-allow reconciler's drift-correction
+	// mapper to enqueue the right Service when a managed policy event fires.
+	// For v1 the source is always a Service; if we later add Pod-as-source
+	// (hostPort detection), a separate LabelSourceKind would carry the kind.
+	// Bare name, not "service/traefik", because slashes are forbidden in
+	// label values (label keys may contain a single slash; values may not).
 	LabelSource = "kube-vnet.system/source"
 
 	// NamespaceMetadataNameLabel is the well-known label every namespace carries

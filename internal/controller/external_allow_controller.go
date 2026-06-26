@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -185,7 +184,10 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 			Labels: map[string]string{
 				LabelManagedBy: LabelManagedByValue,
 				LabelRole:      LabelRoleExternalAllow,
-				LabelSource:    "service/" + svc.Name,
+				// Bare service name — label values can't contain `/`. The
+				// kind ("service") is implied; if we later add Pod-source
+				// (hostPort), a separate LabelSourceKind would carry it.
+				LabelSource: svc.Name,
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -340,15 +342,10 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // externalAllowPolicyToService derives the source Service from the
-// `kube-vnet.system/source: service/<name>` label so a deleted/edited
-// policy re-enqueues only the affected Service, not the whole NS.
+// `kube-vnet.system/source: <name>` label so a deleted/edited policy
+// re-enqueues only the affected Service, not the whole NS.
 func externalAllowPolicyToService(_ context.Context, obj client.Object) []reconcile.Request {
-	src := obj.GetLabels()[LabelSource]
-	const prefix = "service/"
-	if !strings.HasPrefix(src, prefix) {
-		return nil
-	}
-	name := strings.TrimPrefix(src, prefix)
+	name := obj.GetLabels()[LabelSource]
 	if name == "" {
 		return nil
 	}

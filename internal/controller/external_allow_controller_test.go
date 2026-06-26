@@ -39,7 +39,7 @@ func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
 	if pol.Labels[LabelRole] != LabelRoleExternalAllow {
 		t.Errorf("wrong role label: %q", pol.Labels[LabelRole])
 	}
-	if pol.Labels[LabelSource] != "service/traefik" {
+	if pol.Labels[LabelSource] != "traefik" {
 		t.Errorf("wrong source label: %q", pol.Labels[LabelSource])
 	}
 	if got := pol.Spec.PodSelector.MatchLabels["app"]; got != "traefik" {
