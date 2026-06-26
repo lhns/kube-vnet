@@ -262,12 +262,27 @@ jobs:
           NODE_IP=$(docker inspect kube-vnet-e2e-helm-control-plane \
             -f '{{.NetworkSettings.Networks.kind.IPAddress}}')
 
-          # Positive: external curl succeeds.
-          http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-            "http://$NODE_IP:$NODEPORT/" || echo "timeout")
+          # Wait for kube-proxy to program the NodePort iptables rule.
+          # Newly-created Services need a moment before kube-proxy syncs;
+          # without this, curl sees "connection refused" immediately and
+          # the test fails before NetworkPolicy enforcement even comes
+          # into play.
+          kubectl wait --for=jsonpath='{.subsets[0].addresses[0].ip}' \
+            endpoints/nginx -n ext-allow-e2e --timeout=60s
+
+          # Positive: external curl succeeds. Retry for ~30s with 2s
+          # backoff to ride out any residual kube-proxy sync lag.
+          http_code=000
+          for i in {1..15}; do
+            http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+              "http://$NODE_IP:$NODEPORT/" || echo "000")
+            [ "$http_code" = "200" ] && break
+            sleep 2
+          done
           if [ "$http_code" != "200" ]; then
             echo "FAIL: external HTTP returned $http_code (expected 200)"
             kubectl get netpol -n ext-allow-e2e -o yaml
+            kubectl get endpoints -n ext-allow-e2e -o yaml
             kubectl describe svc nginx -n ext-allow-e2e
             exit 1
           fi
@@ -284,10 +299,20 @@ jobs:
             fi
             sleep 2
           done
+          # Give the CNI a moment to drop in-flight conntrack entries +
+          # apply the new NetworkPolicy verdict to new flows.
+          sleep 5
           # Now external traffic is blocked again by the baseline +
-          # membership policies.
-          http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
-            "http://$NODE_IP:$NODEPORT/" || echo "timeout")
+          # membership policies. Retry briefly — the failure mode here is
+          # "still 200" or hang; one-shot is enough but a couple of attempts
+          # smooths over CNI propagation jitter.
+          http_code=000
+          for i in {1..5}; do
+            http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 \
+              "http://$NODE_IP:$NODEPORT/" || echo "000")
+            [ "$http_code" != "200" ] && break
+            sleep 2
+          done
           if [ "$http_code" = "200" ]; then
             echo "FAIL: opt-out didn't take effect — still HTTP 200"
             exit 1
