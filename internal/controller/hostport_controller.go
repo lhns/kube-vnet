@@ -102,56 +102,36 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// Cleanup tail-step: delete any role=external-allow policies in this NS
-	// whose source label marks them as host-source but whose (port, proto)
-	// is no longer in the desired set.
-	var existing networkingv1.NetworkPolicyList
-	if err := r.List(ctx, &existing,
-		client.InNamespace(ns.Name),
-		client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow},
+	// Self-heal: sweep any host-source external-allow policies in this NS
+	// whose (port, protocol) isn't in the desired set. Filter to
+	// LabelSourceKind=host so svc-source policies stay untouched.
+	keep := make(map[client.ObjectKey]bool, len(desired))
+	for key := range desired {
+		keep[client.ObjectKey{Namespace: ns.Name, Name: hostPortPolicyName(ns.Name, key)}] = true
+	}
+	if err := sweepStalePolicies(ctx, r.Client,
+		inNamespacePolicyLabels(ns.Name, map[string]string{
+			LabelRole:       LabelRoleExternalAllow,
+			LabelSourceKind: LabelSourceKindHost,
+		}),
+		keep,
 	); err != nil {
 		return ctrl.Result{}, err
-	}
-	for i := range existing.Items {
-		p := &existing.Items[i]
-		// Dispatch by LabelSourceKind: only sweep policies we own.
-		if p.Labels[LabelSourceKind] != LabelSourceKindHost {
-			continue
-		}
-		key, ok := parseHostSourceLabel(p.Labels[LabelSource])
-		if !ok {
-			continue
-		}
-		if _, want := desired[key]; want {
-			continue
-		}
-		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
 	}
 	return ctrl.Result{}, nil
 }
 
 // deleteAllInNamespace removes every operator-emitted host-source
 // external-allow policy in the NS. Called when the NS opts out.
+// Empty `keep` set passed to the shared sweeper.
 func (r *HostPortReconciler) deleteAllInNamespace(ctx context.Context, ns string) error {
-	var existing networkingv1.NetworkPolicyList
-	if err := r.List(ctx, &existing,
-		client.InNamespace(ns),
-		client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow},
-	); err != nil {
-		return err
-	}
-	for i := range existing.Items {
-		p := &existing.Items[i]
-		if p.Labels[LabelSourceKind] != LabelSourceKindHost {
-			continue
-		}
-		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
+	return sweepStalePolicies(ctx, r.Client,
+		inNamespacePolicyLabels(ns, map[string]string{
+			LabelRole:       LabelRoleExternalAllow,
+			LabelSourceKind: LabelSourceKindHost,
+		}),
+		nil, // nothing to keep — sweep them all
+	)
 }
 
 // desiredHostPortKeys returns the set of distinct (port, protocol) tuples

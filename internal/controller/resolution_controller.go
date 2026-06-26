@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -313,48 +312,28 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 		desired[stamp] = "true"
 	}
 
-	// Diff against current — covers both kube-vnet.system/net.* and
-	// kube-vnet.system/host-port.* labels.
-	isManagedLabel := func(k string) bool {
-		return strings.HasPrefix(k, LabelSystemNetPrefix) ||
-			strings.HasPrefix(k, LabelSystemHostPortPrefix)
-	}
-	current := map[string]string{}
-	for k, v := range pod.Labels {
-		if isManagedLabel(k) {
-			current[k] = v
-		}
-	}
-	if mapsEqualSorted(current, desired) {
-		// Already in sync — no patch needed (avoid generating unnecessary writes).
-		// Still ensure the resolved-generation annotation is up to date.
-		gen := pod.Annotations[AnnotationResolvedGeneration]
-		if gen != "" {
-			return nil
-		}
-	}
-
-	// Build the patch: merge the desired keys, remove stale ones.
+	// Diff + apply via the shared label-sync helper. Covers both the
+	// kube-vnet.system/net.* membership family and the new
+	// kube-vnet.system/host-port.* exposure family (ADR 0040).
 	patched := pod.DeepCopy()
-	if patched.Labels == nil {
-		patched.Labels = map[string]string{}
-	}
-	for k := range patched.Labels {
-		if isManagedLabel(k) {
-			if _, keep := desired[k]; !keep {
-				delete(patched.Labels, k)
-			}
-		}
-	}
-	for k, v := range desired {
-		patched.Labels[k] = v
+	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, desired)
+	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] != "" {
+		// Already in sync and the resolved-generation annotation is set —
+		// no API write needed.
+		return nil
 	}
 	if patched.Annotations == nil {
 		patched.Annotations = map[string]string{}
 	}
 	patched.Annotations[AnnotationResolvedGeneration] = fmt.Sprintf("%d", pod.Generation)
-
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
+}
+
+// isResolutionManagedLabel returns true for the two label families the
+// resolution controller stamps on pods.
+func isResolutionManagedLabel(k string) bool {
+	return strings.HasPrefix(k, LabelSystemNetPrefix) ||
+		strings.HasPrefix(k, LabelSystemHostPortPrefix)
 }
 
 // desiredHostPortStamps returns the set of host-port label keys this pod
@@ -385,48 +364,17 @@ func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 // resolved-generation annotation) from pods in disabled namespaces or pods
 // whose namespace transitioned to disabled.
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
-	isManagedLabel := func(k string) bool {
-		return strings.HasPrefix(k, LabelSystemNetPrefix) ||
-			strings.HasPrefix(k, LabelSystemHostPortPrefix)
-	}
-	hasStamped := false
-	for k := range pod.Labels {
-		if isManagedLabel(k) {
-			hasStamped = true
-			break
-		}
-	}
-	if !hasStamped && pod.Annotations[AnnotationResolvedGeneration] == "" {
-		return ctrl.Result{}, nil
-	}
 	patched := pod.DeepCopy()
-	for k := range patched.Labels {
-		if isManagedLabel(k) {
-			delete(patched.Labels, k)
-		}
+	// Empty desired-set → syncManagedLabels removes every managed label.
+	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, nil)
+	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] == "" {
+		return ctrl.Result{}, nil
 	}
 	delete(patched.Annotations, AnnotationResolvedGeneration)
 	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
-}
-
-func mapsEqualSorted(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	keys := make([]string, 0, len(a))
-	for k := range a {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		if a[k] != b[k] {
-			return false
-		}
-	}
-	return true
 }
 
 func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {

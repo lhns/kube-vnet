@@ -147,27 +147,48 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		logger.Error(err, "apply external-allow policy failed")
 		return ctrl.Result{}, err
 	}
+
+	// Self-heal: sweep any other svc-source external-allow policies for
+	// THIS Service whose name doesn't match the desired one. Filter to
+	// LabelSourceKind=svc + LabelSource=svc-<name> so host-source policies
+	// (owned by HostPortReconciler) and other Services' policies stay
+	// untouched.
+	keep := map[client.ObjectKey]bool{
+		{Namespace: svc.Namespace, Name: desired.Name}: true,
+	}
+	if err := sweepStalePolicies(ctx, r.Client,
+		inNamespacePolicyLabels(svc.Namespace, map[string]string{
+			LabelRole:       LabelRoleExternalAllow,
+			LabelSourceKind: LabelSourceKindService,
+			LabelSource:     "svc-" + svc.Name,
+		}),
+		keep,
+	); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
-// deletePolicyForService removes the operator-emitted external-allow policy
-// keyed off this Service, if any. Idempotent.
+// deletePolicyForService removes any operator-emitted external-allow
+// policies for this Service (by LabelSource=svc-<name>). Uses the shared
+// sweeper with an empty keep-set — covers the legacy/drift case where
+// the policy may have a different name than the current emission would
+// compute.
 func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
 	return r.deletePolicyByServiceKey(ctx, svc.Namespace, svc.Name)
 }
 
-// deletePolicyByServiceKey computes the policy name from (namespace,
-// serviceName) and deletes it. Used when the Service object is gone (the
-// reconciler can't construct it) but we still need to clean up. Idempotent.
+// deletePolicyByServiceKey is the same as deletePolicyForService but
+// usable when the Service object isn't available (NotFound path).
 func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
-	stub := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: serviceName}}
-	pol := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: externalAllowPolicyName(stub), Namespace: namespace},
-	}
-	if err := r.Delete(ctx, pol); err != nil && !apierrors.IsNotFound(err) {
-		return err
-	}
-	return nil
+	return sweepStalePolicies(ctx, r.Client,
+		inNamespacePolicyLabels(namespace, map[string]string{
+			LabelRole:       LabelRoleExternalAllow,
+			LabelSourceKind: LabelSourceKindService,
+			LabelSource:     "svc-" + serviceName,
+		}),
+		nil, // nothing to keep — sweep them all
+	)
 }
 
 // buildExternalAllowPolicy constructs the desired NetworkPolicy for a single

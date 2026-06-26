@@ -83,6 +83,19 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		logger.Error(err, "apply baseline failed")
 		return ctrl.Result{}, err
 	}
+
+	// Self-heal: any baseline-labeled policy in this NS whose name doesn't
+	// match the desired one (legacy `kube-vnet` literals, renamed baselines,
+	// orphans from a previous reconciler version) gets swept by name.
+	keep := map[client.ObjectKey]bool{
+		{Namespace: ns.Name, Name: BaselinePolicyName}: true,
+	}
+	if err := sweepStalePolicies(ctx, r.Client,
+		inNamespacePolicyLabels(ns.Name, map[string]string{LabelRole: LabelRoleBaseline}),
+		keep,
+	); err != nil {
+		return ctrl.Result{}, err
+	}
 	return ctrl.Result{}, nil
 }
 
