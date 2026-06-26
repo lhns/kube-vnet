@@ -292,19 +292,36 @@ func selectorFromLabelSelector(s *metav1.LabelSelector) (labels.Selector, error)
 	return metav1.LabelSelectorAsSelector(s)
 }
 
-// applyResolution computes the desired kube-vnet.system/net.* label set,
-// diffs it against the pod's current labels, and patches if needed.
+// applyResolution computes the desired kube-vnet.system/net.* +
+// kube-vnet.system/host-port.* label set, diffs it against the pod's
+// current labels, and patches if needed.
+//
+// Host-port stamps (ADR 0040): for every container port that declares
+// `hostPort != 0`, the resolution controller stamps
+// `kube-vnet.system/host-port.<port>.<proto>=true` on the pod. The
+// HostPortReconciler then emits a NetworkPolicy whose podSelector matches
+// the stamp — making the pod reachable externally on that hostPort.
+// Skipped for hostNetwork pods because NetworkPolicy enforcement on them
+// is CNI-dependent.
 func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, res ResolutionResult) error {
-	// Build desired label map.
+	// Build desired label map: vnet membership labels + host-port stamps.
 	desired := map[string]string{}
 	for vnet, dir := range res.Effective {
 		desired[LabelSystemNetPrefix+string(vnet)] = string(dir)
 	}
+	for stamp := range desiredHostPortStamps(pod) {
+		desired[stamp] = "true"
+	}
 
-	// Diff against current.
+	// Diff against current — covers both kube-vnet.system/net.* and
+	// kube-vnet.system/host-port.* labels.
+	isManagedLabel := func(k string) bool {
+		return strings.HasPrefix(k, LabelSystemNetPrefix) ||
+			strings.HasPrefix(k, LabelSystemHostPortPrefix)
+	}
 	current := map[string]string{}
 	for k, v := range pod.Labels {
-		if strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isManagedLabel(k) {
 			current[k] = v
 		}
 	}
@@ -323,7 +340,7 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 		patched.Labels = map[string]string{}
 	}
 	for k := range patched.Labels {
-		if strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isManagedLabel(k) {
 			if _, keep := desired[k]; !keep {
 				delete(patched.Labels, k)
 			}
@@ -340,13 +357,41 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
 }
 
+// desiredHostPortStamps returns the set of host-port label keys this pod
+// should carry (kube-vnet.system/host-port.<port>.<proto>=true for every
+// declared (port, protocol)). Empty for hostNetwork pods.
+func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
+	out := map[string]bool{}
+	if pod.Spec.HostNetwork {
+		return out
+	}
+	for _, c := range pod.Spec.Containers {
+		for _, cp := range c.Ports {
+			if cp.HostPort == 0 {
+				continue
+			}
+			proto := cp.Protocol
+			if proto == "" {
+				proto = corev1.ProtocolTCP
+			}
+			stamp := LabelSystemHostPortPrefix + fmt.Sprintf("%d.%s", cp.HostPort, strings.ToLower(string(proto)))
+			out[stamp] = true
+		}
+	}
+	return out
+}
+
 // stripStampedLabels removes any kube-vnet.system/net.* labels (and the
 // resolved-generation annotation) from pods in disabled namespaces or pods
 // whose namespace transitioned to disabled.
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
+	isManagedLabel := func(k string) bool {
+		return strings.HasPrefix(k, LabelSystemNetPrefix) ||
+			strings.HasPrefix(k, LabelSystemHostPortPrefix)
+	}
 	hasStamped := false
 	for k := range pod.Labels {
-		if strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isManagedLabel(k) {
 			hasStamped = true
 			break
 		}
@@ -356,7 +401,7 @@ func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *core
 	}
 	patched := pod.DeepCopy()
 	for k := range patched.Labels {
-		if strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isManagedLabel(k) {
 			delete(patched.Labels, k)
 		}
 	}

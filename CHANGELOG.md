@@ -42,6 +42,26 @@ release. Pinning to an exact version is recommended.
 
 ### Added
 
+- **Auto-allow for hostPort pods (ADR 0040).** Closes ADR 0038's deferred
+  hostPort case. A new `HostPortReconciler` watches Pods (filtered to those
+  declaring any `hostPort`) and emits one NetworkPolicy per
+  `(namespace, port, protocol)` triple seen in the namespace. The policy's
+  `podSelector` matches `kube-vnet.system/host-port.<port>.<protocol>=true`,
+  stamped on each backing pod by the resolution controller; ingress allows
+  `ipBlock: 0.0.0.0/0` on the matching `(port, protocol)`.
+
+  Per-`(port, protocol)` keying — not per-pod — keeps policies stable across
+  pod replacement (Deployment rollouts don't churn policies). Same port at
+  TCP vs UDP get distinct policies — no cross-protocol leakage.
+
+  Default-on. Opt out per-namespace via `kube-vnet/external-allow=false` or
+  `kube-vnet/disabled=true` on the Namespace. `hostNetwork: true` pods are
+  skipped — NetworkPolicy enforcement on them is CNI-dependent.
+
+  Policies carry `kube-vnet.system/role=external-allow`,
+  `kube-vnet.system/source=host-<port>-<protocol>`. Cleanup hook (ADR 0036)
+  and system-labels VAP (ADR 0037) cover them automatically.
+
 - **Auto-allow for externally-exposed Services (ADR 0038).** A new
   `ExternalAllowReconciler` watches `corev1.Service` and emits a dedicated
   port-scoped `from: ipBlock 0.0.0.0/0` `NetworkPolicy` for every Service of

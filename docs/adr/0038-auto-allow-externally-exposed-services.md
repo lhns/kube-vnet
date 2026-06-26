@@ -1,6 +1,8 @@
 # ADR 0038 — Auto-allow externally-exposed Services
 
 > **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.external-<svcName>-<8hex>` referenced in this ADR is now `kube-vnet.ext.svc.<svcName>-<8hex>`. The `kube-vnet.system/source` label value changed from `service/<svcName>` to a bare `<svcName>` in 2c798f2 (label values can't contain `/`). See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) for the new naming convention.
+>
+> **Note (ADR 0040 follow-up, 2026-06-26)**: `hostPort` containers, listed below under "Out of scope" as deferred-to-v2, are now handled by [ADR 0040](0040-auto-allow-hostport-pods.md) — per-`(NS, port, protocol)` policies under the same `kube-vnet.ext.host.*` naming family, using operator-stamped pod labels for the podSelector.
 
 **Status**: Accepted (2026-06-26)
 

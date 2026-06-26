@@ -40,6 +40,13 @@ const (
 	// composing additively with membership/baseline policies so external
 	// traffic reaches the pod while pod-to-pod isolation is preserved.
 	LabelRoleExternalAllow = "external-allow"
+	// LabelSystemHostPortPrefix is the prefix on operator-stamped pod labels
+	// that mark a pod as exposing a hostPort. Per ADR 0040 the format is
+	// `kube-vnet.system/host-port.<port>.<protocol>=true` (one label per
+	// distinct (port, protocol) the pod declares). The HostPortReconciler
+	// emits a per-(NS, port, protocol) NetworkPolicy whose podSelector
+	// matches this label, allowing `ipBlock: 0.0.0.0/0` on that port.
+	LabelSystemHostPortPrefix = "kube-vnet.system/host-port."
 	// LabelSource is the operator-owned reference back to the resource that
 	// caused this policy to be emitted — the bare resource name (e.g.
 	// `traefik`). Used by the external-allow reconciler's drift-correction

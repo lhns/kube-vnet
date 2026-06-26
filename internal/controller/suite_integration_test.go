@@ -156,6 +156,17 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	hostPortReconciler := &HostPortReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: NewNamespaceFilter(nil),
+	}
+	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup host-port reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		if err := mgr.Start(ctx); err != nil {

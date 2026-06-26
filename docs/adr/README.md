@@ -45,6 +45,7 @@ For long-form background on the project, see [`../kube-vnet-design.md`](../kube-
 37. [0037 — `kube-vnet.system/` prefix convention for operator-owned keys](0037-system-prefix-convention-for-operator-owned-keys.md)
 38. [0038 — Auto-allow externally-exposed Services](0038-auto-allow-externally-exposed-services.md)
 39. [0039 — Uniform kind-prefixed naming for operator-emitted NetworkPolicies](0039-uniform-kind-prefixed-policy-naming.md)
+40. [0040 — Auto-allow for hostPort pods via per-port stamping](0040-auto-allow-hostport-pods.md)
 
 ## Format
 

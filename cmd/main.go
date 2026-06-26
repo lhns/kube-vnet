@@ -174,6 +174,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	hostPortReconciler := &controller.HostPortReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: nsFilter,
+	}
+	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up host-port reconciler")
+		os.Exit(1)
+	}
+
 	diagReconciler := &controller.JoinLabelDiagnosticReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
