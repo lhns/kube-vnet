@@ -360,3 +360,99 @@ func TestIntegration_Resolution_BindingLabelConflictIntersection(t *testing.T) {
 		t.Errorf("v system label should be absent (intersection of ingress + egress = none), got %q; labels=%v", got, p.Labels)
 	}
 }
+
+// TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp covers the bug
+// surfaced by the user: a pod in NS X with `kube-vnet/net.<Y>.<vnet>=both`
+// where the target vnet exists but its allowedNamespaces doesn't include X.
+// The operator MUST NOT stamp `kube-vnet.system/net.<Y>.<vnet>` on the pod
+// — the stamp would lie about membership (the membership policy correctly
+// excludes the pod regardless).
+func TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	nsA := uniqueNS(t, "perm-nsa")
+	nsB := uniqueNS(t, "perm-nsb")
+	mustCreate(t, makeNamespace(nsA, nil, nil))
+	mustCreate(t, makeNamespace(nsB, nil, nil))
+
+	// Vnet in nsB with NO allowedNamespaces → only nsB pods can join.
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: nsB},
+	})
+
+	// Pod in nsA tries to join via prefixed label.
+	mustCreate(t, makePod(nsA, "p", map[string]string{
+		"kube-vnet/net." + nsB + ".private": "both",
+	}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: nsA, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net."+nsB+".private"]; ok {
+		t.Errorf("cross-NS not-permitted vnet should NOT be stamped, got %q on pod; labels=%v", got, p.Labels)
+	}
+}
+
+// TestIntegration_Resolution_Binding_NotPermitted_NoStamp: a
+// VirtualNetworkBinding in nsA references a vnet in nsB whose
+// allowedNamespaces doesn't permit nsA. The binding's intent is rejected;
+// no stamp on the pod.
+func TestIntegration_Resolution_Binding_NotPermitted_NoStamp(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	nsA := uniqueNS(t, "perm-bind-a")
+	nsB := uniqueNS(t, "perm-bind-b")
+	mustCreate(t, makeNamespace(nsA, nil, nil))
+	mustCreate(t, makeNamespace(nsB, nil, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: nsB},
+	})
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: nsA},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "private", Namespace: nsB},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	mustCreate(t, makePod(nsA, "p", map[string]string{"app": "p"}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: nsA, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net."+nsB+".private"]; ok {
+		t.Errorf("binding-to-not-permitted vnet should NOT be stamped, got %q; labels=%v", got, p.Labels)
+	}
+}
+
+// TestIntegration_Resolution_VnetMissing_NoStamp: a pod-label references
+// a vnet that doesn't exist. No stamp. (The JoinLabelDiagnosticReconciler
+// emits a BareJoinLabelVnetNotFound Event; not asserted here since this
+// test focuses on the stamping path.)
+func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	ns := uniqueNS(t, "perm-missing")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	mustCreate(t, makePod(ns, "p", map[string]string{
+		"kube-vnet/net.ghost-vnet": "both",
+	}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net."+ns+".ghost-vnet"]; ok {
+		t.Errorf("missing-vnet should NOT be stamped, got %q; labels=%v", got, p.Labels)
+	}
+}

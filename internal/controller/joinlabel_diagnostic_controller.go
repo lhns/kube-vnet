@@ -7,8 +7,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/labels"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -170,39 +168,20 @@ func (r *JoinLabelDiagnosticReconciler) diagPrefixed(ctx context.Context, pod *c
 	)
 }
 
-// permits mirrors VirtualNetworkReconciler.permits (free-standing so this
-// reconciler doesn't depend on the vnet reconciler).
+// permits is the per-vnet membership gate. Thin wrapper around the
+// shared PermitsForVnet helper. See internal/controller/permits.go for
+// the single source of truth across all reconcilers. Translates the
+// shared (ok, err) signature into the (bool) this caller's diagnostic
+// path expects — transient errors are treated as not-permitted for the
+// diagnostic-event purposes (the next reconcile re-evaluates anyway).
 func (r *JoinLabelDiagnosticReconciler) permits(ctx context.Context, v *vnetv1alpha1.VirtualNetwork, podNS string) bool {
-	if podNS == v.Namespace {
-		return true
-	}
-	sel := v.Spec.AllowedNamespaces
-	if sel == nil {
+	ok, err := PermitsForVnet(ctx, r.Client, v, podNS)
+	if err != nil {
 		return false
 	}
-	if sel.All {
-		return true
-	}
-	for _, n := range sel.Names {
-		if n == podNS {
-			return true
-		}
-	}
-	if sel.Selector != nil {
-		nsObj := &corev1.Namespace{}
-		if err := r.Get(ctx, client.ObjectKey{Name: podNS}, nsObj); err != nil {
-			return false
-		}
-		s, err := metav1.LabelSelectorAsSelector(sel.Selector)
-		if err != nil {
-			return false
-		}
-		if s.Matches(labels.Set(nsObj.Labels)) {
-			return true
-		}
-	}
-	return false
+	return ok
 }
+
 
 func (r *JoinLabelDiagnosticReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).

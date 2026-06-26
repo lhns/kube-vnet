@@ -12,7 +12,6 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -249,42 +248,12 @@ func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string
 	return ns, nil
 }
 
-// permits decides whether pods in `ns` are allowed to join `vnet` per spec.allowedNamespaces.
-// The home namespace is always permitted. The Selector path requires fetching the namespace
-// to read its labels; this is cached by the controller-runtime informer.
+// permits is the per-vnet membership gate. Thin wrapper around the
+// shared PermitsForVnet helper so this reconciler's call sites stay
+// readable. See internal/controller/permits.go for the single source
+// of truth across all reconcilers.
 func (r *VirtualNetworkReconciler) permits(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	if ns == vnet.Namespace {
-		return true, nil
-	}
-	sel := vnet.Spec.AllowedNamespaces
-	if sel == nil {
-		return false, nil
-	}
-	if sel.All {
-		return true, nil
-	}
-	for _, n := range sel.Names {
-		if n == ns {
-			return true, nil
-		}
-	}
-	if sel.Selector != nil {
-		nsObj := &corev1.Namespace{}
-		if err := r.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		s, err := metav1.LabelSelectorAsSelector(sel.Selector)
-		if err != nil {
-			return false, err
-		}
-		if s.Matches(labels.Set(nsObj.Labels)) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return PermitsForVnet(ctx, r.Client, vnet, ns)
 }
 
 // discoverMembers lists pods cluster-wide and partitions them into the

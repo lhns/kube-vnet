@@ -104,14 +104,23 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod, ns *corev1.Namespace) ([]ResolutionLayer, error) {
 	var layers []ResolutionLayer
 
+	// Every rule set is filtered through filterPermittedRules before
+	// becoming a layer. Rules that reference vnets the pod's NS can't
+	// actually join get dropped here, so the system-label stamping that
+	// follows resolution only stamps vnets the pod genuinely belongs to.
+	// Without this gate, a pod-label or baseline entry pointing at a
+	// non-permitting vnet would still stamp `kube-vnet.system/net.*` on
+	// the pod — a lying stamp that doesn't match the membership policy
+	// the VirtualNetworkReconciler later generates. See ADR (TODO).
+
 	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
 	// `default`.
-	if rules := r.clusterBaselineRules(ctx, pod); len(rules) > 0 {
+	if rules := r.filterPermittedRules(ctx, r.clusterBaselineRules(ctx, pod), pod.Namespace); len(rules) > 0 {
 		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: rules})
 	}
 
 	// 2. Namespace baseline (ScopeNamespaceBaseline).
-	if nsBaselineRules := r.namespaceBaselineRules(ctx, pod); len(nsBaselineRules) > 0 {
+	if nsBaselineRules := r.filterPermittedRules(ctx, r.namespaceBaselineRules(ctx, pod), pod.Namespace); len(nsBaselineRules) > 0 {
 		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBaseline, Rules: nsBaselineRules})
 	}
 
@@ -120,11 +129,36 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 	var podRules []ResolutionRule
 	podRules = append(podRules, r.bindingRules(ctx, pod)...)
 	podRules = append(podRules, r.podLabelRules(pod)...)
+	podRules = r.filterPermittedRules(ctx, podRules, pod.Namespace)
 	if len(podRules) > 0 {
 		layers = append(layers, ResolutionLayer{Scope: ScopePod, Rules: podRules})
 	}
 
 	return layers, nil
+}
+
+// filterPermittedRules drops rules that reference vnets the pod's NS
+// isn't permitted to join (per Permits, the single-source-of-truth
+// helper in permits.go). Transient apiserver errors result in the rule
+// being dropped — the next reconcile re-evaluates.
+//
+// This is the membership gate for the stamping pipeline. The
+// VirtualNetworkReconciler does the same check independently when
+// generating membership policies; this filter keeps the pod's stamped
+// labels honest by deciding the same thing here.
+func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) []ResolutionRule {
+	if len(rules) == 0 {
+		return rules
+	}
+	out := rules[:0]
+	for _, rule := range rules {
+		ok, err := Permits(ctx, r.Client, rule.Vnet, podNS)
+		if err != nil || !ok {
+			continue
+		}
+		out = append(out, rule)
+	}
+	return out
 }
 
 // clusterBaselineRules reads the singleton ClusterVirtualNetworkBaseline
