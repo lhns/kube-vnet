@@ -167,6 +167,28 @@ At no point are two reconcilers writing simultaneously. SSA with the stable `Fie
 
 See [`operations.md` § "I'm rolling out a new operator version"](operations.md#im-rolling-out-a-new-operator-version) for the playbook side.
 
+### I tightened isolation but existing cross-namespace connections still work. Why?
+
+**NetworkPolicy is enforced at SYN-time only.** When a TCP connection's first packet arrives, the CNI consults the policy and either allows the SYN or drops it. Once accepted, the connection lives in the kernel's conntrack table as `ESTABLISHED`, and **no further policy evaluation happens on its packets**. New policies — including kube-vnet tightening the baseline + membership when you switch isolation modes — only affect *new* connections.
+
+Concrete consequence: long-lived HTTP/2 / gRPC / WebSocket / proxy-pool connections survive policy changes. Traefik's backend connection pool can keep a single HTTP/2 stream open for hours, serving hundreds of requests over it — every one of those requests bypasses any policy added after the connection was opened. Same for nginx-ingress, envoy, istio sidecars, anything with connection reuse.
+
+Linux's default conntrack ESTABLISHED timeout is **~5 days**. Without intervention, a stale ESTABLISHED entry from before your policy tightened can keep flowing requests for almost a week.
+
+This isn't a kube-vnet bug — it's how Linux conntrack and NetworkPolicy interact on every CNI (Calico, Cilium, kube-router, kube-ovn, all of them).
+
+**To enforce the new policy on already-open paths, force fresh connections:**
+
+```bash
+# Restart whichever source workloads' access patterns the new policy is meant to govern.
+kubectl rollout restart deploy/<source-workload> -n <source-ns>
+
+# DaemonSets (ingress controllers, etc.) work the same way:
+kubectl rollout restart daemonset/<source-daemon> -n <source-ns>
+```
+
+Once every pod from the source side is replaced, its connections to the targets are gone — new connections attempt to open and the policy denies them. Verification: see [troubleshooting.md § "I expected NS isolation but traffic between NS A and NS B still flows"](troubleshooting.md#i-expected-ns-isolation-but-traffic-between-ns-a-and-ns-b-still-flows) for the full diagnostic playbook.
+
 ---
 
 ## Security

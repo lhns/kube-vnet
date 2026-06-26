@@ -257,6 +257,38 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
 
    If pod-B has only the bare form, the operator does not see it as a member of the `platform/payments` vnet.
 
+6. **Cross-NS connections opened *before* the policy tightened — are they riding conntrack amnesty?**
+
+   NetworkPolicy is evaluated only at SYN-time. Existing ESTABLISHED connections in the kernel's conntrack table are immune to new policy decisions (Linux's default ESTABLISHED timeout is ~5 days). Reverse proxies with backend connection pools (traefik, nginx-ingress, envoy) commonly hold long-lived HTTP/2 streams to backend pods — every request over that stream bypasses any policy added after the connection was opened.
+
+   Verify with a fresh pod-to-pod probe (no cached connections):
+
+   ```bash
+   kubectl run probe --image=curlimages/curl -n <source-ns> -it --rm --restart=Never -- \
+     curl -sv -m 5 http://<svc>.<target-ns>.svc.cluster.local/
+   ```
+
+   Expected under correct isolation: immediate `Connection refused`. If the probe is denied but real traffic from the source workload (e.g. traefik) still flows, the workload is holding a stale ESTABLISHED entry. Find it:
+
+   ```bash
+   SRC_POD=$(kubectl get pods -n <source-ns> -l <selector> -o jsonpath='{.items[0].metadata.name}')
+   TARGET_IP=$(kubectl get pods -n <target-ns> -l <selector> -o jsonpath='{.items[0].status.podIP}')
+   kubectl exec -n <source-ns> "$SRC_POD" -- netstat -an 2>/dev/null | grep "$TARGET_IP"
+   # Look for ESTABLISHED tcp ... → $TARGET_IP:<port>
+   ```
+
+   For DaemonSets (ingress controllers etc.), check every pod — load-balancing can route traffic through any of them, so one cached connection on any pod is enough to keep traffic flowing intermittently.
+
+   **Fix**: force fresh connections by restarting the source workload:
+
+   ```bash
+   kubectl rollout restart deploy/<source-workload> -n <source-ns>
+   # or
+   kubectl rollout restart daemonset/<source-daemon> -n <source-ns>
+   ```
+
+   After the rollout completes, every cached connection is gone. New connection attempts get evaluated by the now-tightened policy and are denied. See [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the background on why this is a Linux-conntrack reality, not a kube-vnet bug.
+
 ---
 
 ## Egress to the public internet just started working after upgrade

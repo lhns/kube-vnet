@@ -38,7 +38,7 @@ spec:
     - expression: |
         request.userInfo.username == variables.operatorUser ||
         (!variables.isSystemVnet && !variables.isReservedName)
-      message: "VirtualNetwork names `namespace` and `cluster` are reserved for operator-managed system vnets, as is the `kube-vnet.system/managed-by=kube-vnet` label. Only the operator may create, update, or delete these. See ADR 0030."
+      message: "The names 'namespace' and 'cluster' are reserved for system VirtualNetworks managed by the kube-vnet operator, as is the kube-vnet.system/managed-by=kube-vnet label. Choose a different name for your VirtualNetwork."
 ---
 # Source: kube-vnet/templates/system-vnet-vap.yaml
 apiVersion: admissionregistration.k8s.io/v1
