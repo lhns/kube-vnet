@@ -205,7 +205,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if len(invalid) > 0 {
 		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidJoiners,
-			fmt.Sprintf("%d invalid joiner(s): %s", len(invalid), summarizeInvalid(invalid)))
+			fmt.Sprintf("%s: %s",
+				pluralize(len(invalid), "1 invalid joiner", "%d invalid joiners"),
+				summarizeInvalid(invalid)))
 	} else {
 		setDegraded(vnet, metav1.ConditionFalse, ReasonNoIssues, "")
 	}
@@ -213,7 +215,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		setReady(vnet, metav1.ConditionTrue, ReasonNoMembers, "no pods are joining this VirtualNetwork")
 	} else {
 		setReady(vnet, metav1.ConditionTrue, ReasonPoliciesGenerated,
-			fmt.Sprintf("%d NetworkPolic(y|ies) across %d namespace(s)", len(out.Policies), len(members)))
+			fmt.Sprintf("%s in %s",
+				pluralize(len(out.Policies), "1 NetworkPolicy", "%d NetworkPolicies"),
+				pluralize(len(members), "1 namespace", "%d namespaces")))
 	}
 
 	if err := r.updateStatus(ctx, vnet, members, policyRefs); err != nil {
@@ -566,6 +570,18 @@ func conditionMessage(c *metav1.Condition) string {
 		return c.Message
 	}
 	return c.Reason
+}
+
+// pluralize returns `singular` (as-is) for n == 1, else fmt.Sprintf(plural, n).
+// Used to spell out both word forms in user-facing condition messages
+// instead of leaning on the regex-style `(s)` / `(y|ies)` shorthand —
+// which functions correctly but leaks into `kubectl describe` output as
+// e.g. "1 NetworkPolic(y|ies) across 1 namespace(s)".
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return fmt.Sprintf(plural, n)
 }
 
 func summarizeInvalid(in []InvalidJoiner) string {
