@@ -69,11 +69,29 @@ type VirtualNetworkReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  events.EventRecorder
 	NSFilter  *NamespaceFilter
-	// OperatorNamespace is the chart's release namespace, where the cluster
-	// system vnet lives. Used by podEventHandler to route bare-cluster pod
-	// label changes to the correct vnet location (per ADR 0033 Amendment).
-	// Empty in test environments — handler falls back to old per-pod-NS
-	// routing, which no-ops but matches pre-Amendment behavior.
+	// OperatorNamespace is the chart's release namespace — where the
+	// cluster-wide `cluster` system VirtualNetwork lives (the cluster
+	// singleton is exempt from the per-NS homeNS encoding per ADR 0033
+	// Amendment).
+	//
+	// Used by podEventHandler (see SetupWithManager below) to route Pod
+	// label-change events back to the right VirtualNetwork object:
+	//
+	//   - Namespaced vnets — pod's labels look like
+	//     `kube-vnet/net.<vnet>` (in the home NS) or
+	//     `kube-vnet/net.<homeNS>.<vnet>` (cross-NS) — routing goes to
+	//     the pod's own namespace.
+	//   - The cluster singleton — pod's label is the bare
+	//     `kube-vnet/net.cluster` — must route to `OperatorNamespace`
+	//     where the `cluster` vnet lives, NOT to the pod's NS where no
+	//     such vnet exists.
+	//
+	// Empty in unit-test environments that build the reconciler without
+	// the cmd/main.go wiring. The handler then falls back to the pre-
+	// Amendment per-pod-NS routing, which silently no-ops because no
+	// `cluster` vnet exists in the pod's NS. Integration tests that
+	// need to exercise the cluster routing path set this field
+	// explicitly (see suite_integration_test.go).
 	OperatorNamespace string
 }
 
