@@ -145,6 +145,28 @@ kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]
 
 Behavior change with the `ingress-isolation` rename. The previous baseline blocked egress to anything that wasn't DNS or a vnet peer; the new baseline is `policyTypes: [Ingress]` only. Existing installs see their egress posture loosen on upgrade. If you relied on the previous egress restriction, write a user-managed `NetworkPolicy` per workload (the per-workload allowlist is also strictly more useful — the previous baseline's egress restriction was too coarse to actually contain the destinations that mattered). See [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
+### When I upgrade the operator, do old and new instances fight?
+
+No — **leader election** (enabled by default via `operator.leaderElect: true`) means only the lease holder reconciles. Rollout sequence with `replicas: 1`:
+
+1. Old pod is the leader, reconciling steadily.
+2. Helm's Deployment rollout creates a new pod alongside the old (default `RollingUpdate`, `maxSurge: 1`).
+3. New pod starts, becomes Ready, requests the leader lease — but the old pod still holds it, so the new pod sits idle as a hot standby.
+4. Old pod receives `SIGTERM`. It finishes any in-flight reconcile, releases the lease, and exits.
+5. New pod acquires the lease and starts reconciling.
+
+At no point are two reconcilers writing simultaneously. SSA with the stable `FieldManager: kube-vnet` would otherwise be the conflict point — each operator would try to own its declared fields — but leader election makes this a single-writer system.
+
+**For `replicas > 1` (HA)**: same story — only the leader reconciles, the others are hot standbys. Lease handover is still a single-writer-at-a-time event.
+
+**For `leaderElect: false` with `replicas > 1`** (not recommended): two simultaneous reconcilers with SSA would flap on any field they disagree on. Don't do this; the chart's default is correct.
+
+**During the lease-handover window** (typically <15s): old-named operator-managed policies persist with their pre-rollout content and keep enforcing their rules. New-named policies haven't been emitted yet because the new operator isn't reconciling. Connectivity stays as it was.
+
+**Naming or labeling changes between versions**: harmless. NetworkPolicy semantics are union-of-allows — if the new operator emits a policy with a different name covering the same pods, the *combined* effect is the union of both policies' allows. The next reconcile cycle's owner-ref-based self-heal sweeps the old object (see [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)). No connectivity break at any point.
+
+See [`operations.md` § "I'm rolling out a new operator version"](operations.md#im-rolling-out-a-new-operator-version) for the playbook side.
+
 ---
 
 ## Security

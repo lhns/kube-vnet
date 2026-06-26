@@ -474,6 +474,101 @@ func TestIntegration_ExternalAllow_NoSelector_NoEmission(t *testing.T) {
 	}
 }
 
+func TestIntegration_ExternalAllow_LegacyNameMigration(t *testing.T) {
+	// Reproduces the user-observed state: an operator was running an old
+	// version that emitted `kube-vnet.external-<svc>-<hash>` policies
+	// (pre-ADR-0039). After upgrade, the new operator's reconcile should
+	// emit the new `kube-vnet.ext.svc.<svc>-<hash>` policy AND clean up
+	// the legacy one via the owner-ref-based sweep.
+	ns := uniqueNS(t, "extallow-legacy")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	// Create Service first so we have a UID to point the legacy
+	// OwnerReference at.
+	svc := makeLBService(ns, "web")
+	mustCreate(t, svc)
+
+	// Wait for the new-format policy to appear (proves the reconciler
+	// ran). We need this before pre-creating the legacy policy because
+	// otherwise the reconciler might run between the legacy create and
+	// our wait.
+	newName := extAllowPolicyName(ns, "web")
+	eventually(t, 10*time.Second, func() error {
+		var pol networkingv1.NetworkPolicy
+		return testClient.Get(context.Background(),
+			client.ObjectKey{Namespace: ns, Name: newName}, &pol)
+	})
+
+	// Now plant a legacy-format policy alongside the new one. Carries
+	// the old label values: no LabelSourceKind, LabelSource is the bare
+	// service name. Owner-ref points at the real Service.
+	truePtr := true
+	var fetchedSvc corev1.Service
+	if err := testClient.Get(context.Background(), client.ObjectKeyFromObject(svc), &fetchedSvc); err != nil {
+		t.Fatalf("get svc: %v", err)
+	}
+	legacy := &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kube-vnet.external-web-deadbeef",
+			Namespace: ns,
+			Labels: map[string]string{
+				LabelManagedBy: LabelManagedByValue,
+				LabelRole:      LabelRoleExternalAllow,
+				LabelSource:    "web",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: "v1", Kind: "Service",
+				Name: fetchedSvc.Name, UID: fetchedSvc.UID,
+				Controller: &truePtr, BlockOwnerDeletion: &truePtr,
+			}},
+		},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+			Ingress: []networkingv1.NetworkPolicyIngressRule{
+				{From: []networkingv1.NetworkPolicyPeer{
+					{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}},
+				}},
+			},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
+		},
+	}
+	mustCreate(t, legacy)
+
+	// Trigger a reconcile of the Service via an inert annotation flip.
+	eventually(t, 5*time.Second, func() error {
+		latest := &corev1.Service{}
+		if err := testClient.Get(context.Background(), client.ObjectKeyFromObject(svc), latest); err != nil {
+			return err
+		}
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		latest.Annotations["test-trigger"] = "legacy-migration"
+		return testClient.Update(context.Background(), latest)
+	})
+
+	// Within one reconcile cycle the legacy policy should be gone.
+	eventually(t, 10*time.Second, func() error {
+		var pol networkingv1.NetworkPolicy
+		err := testClient.Get(context.Background(),
+			client.ObjectKey{Namespace: ns, Name: "kube-vnet.external-web-deadbeef"}, &pol)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return &simpleErr{"legacy policy still exists"}
+	})
+
+	// And the new one should still be there.
+	var newPol networkingv1.NetworkPolicy
+	if err := testClient.Get(context.Background(),
+		client.ObjectKey{Namespace: ns, Name: newName}, &newPol); err != nil {
+		t.Errorf("new-format policy missing after migration: %v", err)
+	}
+}
+
 func TestIntegration_ExternalAllow_Regression_TraefikDaemonSet(t *testing.T) {
 	// Mirror of the user's actual hit: LB on :80, externalTrafficPolicy:Cluster,
 	// backed by a DaemonSet-style pod set. The emitted policy must allow on

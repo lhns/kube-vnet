@@ -148,20 +148,21 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Self-heal: sweep any other svc-source external-allow policies for
-	// THIS Service whose name doesn't match the desired one. Filter to
-	// LabelSourceKind=svc + LabelSource=svc-<name> so host-source policies
-	// (owned by HostPortReconciler) and other Services' policies stay
-	// untouched.
+	// Self-heal: sweep stale external-allow policies for THIS Service.
+	// Uses the owner-reference rather than LabelSource because the latter
+	// has changed format twice (pre-ADR-0039 bare name → svc-prefixed),
+	// and owner-refs are stable across labeling changes. Filter still
+	// includes role=external-allow to bound the List() to the relevant
+	// candidates; the owner-ref check inside the sweep does the per-
+	// Service narrowing.
 	keep := map[client.ObjectKey]bool{
 		{Namespace: svc.Namespace, Name: desired.Name}: true,
 	}
-	if err := sweepStalePolicies(ctx, r.Client,
+	if err := sweepStalePoliciesByOwner(ctx, r.Client,
 		inNamespacePolicyLabels(svc.Namespace, map[string]string{
-			LabelRole:       LabelRoleExternalAllow,
-			LabelSourceKind: LabelSourceKindService,
-			LabelSource:     "svc-" + svc.Name,
+			LabelRole: LabelRoleExternalAllow,
 		}),
+		"Service", svc.Name, svc.UID,
 		keep,
 	); err != nil {
 		return ctrl.Result{}, err
@@ -169,17 +170,29 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// deletePolicyForService removes any operator-emitted external-allow
-// policies for this Service (by LabelSource=svc-<name>). Uses the shared
-// sweeper with an empty keep-set — covers the legacy/drift case where
-// the policy may have a different name than the current emission would
-// compute.
+// deletePolicyForService removes every operator-emitted external-allow
+// policy owned by this Service. Uses the owner-ref-based sweeper with
+// an empty keep set — handles both current (`ext.svc.<name>`) and
+// legacy (`external-<name>`) name formats because both carry the same
+// OwnerReference back to the Service.
 func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
-	return r.deletePolicyByServiceKey(ctx, svc.Namespace, svc.Name)
+	return sweepStalePoliciesByOwner(ctx, r.Client,
+		inNamespacePolicyLabels(svc.Namespace, map[string]string{
+			LabelRole: LabelRoleExternalAllow,
+		}),
+		"Service", svc.Name, svc.UID,
+		nil, // nothing to keep — sweep them all
+	)
 }
 
-// deletePolicyByServiceKey is the same as deletePolicyForService but
-// usable when the Service object isn't available (NotFound path).
+// deletePolicyByServiceKey is used on the Service-NotFound path where we
+// don't have the Service object (or its UID). Without UID we can't
+// owner-ref-match strictly, but the label-based filter on LabelSource
+// catches the current-format policy directly, and any legacy-format
+// policy will already have been cascade-deleted by apiserver GC when
+// the Service was deleted (the OwnerReference's UID match triggered
+// the cascade). So this path is the no-UID fallback and only handles
+// current-format policies.
 func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
 	return sweepStalePolicies(ctx, r.Client,
 		inNamespacePolicyLabels(namespace, map[string]string{
@@ -187,7 +200,7 @@ func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, 
 			LabelSourceKind: LabelSourceKindService,
 			LabelSource:     "svc-" + serviceName,
 		}),
-		nil, // nothing to keep — sweep them all
+		nil,
 	)
 }
 

@@ -316,6 +316,8 @@ The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and l
 
 CRD changes are not applied by `helm upgrade` — see [`install.md`](install.md) for how to apply CRD updates explicitly.
 
+Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; name renames are handled by owner-ref-based self-healing on the next reconcile; connectivity stays intact throughout.
+
 ### "I want to roll out cluster-wide isolation"
 
 Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) the deny-all baseline applies to every managed namespace by default — if you've already installed kube-vnet, isolation is in place. Migration risk is real on existing clusters: workloads that previously relied on default-allow ingress will break the moment kube-vnet starts.

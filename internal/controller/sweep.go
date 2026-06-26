@@ -5,6 +5,7 @@ import (
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -50,6 +51,76 @@ func sweepStalePolicies(
 		}
 	}
 	return nil
+}
+
+// sweepStalePoliciesByOwner is a variant of sweepStalePolicies that uses
+// the controller-owner reference — not labels — as the per-resource
+// ownership check. For each policy matching `listOpts`:
+//
+//   - If its controller-owner ref points at (ownerKind, ownerName, ownerUID)
+//     AND its namespace/name isn't in `keep`, the policy is deleted.
+//   - Otherwise (different owner, no owner, kept name), it's left alone.
+//
+// Owner-ref-based identification survives label-format changes across
+// operator versions: a legacy policy emitted before a labeling scheme
+// changed still carries its OwnerReference and gets cleaned up here on
+// the next reconcile of its owner. Use this for resources where each
+// emitted policy has a stable per-resource owner (e.g. Service-source
+// external-allow policies); use sweepStalePolicies for resources keyed
+// purely by labels (host-source policies have no per-pod owner, NS
+// baselines have no owner, etc.).
+//
+// `keep` of nil or empty means "delete every policy owned by this owner
+// matching the filter."
+func sweepStalePoliciesByOwner(
+	ctx context.Context,
+	c client.Client,
+	listOpts []client.ListOption,
+	ownerKind, ownerName string, ownerUID types.UID,
+	keep map[client.ObjectKey]bool,
+) error {
+	var existing networkingv1.NetworkPolicyList
+	if err := c.List(ctx, &existing, listOpts...); err != nil {
+		return err
+	}
+	for i := range existing.Items {
+		p := &existing.Items[i]
+		if !hasControllerOwner(p, ownerKind, ownerName, ownerUID) {
+			continue
+		}
+		key := client.ObjectKey{Namespace: p.Namespace, Name: p.Name}
+		if keep[key] {
+			continue
+		}
+		if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+// hasControllerOwner returns true if `obj` carries a controller-flagged
+// OwnerReference matching all three of kind, name, and uid. The
+// Controller field must be a true pointer (not nil, not false) —
+// non-controller owner refs (additional owners) don't count, so we
+// don't accidentally claim policies for which we're a secondary owner.
+//
+// The strict UID match means a Service that was deleted and recreated
+// with the same name produces a UID-mismatch on its legacy policy. The
+// legacy policy is then handled by apiserver GC's owner-ref cascade
+// when the old Service was deleted, so it's gone by the time the new
+// Service's reconcile runs — two independent cleanup paths that
+// converge on the same outcome.
+func hasControllerOwner(obj client.Object, kind, name string, uid types.UID) bool {
+	for _, ref := range obj.GetOwnerReferences() {
+		if ref.Controller == nil || !*ref.Controller {
+			continue
+		}
+		if ref.Kind == kind && ref.Name == name && ref.UID == uid {
+			return true
+		}
+	}
+	return false
 }
 
 // syncManagedLabels updates `obj`'s labels so the subset matching
