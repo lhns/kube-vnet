@@ -114,15 +114,8 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	for i := range existing.Items {
 		p := &existing.Items[i]
-		// Dispatch by LabelSourceKind: only sweep policies we actually own.
-		// A pre-LabelSourceKind policy (from a release before this label
-		// was introduced) is identified by absent kind label + a host-
-		// prefixed source value — handle for migration safety.
-		kind := p.Labels[LabelSourceKind]
-		if kind != LabelSourceKindHost && kind != "" {
-			continue // Service-source policy, owned by the other reconciler
-		}
-		if kind == "" && !strings.HasPrefix(p.Labels[LabelSource], "host-") {
+		// Dispatch by LabelSourceKind: only sweep policies we own.
+		if p.Labels[LabelSourceKind] != LabelSourceKindHost {
 			continue
 		}
 		key, ok := parseHostSourceLabel(p.Labels[LabelSource])
@@ -151,10 +144,7 @@ func (r *HostPortReconciler) deleteAllInNamespace(ctx context.Context, ns string
 	}
 	for i := range existing.Items {
 		p := &existing.Items[i]
-		kind := p.Labels[LabelSourceKind]
-		isHost := kind == LabelSourceKindHost ||
-			(kind == "" && strings.HasPrefix(p.Labels[LabelSource], "host-"))
-		if !isHost {
+		if p.Labels[LabelSourceKind] != LabelSourceKindHost {
 			continue
 		}
 		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {

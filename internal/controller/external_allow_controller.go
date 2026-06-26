@@ -147,23 +147,6 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		logger.Error(err, "apply external-allow policy failed")
 		return ctrl.Result{}, err
 	}
-
-	// Migration tail-step (ADR 0039): clean up any pre-ADR-0039 legacy-
-	// named policy for this Service. After upgrade the operator emits
-	// under the new name; the old object would linger forever otherwise.
-	// Idempotent (NotFound is fine) and self-disabling — once the legacy
-	// policy is gone, this Delete is a no-op for the lifetime of the run.
-	legacy := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      legacyExternalAllowPolicyName(svc),
-			Namespace: svc.Namespace,
-		},
-	}
-	if err := r.Delete(ctx, legacy); err != nil && !apierrors.IsNotFound(err) {
-		logger.Error(err, "legacy external-allow policy cleanup failed", "name", legacy.Name)
-		// Non-fatal — the new policy is already in place; don't gate
-		// reconcile on cleanup of an old object.
-	}
 	return ctrl.Result{}, nil
 }
 
@@ -366,21 +349,6 @@ func externalAllowPolicyName(svc *corev1.Service) string {
 	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 
-// legacyExternalAllowPolicyName returns the pre-ADR-0039 policy name for
-// a Service-source external-allow policy. Used only by the reconciler's
-// migration tail-step on first reconcile after upgrade.
-func legacyExternalAllowPolicyName(svc *corev1.Service) string {
-	const prefix = "kube-vnet.external-"
-	const hashLen = 8
-	const maxNameLen = 63
-	maxBase := maxNameLen - len(prefix) - 1 - hashLen
-	base := svc.Name
-	if len(base) > maxBase {
-		base = base[:maxBase]
-	}
-	h := sha256.Sum256([]byte(svc.Namespace + "/" + svc.Name))
-	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
-}
 
 func cloneStringMap(m map[string]string) map[string]string {
 	if m == nil {

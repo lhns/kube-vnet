@@ -279,26 +279,6 @@ func PolicyName(vnet, homeNS string) string {
 		PolicyKindMembership, homeNS, vnet, policyHash("membership", homeNS, vnet)))
 }
 
-// LegacyPolicyNamePrefix returns the prefix every operator-emitted
-// NetworkPolicy from versions before ADR 0039 carried. Used by the
-// reconciler's migration tail-step to identify old-format policies that
-// need to be cleaned up on first reconcile after upgrade.
-const LegacyPolicyNamePrefix = "kube-vnet"
-
-// IsLegacyMembershipPolicyName returns true if the policy name matches the
-// pre-ADR-0039 membership shape `kube-vnet.<…non-kind-segment…>` and NOT
-// the new shape `kube-vnet.<kind>.<…>`. Used by the migration tail-step.
-func IsLegacyMembershipPolicyName(name string) bool {
-	// New format always has a kind segment second: kube-vnet.base / .mem. / .ext.
-	for _, kind := range []string{PolicyKindBaseline, PolicyKindMembership, PolicyKindExternal} {
-		if strings.HasPrefix(name, "kube-vnet."+kind) {
-			return false
-		}
-	}
-	// Anything else that starts with kube-vnet. (or is the literal old
-	// baseline name "kube-vnet") is legacy.
-	return name == "kube-vnet" || strings.HasPrefix(name, "kube-vnet.")
-}
 
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.
 // Inputs are joined with `\x00` — forbidden in DNS-1123 labels and Kubernetes

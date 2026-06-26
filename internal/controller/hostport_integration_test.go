@@ -206,6 +206,8 @@ func TestIntegration_HostPort_HostNetworkPod_NoEmission(t *testing.T) {
 	ns := uniqueNS(t, "hp-hostnet")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	pod := makeHostPortPod(ns, "web", 18087, corev1.ProtocolTCP)
+	// hostNetwork=true requires hostPort==containerPort per K8s validation.
+	pod.Spec.Containers[0].Ports[0].ContainerPort = 18087
 	pod.Spec.HostNetwork = true
 	mustCreate(t, pod)
 

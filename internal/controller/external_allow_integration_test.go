@@ -91,8 +91,11 @@ func TestIntegration_ExternalAllow_LBServiceCreated_PolicyAppears(t *testing.T) 
 	if pol.Labels[LabelRole] != LabelRoleExternalAllow {
 		t.Errorf("wrong role label: %q", pol.Labels[LabelRole])
 	}
-	if pol.Labels[LabelSource] != "web" {
+	if pol.Labels[LabelSource] != "svc-web" {
 		t.Errorf("source label: %q", pol.Labels[LabelSource])
+	}
+	if pol.Labels[LabelSourceKind] != LabelSourceKindService {
+		t.Errorf("source-kind label: %q", pol.Labels[LabelSourceKind])
 	}
 	if got := pol.Spec.Ingress[0].From[0].IPBlock.CIDR; got != "0.0.0.0/0" {
 		t.Errorf("ipBlock cidr = %q, want 0.0.0.0/0", got)

@@ -28,17 +28,27 @@ release. Pinning to an exact version is recommended.
   for the upcoming `ext.host.<port>.<proto>` shape for hostPort policies
   (ADR 0040).
 
-  Migration is automatic on first reconcile after upgrade — each reconciler
-  emits under the new name and removes the legacy-named policy in the same
-  cycle. **No manual `kubectl delete` is needed.** Label-driven tooling is
-  unaffected because labels (`kube-vnet.system/managed-by`,
-  `kube-vnet.system/role`, `kube-vnet.system/network`) are independent of
-  policy names — the cleanup hook (ADR 0036), system-labels VAP (ADR 0037),
-  and every diagnostic query in the operations playbook keep working
-  unchanged.
+  **Pre-1.0; no migration code.** This release ships without a sweep step
+  for legacy-named policies because there's no production userbase to
+  protect. Dev/test installations upgrading across this change should clear
+  out any pre-existing operator-managed policies first:
+
+  ```bash
+  kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
+  ```
+
+  The operator re-emits everything under the new names on next reconcile.
+  Membership policies in particular are self-healing through the existing
+  `deleteStale` label-based sweep.
+
+  Label-driven tooling is unaffected because labels
+  (`kube-vnet.system/managed-by`, `kube-vnet.system/role`,
+  `kube-vnet.system/network`) are independent of policy names — the cleanup
+  hook (ADR 0036), system-labels VAP (ADR 0037), and every diagnostic
+  query in the operations playbook keep working unchanged.
 
   If you maintain dashboards or alerting rules keyed on specific policy
-  names, update them; everything keyed on labels keeps working.
+  names, update them.
 
 ### Added
 

@@ -37,14 +37,11 @@ External-allow has two source kinds — `svc` and `host` — distinguished as th
 
 ## Migration
 
-The change is a name rename of every operator-emitted policy. Strategy:
+None. The operator is pre-1.0 with no production userbase to migrate; existing dev/test installations can simply reinstall or hand-`kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet` to clear out old-named policies (which the controller would have rewritten under the new names anyway on first reconcile, but without a code-side sweep to delete the legacy objects).
 
-1. **Reconcilers emit under the new names from the upgrade onwards.** SSA-apply with `FieldManager: kube-vnet` creates the new-named object.
-2. **Per-reconciler migration tail-step removes the old-named policy** on every reconcile after upgrade. Idempotent and self-disabling — after the first sweep, the old object is gone and the delete becomes a no-op.
-3. **For membership policies**, the existing `deleteStale` pass in `VirtualNetworkReconciler` naturally handles the rename: it lists all policies labeled with this vnet's `kube-vnet.system/network=<homeNS>.<vnet>`, then deletes anything not in the desired-name set. Old-format policies aren't in the new desired set, so they're swept without a dedicated migration step.
-4. **For baseline + external-allow**, a one-line `r.Delete(legacyNamedPolicy)` follows the new-name apply.
+For membership policies the existing `deleteStale` pass in `VirtualNetworkReconciler` lists by label (`kube-vnet.system/network=<homeNS>.<vnet>`) and deletes anything not in the current desired-name set, which incidentally sweeps old-named policies on next reconcile. Baseline and external-allow don't have an analogous list-by-label sweep, so for those one *would* need either the reinstall path or a one-shot migration commit — neither needed in practice because nobody's upgrading from an old version.
 
-The migration completes within one reconcile cycle of the new operator coming up. No manual `kubectl delete` is needed.
+A migration tail-step was prototyped (commit `7fe1f75` for baseline + external-allow) and removed in the same release cycle once it was clear no users needed it; revisit if/when the operator gets a real userbase pre-1.0.
 
 ## Consequences
 

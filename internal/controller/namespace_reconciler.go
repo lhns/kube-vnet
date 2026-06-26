@@ -6,7 +6,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -83,17 +82,6 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		logger.Error(err, "apply baseline failed")
 		return ctrl.Result{}, err
-	}
-
-	// Migration tail-step (ADR 0039): delete the pre-ADR-0039 literal
-	// `kube-vnet` baseline if it still exists. The new baseline lives
-	// under `kube-vnet.base`; the old one would linger otherwise.
-	// Idempotent + self-disabling.
-	legacy := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: LegacyBaselinePolicyName, Namespace: ns.Name},
-	}
-	if err := r.Delete(ctx, legacy); err != nil && !apierrors.IsNotFound(err) {
-		logger.Error(err, "legacy baseline cleanup failed", "name", legacy.Name)
 	}
 	return ctrl.Result{}, nil
 }
