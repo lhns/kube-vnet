@@ -75,8 +75,12 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Service gone. The owner-reference cascade on the apiserver
-			// side handles the policy delete; we don't need to do anything.
-			return ctrl.Result{}, nil
+			// side handles the policy delete in a real cluster — but
+			// (a) envtest doesn't run the GC controller, and (b) the
+			// owner-ref could be missing on a pre-existing policy from
+			// before this code shipped. Defensive: explicitly delete by
+			// computed name. Idempotent (NotFound on the policy is fine).
+			return ctrl.Result{}, r.deletePolicyByServiceKey(ctx, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
@@ -138,9 +142,16 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // deletePolicyForService removes the operator-emitted external-allow policy
 // keyed off this Service, if any. Idempotent.
 func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
-	name := externalAllowPolicyName(svc)
+	return r.deletePolicyByServiceKey(ctx, svc.Namespace, svc.Name)
+}
+
+// deletePolicyByServiceKey computes the policy name from (namespace,
+// serviceName) and deletes it. Used when the Service object is gone (the
+// reconciler can't construct it) but we still need to clean up. Idempotent.
+func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
+	stub := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: serviceName}}
 	pol := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: svc.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: externalAllowPolicyName(stub), Namespace: namespace},
 	}
 	if err := r.Delete(ctx, pol); err != nil && !apierrors.IsNotFound(err) {
 		return err
