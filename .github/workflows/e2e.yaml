@@ -218,6 +218,82 @@ jobs:
       - name: run e2e tests
         run: go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
 
+      - name: external-allow accessibility check
+        run: |
+          set -euxo pipefail
+
+          # ADR 0038: a NodePort Service in a kube-vnet-managed NS must be
+          # reachable from outside the cluster via the auto-emitted
+          # external-allow NetworkPolicy. Without that policy, the deny-all
+          # baseline + per-vnet membership policies block external traffic
+          # (namespaceSelector doesn't match node-SNAT'd source IPs).
+          #
+          # The kind cluster runs nodes as docker containers on a `kind`
+          # bridge network. Curling from the GH runner directly to a node's
+          # IP at the NodePort is genuinely external from the cluster's
+          # perspective — same packet path as a real LB SNAT.
+
+          kubectl create namespace ext-allow-e2e
+          kubectl create deploy nginx --image=nginx:alpine -n ext-allow-e2e
+          kubectl wait --for=condition=Available deploy/nginx \
+            -n ext-allow-e2e --timeout=120s
+          kubectl expose deploy nginx -n ext-allow-e2e \
+            --type=NodePort --port=80 --target-port=80 --name=nginx
+          NODEPORT=$(kubectl get svc nginx -n ext-allow-e2e \
+            -o jsonpath='{.spec.ports[0].nodePort}')
+
+          # Wait for the operator to emit the external-allow policy.
+          for i in {1..30}; do
+            if kubectl get netpol -n ext-allow-e2e \
+              -l kube-vnet.system/role=external-allow \
+              --no-headers 2>/dev/null | grep -q .; then
+              break
+            fi
+            sleep 2
+          done
+          kubectl get netpol -n ext-allow-e2e \
+            -l kube-vnet.system/role=external-allow \
+            --no-headers | grep -q . || {
+              echo "FAIL: external-allow policy never appeared"
+              kubectl get svc -n ext-allow-e2e -o yaml
+              exit 1
+            }
+
+          NODE_IP=$(docker inspect kube-vnet-e2e-helm-control-plane \
+            -f '{{.NetworkSettings.Networks.kind.IPAddress}}')
+
+          # Positive: external curl succeeds.
+          http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+            "http://$NODE_IP:$NODEPORT/" || echo "timeout")
+          if [ "$http_code" != "200" ]; then
+            echo "FAIL: external HTTP returned $http_code (expected 200)"
+            kubectl get netpol -n ext-allow-e2e -o yaml
+            kubectl describe svc nginx -n ext-allow-e2e
+            exit 1
+          fi
+          echo "OK (positive): external HTTP 200 with auto-allow."
+
+          # Negative: opt-out at Service level removes the policy.
+          kubectl annotate svc nginx -n ext-allow-e2e \
+            kube-vnet/external-allow=false
+          for i in {1..15}; do
+            if ! kubectl get netpol -n ext-allow-e2e \
+              -l kube-vnet.system/role=external-allow \
+              --no-headers 2>/dev/null | grep -q .; then
+              break
+            fi
+            sleep 2
+          done
+          # Now external traffic is blocked again by the baseline +
+          # membership policies.
+          http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+            "http://$NODE_IP:$NODEPORT/" || echo "timeout")
+          if [ "$http_code" = "200" ]; then
+            echo "FAIL: opt-out didn't take effect — still HTTP 200"
+            exit 1
+          fi
+          echo "OK (negative): opt-out blocks external traffic (saw $http_code)."
+
       - name: helm uninstall + assert cleanup
         run: |
           set -euxo pipefail
