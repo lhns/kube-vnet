@@ -97,6 +97,9 @@ func TestBuildHostPortPolicy_ShapeAndLabels(t *testing.T) {
 	if pol.Labels[LabelSource] != "host-8080-tcp" {
 		t.Errorf("wrong source: %q", pol.Labels[LabelSource])
 	}
+	if pol.Labels[LabelSourceKind] != LabelSourceKindHost {
+		t.Errorf("wrong source-kind: %q", pol.Labels[LabelSourceKind])
+	}
 	// podSelector matches the host-port stamp for this (port, proto).
 	want := LabelSystemHostPortPrefix + "8080.tcp"
 	if pol.Spec.PodSelector.MatchLabels[want] != "true" {

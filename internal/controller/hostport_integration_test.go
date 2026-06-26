@@ -64,8 +64,8 @@ func TestIntegration_HostPort_TwoPodsSamePort_OneIdempotentPolicy(t *testing.T) 
 	}
 	count := 0
 	for i := range all.Items {
-		src := all.Items[i].Labels[LabelSource]
-		if src == "host-18081-tcp" {
+		l := all.Items[i].Labels
+		if l[LabelSourceKind] == LabelSourceKindHost && l[LabelSource] == "host-18081-tcp" {
 			count++
 		}
 	}

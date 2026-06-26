@@ -28,7 +28,8 @@ metadata:
   labels:
     kube-vnet.system/managed-by: kube-vnet
     kube-vnet.system/role: external-allow
-    kube-vnet.system/source: host-8080-tcp
+    kube-vnet.system/source-kind: host        # dispatcher uses this label, not value parsing
+    kube-vnet.system/source: host-8080-tcp    # symmetric with `svc-<name>` for Service-source
 spec:
   podSelector:
     matchLabels:

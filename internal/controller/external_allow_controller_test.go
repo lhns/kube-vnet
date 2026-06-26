@@ -1,11 +1,13 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
@@ -39,8 +41,11 @@ func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
 	if pol.Labels[LabelRole] != LabelRoleExternalAllow {
 		t.Errorf("wrong role label: %q", pol.Labels[LabelRole])
 	}
-	if pol.Labels[LabelSource] != "traefik" {
+	if pol.Labels[LabelSource] != "svc-traefik" {
 		t.Errorf("wrong source label: %q", pol.Labels[LabelSource])
+	}
+	if pol.Labels[LabelSourceKind] != LabelSourceKindService {
+		t.Errorf("wrong source-kind label: %q", pol.Labels[LabelSourceKind])
 	}
 	if got := pol.Spec.PodSelector.MatchLabels["app"]; got != "traefik" {
 		t.Errorf("podSelector.matchLabels[app] = %q, want traefik", got)
@@ -291,9 +296,44 @@ func TestIsExternallyExposed_TypeTable(t *testing.T) {
 }
 
 func TestExternalAllowPolicyToService_DerivesFromLabel(t *testing.T) {
-	// Verify the policy→service mapper extracts the source service name
-	// from the kube-vnet.system/source label.
-	// (Pure func — no context needed.)
-	// Skipped: function lives in same package; mapper is exercised
-	// implicitly by integration tests.
+	// Mapper extracts the source Service name from a `svc-<name>`
+	// LabelSource value when LabelSourceKind=svc. Host-source policies
+	// don't enqueue Service reconciles; neither do un-labeled junk.
+	cases := []struct {
+		name        string
+		kind        string
+		src         string
+		expectName  string
+		expectEmpty bool
+	}{
+		{name: "service_source", kind: LabelSourceKindService, src: "svc-traefik", expectName: "traefik"},
+		{name: "host_source_skipped", kind: LabelSourceKindHost, src: "host-8080-tcp", expectEmpty: true},
+		{name: "no_kind_label", kind: "", src: "svc-traefik", expectEmpty: true},
+		{name: "missing_svc_prefix", kind: LabelSourceKindService, src: "traefik", expectEmpty: true},
+		{name: "empty_src", kind: LabelSourceKindService, src: "svc-", expectEmpty: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			obj := &networkingv1.NetworkPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "ns",
+					Name:      "fake",
+					Labels: map[string]string{
+						LabelSourceKind: c.kind,
+						LabelSource:     c.src,
+					},
+				},
+			}
+			reqs := externalAllowPolicyToService(context.Background(), obj)
+			if c.expectEmpty {
+				if len(reqs) != 0 {
+					t.Errorf("expected empty, got %v", reqs)
+				}
+				return
+			}
+			if len(reqs) != 1 || reqs[0].Name != c.expectName {
+				t.Errorf("got %v, want one request for %q", reqs, c.expectName)
+			}
+		})
+	}
 }

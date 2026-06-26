@@ -114,11 +114,18 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	for i := range existing.Items {
 		p := &existing.Items[i]
-		src := p.Labels[LabelSource]
-		if !strings.HasPrefix(src, "host-") {
+		// Dispatch by LabelSourceKind: only sweep policies we actually own.
+		// A pre-LabelSourceKind policy (from a release before this label
+		// was introduced) is identified by absent kind label + a host-
+		// prefixed source value — handle for migration safety.
+		kind := p.Labels[LabelSourceKind]
+		if kind != LabelSourceKindHost && kind != "" {
 			continue // Service-source policy, owned by the other reconciler
 		}
-		key, ok := parseHostSourceLabel(src)
+		if kind == "" && !strings.HasPrefix(p.Labels[LabelSource], "host-") {
+			continue
+		}
+		key, ok := parseHostSourceLabel(p.Labels[LabelSource])
 		if !ok {
 			continue
 		}
@@ -144,7 +151,10 @@ func (r *HostPortReconciler) deleteAllInNamespace(ctx context.Context, ns string
 	}
 	for i := range existing.Items {
 		p := &existing.Items[i]
-		if !strings.HasPrefix(p.Labels[LabelSource], "host-") {
+		kind := p.Labels[LabelSourceKind]
+		isHost := kind == LabelSourceKindHost ||
+			(kind == "" && strings.HasPrefix(p.Labels[LabelSource], "host-"))
+		if !isHost {
 			continue
 		}
 		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
@@ -199,9 +209,10 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 			Name:      hostPortPolicyName(ns, key),
 			Namespace: ns,
 			Labels: map[string]string{
-				LabelManagedBy: LabelManagedByValue,
-				LabelRole:      LabelRoleExternalAllow,
-				LabelSource:    "host-" + fmt.Sprintf("%d-%s", key.port, protoLower),
+				LabelManagedBy:  LabelManagedByValue,
+				LabelRole:       LabelRoleExternalAllow,
+				LabelSourceKind: LabelSourceKindHost,
+				LabelSource:     "host-" + fmt.Sprintf("%d-%s", key.port, protoLower),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -274,12 +285,13 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 
 	// Drift correction: re-enqueue NS when a managed host-source policy
-	// changes (delete/edit).
+	// changes (delete/edit). Filter by LabelSourceKind=host so a Service
+	// literally named `host-…` doesn't get this reconciler involved.
 	hostPolicyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		l := obj.GetLabels()
 		return l[LabelManagedBy] == LabelManagedByValue &&
 			l[LabelRole] == LabelRoleExternalAllow &&
-			strings.HasPrefix(l[LabelSource], "host-")
+			l[LabelSourceKind] == LabelSourceKindHost
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).

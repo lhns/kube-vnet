@@ -47,15 +47,35 @@ const (
 	// emits a per-(NS, port, protocol) NetworkPolicy whose podSelector
 	// matches this label, allowing `ipBlock: 0.0.0.0/0` on that port.
 	LabelSystemHostPortPrefix = "kube-vnet.system/host-port."
-	// LabelSource is the operator-owned reference back to the resource that
-	// caused this policy to be emitted — the bare resource name (e.g.
-	// `traefik`). Used by the external-allow reconciler's drift-correction
-	// mapper to enqueue the right Service when a managed policy event fires.
-	// For v1 the source is always a Service; if we later add Pod-as-source
-	// (hostPort detection), a separate LabelSourceKind would carry the kind.
-	// Bare name, not "service/traefik", because slashes are forbidden in
-	// label values (label keys may contain a single slash; values may not).
+	// LabelSource is the operator-owned reference back to the identity that
+	// caused this external-allow policy to be emitted. Per ADR 0039 it's
+	// symmetrically kind-prefixed across both source kinds:
+	//
+	//   svc-<service-name>            — Service-source (LB/NodePort/ClusterIP+externalIPs)
+	//   host-<port>-<protocol>        — host-source (hostPort)
+	//
+	// Bare name (no slashes — label values forbid `/`). The companion
+	// LabelSourceKind label carries the kind explicitly so reconcilers
+	// dispatch on the kind label, not on parsing the source value.
 	LabelSource = "kube-vnet.system/source"
+
+	// LabelSourceKind disambiguates the LabelSource value's namespace.
+	// Per ADR 0039 / 0040:
+	//
+	//   svc                          — Service-source (ExternalAllowReconciler owns it)
+	//   host                         — host-source (HostPortReconciler owns it)
+	//
+	// Reconcilers filter their cleanup tail-step by this label so they
+	// only sweep policies they actually own; a Service literally named
+	// `host-8080-tcp` (pathological but legal) won't be mistakenly
+	// claimed by the HostPortReconciler.
+	LabelSourceKind = "kube-vnet.system/source-kind"
+
+	// LabelSourceKindService / LabelSourceKindHost are the two values for
+	// LabelSourceKind. Match the third-segment values used in policy names
+	// (`kube-vnet.ext.svc.*` / `kube-vnet.ext.host.*`) for consistency.
+	LabelSourceKindService = "svc"
+	LabelSourceKindHost    = "host"
 
 	// NamespaceMetadataNameLabel is the well-known label every namespace carries
 	// (k8s >=1.22) — used for namespaceSelector matching.

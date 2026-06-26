@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -231,12 +232,14 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 			Name:      externalAllowPolicyName(svc),
 			Namespace: svc.Namespace,
 			Labels: map[string]string{
-				LabelManagedBy: LabelManagedByValue,
-				LabelRole:      LabelRoleExternalAllow,
-				// Bare service name — label values can't contain `/`. The
-				// kind ("service") is implied; if we later add Pod-source
-				// (hostPort), a separate LabelSourceKind would carry it.
-				LabelSource: svc.Name,
+				LabelManagedBy:  LabelManagedByValue,
+				LabelRole:       LabelRoleExternalAllow,
+				LabelSourceKind: LabelSourceKindService,
+				// Symmetric with host-source's `host-<port>-<proto>`:
+				// `svc-<name>`. Kind is also carried explicitly in
+				// LabelSourceKind above; the prefix here is for readability
+				// when staring at `kubectl get netpol -o yaml`.
+				LabelSource: "svc-" + svc.Name,
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -432,10 +435,21 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // externalAllowPolicyToService derives the source Service from the
-// `kube-vnet.system/source: <name>` label so a deleted/edited policy
-// re-enqueues only the affected Service, not the whole NS.
+// `kube-vnet.system/source: svc-<name>` label so a deleted/edited policy
+// re-enqueues only the affected Service, not the whole NS. Returns no
+// requests for host-source policies (the HostPortReconciler watches those
+// separately).
 func externalAllowPolicyToService(_ context.Context, obj client.Object) []reconcile.Request {
-	name := obj.GetLabels()[LabelSource]
+	l := obj.GetLabels()
+	if l[LabelSourceKind] != LabelSourceKindService {
+		return nil
+	}
+	const prefix = "svc-"
+	src := l[LabelSource]
+	if !strings.HasPrefix(src, prefix) {
+		return nil
+	}
+	name := strings.TrimPrefix(src, prefix)
 	if name == "" {
 		return nil
 	}
