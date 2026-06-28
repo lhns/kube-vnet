@@ -231,6 +231,28 @@ Benign. Optimistic-concurrency retries; the controller converges. See [`troubles
 
 Someone (or something) deleted an operator-managed policy and the operator restored it. Investigate the source. See [`troubleshooting.md`](troubleshooting.md#i-see-policyrestored-warning-events--is-something-wrong).
 
+### cert-manager (or kyverno / gatekeeper / metrics-server / istio sidecar injector) fails with `context deadline exceeded` — what gives?
+
+The kube-apiserver is calling an admission webhook or an aggregated API server hosted as a Service in your cluster, and the connection is timing out. Most common cause: NetworkPolicy on the receiver's namespace blocks the apiserver's source IP.
+
+The apiserver isn't a pod in any user namespace — its source IP is either the control-plane node's IP (kubeadm / k0s / k3s) or a managed-control-plane IP (GKE / EKS / AKS). Pod-centric `namespaceSelector` / `podSelector` rules never match it. Without an `ipBlock`-based allow on the webhook's targetPort, the apiserver gives up after the webhook timeout (default 30s).
+
+As of v0.5 kube-vnet ships **[ADR 0041](adr/0041-auto-allow-apiserver-reachable-services.md)** — an `ApiserverReachableReconciler` that auto-emits the right `ipBlock`-based allow whenever it sees a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or `CustomResourceDefinition.spec.conversion.webhook` pointing at a Service in a managed namespace. The emitted policy carries `kube-vnet.system/source-kind=apiserver` and is named `kube-vnet.ext.apiserver.<svcName>-<8hex>`.
+
+Verify it's in place:
+
+```bash
+kubectl get netpol -n cert-manager -l kube-vnet.system/source-kind=apiserver
+```
+
+If you don't see it, the most likely causes are:
+- The webhook config's `clientConfig.service` references a Service in a NS that's in `disabledNamespaces` (or annotated `kube-vnet/disabled=true`). Re-enable the NS or move the Service.
+- The Service is annotated `kube-vnet/external-allow=false` (opt-out, same annotation ADR 0038 uses).
+- The webhook config uses `clientConfig.url` (an out-of-cluster endpoint) — ADR 0041 doesn't emit for those.
+- The auto-allow CIDR is too narrow for your cluster. The default is `0.0.0.0/0`; if you've set `operator.apiserverSourceCIDR` to a narrower range and your apiserver's source IP isn't in it, the policy is too tight.
+
+See [troubleshooting.md → "Admission webhook fails with context deadline exceeded"](troubleshooting.md#admission-webhook-fails-with-context-deadline-exceeded) for the full diagnostic flow.
+
 ---
 
 ## Comparison

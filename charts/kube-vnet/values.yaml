@@ -28,6 +28,23 @@ operator:
     - kube-public
     - kube-node-lease
 
+  # CIDR allowed as source for auto-allow NetworkPolicies targeting Services
+  # the apiserver reaches in-cluster — admission webhooks (cert-manager,
+  # kyverno, gatekeeper, etc.), aggregated APIServices (metrics-server,
+  # custom-metrics-apiserver), CRD conversion webhooks. See ADR 0041.
+  #
+  # Default 0.0.0.0/0 matches the cluster's no-NetworkPolicy baseline:
+  # in plain K8s, anyone in the cluster can reach any Service on any port,
+  # so a 0.0.0.0/0 ingress allow on the webhook port doesn't make things
+  # worse than the default state. Webhook servers and APIServices
+  # authenticate the apiserver via TLS+CA — transport-layer auth makes
+  # wide CIDRs safe in practice.
+  #
+  # Tighten if your cluster's pod network is exposed (the pod CIDR is
+  # reachable from the public internet) and you want a narrower allow.
+  # Set to your control-plane node CIDR, e.g. "10.1.2.0/24".
+  apiserverSourceCIDR: "0.0.0.0/0"
+
   # ClusterVirtualNetworkBaseline seeded by the chart (ADR 0031). The CR is
   # named `default` (singleton) and is annotated `helm.sh/resource-policy:
   # keep` so `helm uninstall` doesn't drop it. Subsequent `helm upgrade`

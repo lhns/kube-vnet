@@ -13,6 +13,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
+- [Admission webhook fails with `context deadline exceeded`](#admission-webhook-fails-with-context-deadline-exceeded)
 - [CNI pitfalls that silently break enforcement (separate page)](troubleshooting/cni-pitfalls.md)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
@@ -288,6 +289,78 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
    ```
 
    After the rollout completes, every cached connection is gone. New connection attempts get evaluated by the now-tightened policy and are denied. See [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the background on why this is a Linux-conntrack reality, not a kube-vnet bug.
+
+---
+
+## Admission webhook fails with `context deadline exceeded`
+
+Symptom — `kubectl apply` of a CR (most often a `Certificate`, `Issuer`, `ClusterPolicy`, or any custom resource a webhook validates) hangs ~30s then fails with:
+
+```
+Error from server (InternalError): error when creating "cert.yaml":
+  Internal error occurred: failed calling webhook "webhook.cert-manager.io":
+  Post "https://cert-manager-webhook.cert-manager.svc:443/validate?timeout=30s":
+  context deadline exceeded
+```
+
+Background: the kube-apiserver dials the webhook backend Service directly. The apiserver isn't a pod, so its source IP (control-plane node IP for kubeadm / k0s / k3s; managed-control-plane IP for GKE / EKS / AKS) doesn't match any `namespaceSelector` or `podSelector`. The webhook NS's baseline + membership policies reject the connection. Admission times out.
+
+As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. See [ADR 0041](adr/0041-auto-allow-apiserver-reachable-services.md).
+
+**Diagnostic steps in order**:
+
+1. Find the webhook config and the Service it points at:
+
+   ```bash
+   kubectl get validatingwebhookconfigurations -o jsonpath='{range .items[*]}{.metadata.name}: {.webhooks[*].clientConfig.service.namespace}/{.webhooks[*].clientConfig.service.name}{"\n"}{end}'
+   kubectl get mutatingwebhookconfigurations -o jsonpath='{range .items[*]}{.metadata.name}: {.webhooks[*].clientConfig.service.namespace}/{.webhooks[*].clientConfig.service.name}{"\n"}{end}'
+   ```
+
+2. Check whether the auto-allow policy is in place for that Service:
+
+   ```bash
+   kubectl get netpol -n cert-manager -l kube-vnet.system/source-kind=apiserver
+   # Expected: kube-vnet.ext.apiserver.cert-manager-webhook-<8hex>
+   ```
+
+3. If the policy is missing, check the most common causes:
+
+   - **The webhook backend NS is `disabledNamespaces`** or has `kube-vnet/disabled=true`. The operator skips disabled namespaces entirely. Remove the NS from the disabled list, or move the webhook Service elsewhere.
+
+     ```bash
+     kubectl get ns cert-manager -o jsonpath='{.metadata.annotations.kube-vnet/disabled}{"\n"}'
+     ```
+
+   - **Service or NS opted out** via `kube-vnet/external-allow=false`:
+
+     ```bash
+     kubectl get svc -n cert-manager cert-manager-webhook -o jsonpath='{.metadata.annotations.kube-vnet/external-allow}{"\n"}'
+     kubectl get ns cert-manager -o jsonpath='{.metadata.annotations.kube-vnet/external-allow}{"\n"}'
+     ```
+
+   - **The webhook uses `clientConfig.url`** (out-of-cluster endpoint). ADR 0041 doesn't auto-emit for URL-only webhooks; they're not in-cluster sources. If the webhook IS in-cluster but configured via URL, switch the config to `clientConfig.service`.
+
+4. If the policy exists but admission still times out, the most likely cause is a too-narrow `operator.apiserverSourceCIDR`. The default is `0.0.0.0/0`. If you've set it to a narrower range that doesn't include the apiserver's source IP, the policy is too tight. Inspect:
+
+   ```bash
+   kubectl get netpol -n cert-manager kube-vnet.ext.apiserver.cert-manager-webhook-... -o jsonpath='{.spec.ingress[*].from[*].ipBlock.cidr}{"\n"}'
+   ```
+
+   Find your apiserver's source IP (the control-plane node IPs for kubeadm/k0s/k3s):
+
+   ```bash
+   kubectl get nodes -l node-role.kubernetes.io/control-plane -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+   ```
+
+   Either widen `apiserverSourceCIDR` to cover those IPs, or set it back to the default `0.0.0.0/0`.
+
+5. As a quick unblocker (loses pod-to-pod isolation in the NS):
+
+   ```bash
+   kubectl annotate ns cert-manager kube-vnet/disabled=true
+   ```
+
+   This turns kube-vnet off for the cert-manager NS entirely. Use only if ADR 0041's auto-allow doesn't fit your scenario for some reason; the targeted fix is preferred.
 
 ---
 

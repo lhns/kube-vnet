@@ -25,6 +25,27 @@ func ExternalAllowOptedOut(annotations map[string]string) bool {
 	return annotations[AnnotationExternalAllow] == "false"
 }
 
+// AnnotationApiserverReachable, when set to "true" on a Service, opts that
+// Service into the ApiserverReachableReconciler's auto-emit even when no
+// admission-webhook / APIService / CRD-conversion discovery resource
+// references it (ADR 0041). The four built-in discovery kinds cover ~95%
+// of real-world use; this annotation is the escape hatch for future K8s
+// APIs, third-party operators with custom webhook-shaped CRDs, or any
+// Service the admin manually wants apiserver-reachable.
+//
+// Symmetric with the opt-OUT annotation AnnotationExternalAllow — both
+// reconcilers honor `kube-vnet/external-allow=false` to disable auto-emit
+// regardless of how the Service was discovered.
+const AnnotationApiserverReachable = "kube-vnet/apiserver-reachable"
+
+// ApiserverReachableOptedIn returns true if the Service explicitly opts
+// into apiserver-reachable auto-emission via annotation. Used only as a
+// supplementary discovery path; the four built-in discovery resource
+// kinds are the primary trigger.
+func ApiserverReachableOptedIn(annotations map[string]string) bool {
+	return annotations[AnnotationApiserverReachable] == "true"
+}
+
 // NamespaceFilter decides whether kube-vnet manages a given namespace.
 // (The "what shape is the baseline" question that earlier versions answered
 // here is gone — under ADR 0030 + ADR 0035 the baseline is unconditionally

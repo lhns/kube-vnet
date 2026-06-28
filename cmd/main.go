@@ -3,12 +3,15 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -35,6 +38,10 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(vnetv1alpha1.AddToScheme(scheme))
+	// Required by the ApiserverReachableReconciler (ADR 0041): APIService
+	// + CRD discovery resources aren't in the default client-go scheme.
+	utilruntime.Must(apiregistrationv1.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 }
 
 func main() {
@@ -43,6 +50,7 @@ func main() {
 		probeAddr          string
 		enableLeaderElect  bool
 		disabledNamespaces string
+		apiserverSourceCIDR string
 		showVersion        bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
@@ -58,6 +66,15 @@ func main() {
 			"entirely; remove a namespace from this list to enroll its pods in "+
 			"a vnet.",
 	)
+	flag.StringVar(&apiserverSourceCIDR, "apiserver-source-cidr", "0.0.0.0/0",
+		"CIDR allowed as source for auto-allow NetworkPolicies targeting "+
+			"Services reached by the apiserver (admission webhooks, "+
+			"APIServices, CRD conversion webhooks). Default 0.0.0.0/0 "+
+			"matches the cluster's no-NetworkPolicy baseline; narrow to "+
+			"your control-plane node CIDR (e.g. 10.1.2.0/24) when the pod "+
+			"network is exposed and you want tighter scoping. See ADR 0041.",
+	)
+
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -67,6 +84,14 @@ func main() {
 		os.Exit(0)
 	}
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// Validate --apiserver-source-cidr at startup so a typo in chart values
+	// fails fast instead of silently emitting unparseable NetworkPolicies.
+	if _, _, err := net.ParseCIDR(apiserverSourceCIDR); err != nil {
+		setupLog.Error(err, "invalid --apiserver-source-cidr",
+			"value", apiserverSourceCIDR)
+		os.Exit(1)
+	}
 
 	// POD_NAMESPACE is the operator's release namespace, sourced from the
 	// downward API on the Deployment. It anchors the cluster system vnet
@@ -171,6 +196,18 @@ func main() {
 	}
 	if err := extAllowReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up external-allow reconciler")
+		os.Exit(1)
+	}
+
+	apiserverReachableReconciler := &controller.ApiserverReachableReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		NSFilter:   nsFilter,
+		Recorder:   mgr.GetEventRecorder("kube-vnet-apiserver-reachable"),
+		SourceCIDR: apiserverSourceCIDR,
+	}
+	if err := apiserverReachableReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to set up apiserver-reachable reconciler")
 		os.Exit(1)
 	}
 

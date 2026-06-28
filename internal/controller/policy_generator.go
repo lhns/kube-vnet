@@ -71,11 +71,13 @@ const (
 	// claimed by the HostPortReconciler.
 	LabelSourceKind = "kube-vnet.system/source-kind"
 
-	// LabelSourceKindService / LabelSourceKindHost are the two values for
-	// LabelSourceKind. Match the third-segment values used in policy names
-	// (`kube-vnet.ext.svc.*` / `kube-vnet.ext.host.*`) for consistency.
-	LabelSourceKindService = "svc"
-	LabelSourceKindHost    = "host"
+	// LabelSourceKindService / LabelSourceKindHost / LabelSourceKindApiserver
+	// are the values for LabelSourceKind. Match the third-segment values
+	// used in policy names (`kube-vnet.ext.svc.*` / `kube-vnet.ext.host.*` /
+	// `kube-vnet.ext.apiserver.*`) for consistency.
+	LabelSourceKindService   = "svc"
+	LabelSourceKindHost      = "host"
+	LabelSourceKindApiserver = "apiserver"
 
 	// NamespaceMetadataNameLabel is the well-known label every namespace carries
 	// (k8s >=1.22) — used for namespaceSelector matching.
@@ -102,11 +104,13 @@ const (
 	PolicyKindMembership = "mem"
 	PolicyKindExternal   = "ext"
 
-	// External-allow source kinds per ADR 0039 / 0040. `svc` covers
-	// Service-fronted exposures (LB/NodePort/ClusterIP+externalIPs);
-	// `host` covers pod-direct exposures (hostPort).
-	PolicySourceKindService  = "svc"
-	PolicySourceKindHostPort = "host"
+	// External-allow source kinds per ADR 0039 / 0040 / 0041. `svc` covers
+	// Service-fronted exposures (LB/NodePort/ClusterIP+externalIPs); `host`
+	// covers pod-direct exposures (hostPort); `apiserver` covers Services
+	// reached by the apiserver via webhook/APIService discovery resources.
+	PolicySourceKindService   = "svc"
+	PolicySourceKindHostPort  = "host"
+	PolicySourceKindApiserver = "apiserver"
 )
 
 // Direction is the per-pod direction of a vnet membership. Set as the value

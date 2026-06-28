@@ -52,6 +52,38 @@ release. Pinning to an exact version is recommended.
 
 ### Added
 
+- **Auto-allow Services reached by the apiserver (ADR 0041).** Closes the
+  in-cluster non-pod-source gap that ADR 0038 (LB/NodePort) and ADR 0040
+  (hostPort) don't cover. A new `ApiserverReachableReconciler` watches four
+  cluster-scoped discovery resources that declare "the apiserver dials
+  this Service":
+
+  - `ValidatingWebhookConfiguration` (cert-manager, kyverno, gatekeeper, kube-prometheus-stack, vault, …)
+  - `MutatingWebhookConfiguration` (cert-manager mutator, istio sidecar injector, kyverno mutator, sigstore policy, …)
+  - `APIService` (metrics-server, custom-metrics-apiserver, knative-serving, kueue, kubevirt, gateway-api, …)
+  - `CustomResourceDefinition.spec.conversion.webhook` (multi-version CRD conversion)
+
+  For each `clientConfig.service` reference (URL-only webhooks are skipped)
+  the reconciler emits one `kube-vnet.ext.apiserver.<svcName>-<8hex>`
+  NetworkPolicy in the Service's NS, with `podSelector` mirroring the
+  Service's selector and `from: ipBlock` allowing the configured CIDR on
+  the discovery-referenced target port(s).
+
+  Same opt-out as ADR 0038: `kube-vnet/external-allow=false` on the
+  Service or NS. Same composability — coexists with `ext.svc.*` and
+  `ext.host.*` policies via NetworkPolicy union semantics.
+
+  Plus a per-Service opt-in annotation `kube-vnet/apiserver-reachable=true`
+  for cases the four discovery resources don't cover (future K8s APIs,
+  third-party operators with custom webhook-shaped CRDs, ad-hoc).
+
+  Plus a chart-configurable allow CIDR: `operator.apiserverSourceCIDR`
+  (default `0.0.0.0/0`, matches the cluster's no-NetworkPolicy baseline;
+  set to your control-plane subnet for tighter narrowing).
+
+  Resolves the canonical cert-manager symptom:
+  `failed calling webhook "webhook.cert-manager.io": context deadline exceeded`.
+
 - **Auto-allow for hostPort pods (ADR 0040).** Closes ADR 0038's deferred
   hostPort case. A new `HostPortReconciler` watches Pods (filtered to those
   declaring any `hostPort`) and emits one NetworkPolicy per

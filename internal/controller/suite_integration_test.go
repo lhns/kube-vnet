@@ -16,12 +16,14 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -47,6 +49,8 @@ func TestMain(m *testing.M) {
 
 	utilruntime.Must(clientgoscheme.AddToScheme(testScheme))
 	utilruntime.Must(vnetv1alpha1.AddToScheme(testScheme))
+	utilruntime.Must(apiregistrationv1.AddToScheme(testScheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(testScheme))
 
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
@@ -163,6 +167,19 @@ func TestMain(m *testing.M) {
 	}
 	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup host-port reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
+	apiserverReachableReconciler := &ApiserverReachableReconciler{
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		NSFilter:   NewNamespaceFilter(nil),
+		Recorder:   mgr.GetEventRecorder("kube-vnet-apiserver-reachable-test"),
+		SourceCIDR: "0.0.0.0/0",
+	}
+	if err := apiserverReachableReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup apiserver-reachable reconciler: %v\n", err)
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}
