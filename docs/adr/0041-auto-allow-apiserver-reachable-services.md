@@ -1,5 +1,14 @@
 # ADR 0041 — Auto-allow Services reached by the apiserver
 
+> **Amendment (2026-06-29, same-day follow-up)**: the initial implementation emitted policies scoped to the Service-side port rather than the pod-side targetPort. NetworkPolicy is enforced after kube-proxy DNATs to `pod:targetPort`, so a Service-port allow doesn't actually permit the apiserver's traffic — admission silently times out. Symptom on the user's cluster:
+>
+> ```
+> kube-vnet.ext.apiserver.cert-manager-webhook-943e7fca   To Port: 443/TCP   ← wrong
+> kubectl apply -f certs.yaml → context deadline exceeded                    ← still broken
+> ```
+>
+> Fixed by reusing `resolveTargetPort` from `external_allow_controller.go` (ADR 0038) — walks backing pods, finds the containerPort whose name matches the Service's `targetPort: <name>`, returns its number (10250 for cert-manager-webhook). Pod watcher added to re-trigger emission when a previously-missing backing pod appears. Builder now returns `(policy, error)`; caller emits a Pending Event + 30s requeue on `errNamedPortUnresolvable`. The original anti-test (`TestBuildApiserverReachablePolicy_NamedTargetPortFallback`) that enshrined the broken behavior was removed; replaced with three tests asserting the correct contract plus two integration tests for the cert-manager-shape and the Pod-create-unblocks-Pending flow.
+
 **Status**: Accepted (2026-06-29)
 
 ## Context

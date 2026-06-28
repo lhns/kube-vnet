@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -234,6 +235,18 @@ func TestExtractCRDConversionRefs(t *testing.T) {
 
 // ---- policy builder ----
 
+// podWith returns a Pod matching the standard test selector
+// {app: x} and with containers exposing the given (name, port) pairs.
+func podWith(ns string, namedPorts ...corev1.ContainerPort) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "p", Labels: map[string]string{"app": "x"}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "c",
+			Ports: namedPorts,
+		}}},
+	}
+}
+
 func TestBuildApiserverReachablePolicy(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "cert-manager-webhook", Namespace: "cert-manager"},
@@ -245,7 +258,10 @@ func TestBuildApiserverReachablePolicy(t *testing.T) {
 		},
 	}
 
-	p := buildApiserverReachablePolicy(svc, []int32{443}, "0.0.0.0/0")
+	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if p.Namespace != "cert-manager" {
 		t.Errorf("namespace = %q, want cert-manager", p.Namespace)
 	}
@@ -282,7 +298,10 @@ func TestBuildApiserverReachablePolicy_CustomCIDR(t *testing.T) {
 			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
 		},
 	}
-	p := buildApiserverReachablePolicy(svc, []int32{443}, "10.0.0.0/8")
+	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if p.Spec.Ingress[0].From[0].IPBlock.CIDR != "10.0.0.0/8" {
 		t.Errorf("custom CIDR not honored: got %q", p.Spec.Ingress[0].From[0].IPBlock.CIDR)
 	}
@@ -296,7 +315,10 @@ func TestBuildApiserverReachablePolicy_EmptyCIDRDefaultsToAll(t *testing.T) {
 			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
 		},
 	}
-	p := buildApiserverReachablePolicy(svc, []int32{443}, "")
+	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if p.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
 		t.Errorf("empty CIDR should default to 0.0.0.0/0, got %q", p.Spec.Ingress[0].From[0].IPBlock.CIDR)
 	}
@@ -313,7 +335,10 @@ func TestBuildApiserverReachablePolicy_MultiplePorts(t *testing.T) {
 			},
 		},
 	}
-	p := buildApiserverReachablePolicy(svc, []int32{443, 8080}, "0.0.0.0/0")
+	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443, 8080}, "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if len(p.Spec.Ingress[0].Ports) != 2 {
 		t.Fatalf("expected 2 ports, got %d", len(p.Spec.Ingress[0].Ports))
 	}
@@ -326,7 +351,16 @@ func TestBuildApiserverReachablePolicy_MultiplePorts(t *testing.T) {
 	}
 }
 
-func TestBuildApiserverReachablePolicy_NamedTargetPortFallback(t *testing.T) {
+// TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod —
+// the cert-manager case: Service uses `targetPort: webhook-tls`, the
+// backing Pod exposes containerPort 10250 named webhook-tls, and the
+// emitted policy MUST use 10250 (not the Service-side 443).
+//
+// Pre-fix, this returned 443 — admission requests were DNAT'd to pod-port
+// 10250 but the policy only allowed 443, so the apiserver-to-webhook
+// connection silently timed out. Regression test for the user-reported
+// bug after ADR 0041 shipped.
+func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
 		Spec: corev1.ServiceSpec{
@@ -336,11 +370,82 @@ func TestBuildApiserverReachablePolicy_NamedTargetPortFallback(t *testing.T) {
 			},
 		},
 	}
-	p := buildApiserverReachablePolicy(svc, []int32{443}, "0.0.0.0/0")
-	// String targetPort: builder falls back to Service-side port.
-	// Documented behavior; named-port resolution deferred.
-	if p.Spec.Ingress[0].Ports[0].Port.IntValue() != 443 {
-		t.Errorf("named-port fallback should use service port 443, got %v", p.Spec.Ingress[0].Ports[0].Port)
+	pod := podWith("ns", corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250})
+
+	p, err := buildApiserverReachablePolicy(svc, []corev1.Pod{pod}, []int32{443}, "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := p.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
+		t.Errorf("named targetPort 'webhook-tls' should resolve to pod containerPort 10250, got %d", got)
+	}
+}
+
+// TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError —
+// no backing pod yet, or no matching containerPort name. Returns the
+// sentinel error so the caller emits a Pending event and requeues.
+// Without this contract the policy would silently emit with the wrong
+// port (the original ADR 0041 bug).
+func TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "x"},
+			Ports: []corev1.ServicePort{
+				{Port: 443, TargetPort: intstr.FromString("webhook-tls")},
+			},
+		},
+	}
+
+	// Case A: no pods at all.
+	_, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "0.0.0.0/0")
+	if !errors.Is(err, errNamedPortUnresolvable) {
+		t.Errorf("no pods → err = %v, want errNamedPortUnresolvable", err)
+	}
+
+	// Case B: matching pod exists but its containerPort name doesn't
+	// match what the Service declared. Still unresolvable.
+	wrongName := podWith("ns", corev1.ContainerPort{Name: "other", ContainerPort: 10250})
+	_, err = buildApiserverReachablePolicy(svc, []corev1.Pod{wrongName}, []int32{443}, "0.0.0.0/0")
+	if !errors.Is(err, errNamedPortUnresolvable) {
+		t.Errorf("wrong containerPort name → err = %v, want errNamedPortUnresolvable", err)
+	}
+}
+
+// TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods
+// covers the edge case where the namespace has many pods but only one
+// matches both the Service selector AND has the matching containerPort
+// name. resolveTargetPort iterates and finds it.
+func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods(t *testing.T) {
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "x"},
+			Ports: []corev1.ServicePort{
+				{Port: 443, TargetPort: intstr.FromString("https")},
+			},
+		},
+	}
+	// Pod with wrong app label — should be skipped (selector mismatch).
+	noMatchSelector := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "other", Labels: map[string]string{"app": "y"}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name:  "c",
+			Ports: []corev1.ContainerPort{{Name: "https", ContainerPort: 9999}},
+		}}},
+	}
+	// Pod with matching selector but wrong containerPort name.
+	noMatchPortName := podWith("ns", corev1.ContainerPort{Name: "metrics", ContainerPort: 9090})
+	// The right one.
+	right := podWith("ns", corev1.ContainerPort{Name: "https", ContainerPort: 8443})
+	right.Name = "right"
+
+	p, err := buildApiserverReachablePolicy(svc, []corev1.Pod{noMatchSelector, noMatchPortName, right}, []int32{443}, "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := p.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
+		t.Errorf("expected port 8443 from matching pod, got %d", got)
 	}
 }
 
@@ -352,10 +457,13 @@ func TestBuildApiserverReachablePolicy_ServicePortNotInSpec(t *testing.T) {
 			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
 		},
 	}
-	// Discovery says port 8443 but Service only declares 443. Fall back
-	// to discovery port (kube-proxy DNAT still works since 8443 maps
-	// nowhere — defensive but ensures the policy is still emitted).
-	p := buildApiserverReachablePolicy(svc, []int32{8443}, "0.0.0.0/0")
+	// Discovery says port 8443 but Service only declares 443. Pass the
+	// discovery port through (kube-proxy DNAT will fail anyway since
+	// 8443 maps nowhere, but emitting the policy leaves a breadcrumb).
+	p, err := buildApiserverReachablePolicy(svc, nil, []int32{8443}, "0.0.0.0/0")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if p.Spec.Ingress[0].Ports[0].Port.IntValue() != 8443 {
 		t.Errorf("unknown discovery port should pass through, got %v", p.Spec.Ingress[0].Ports[0].Port)
 	}

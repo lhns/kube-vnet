@@ -389,3 +389,118 @@ func TestIntegration_ApiserverReachable_URLOnlyWebhook_NoEmission(t *testing.T) 
 		t.Errorf("URL-only webhook should not produce a policy; got err=%v pol=%+v", err, pol)
 	}
 }
+
+// makeWebhookPod returns a pause-image Pod matching the makeWebhookService
+// selector with the given (name, containerPort) pairs. Used by the
+// named-targetPort integration tests so kube-vnet's resolver can find
+// the actual pod-side port.
+func makeWebhookPod(ns, svcName string, ports ...corev1.ContainerPort) *corev1.Pod {
+	pod := makePod(ns, "webhook-backend", map[string]string{"app": svcName})
+	pod.Spec.Containers[0].Ports = ports
+	return pod
+}
+
+// TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod
+// regression test for the user-reported bug after ADR 0041 shipped:
+// cert-manager-webhook's Service uses `targetPort: webhook-tls` (named
+// string port). kube-proxy DNATs to the pod-side containerPort (10250),
+// so the emitted NetworkPolicy must allow port 10250, NOT the Service-
+// side 443. Before the fix the policy allowed 443 and admission silently
+// timed out with `context deadline exceeded`.
+func TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod(t *testing.T) {
+	ns := uniqueNS(t, "ar-named")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	// Service with NAMED targetPort.
+	svc := makeWebhookService(ns, "webhook",
+		corev1.ServicePort{Name: "https", Port: 443, TargetPort: intstr.FromString("webhook-tls"), Protocol: corev1.ProtocolTCP},
+	)
+	mustCreate(t, svc)
+
+	// Backing pod exposing the named containerPort.
+	mustCreate(t, makeWebhookPod(ns, "webhook",
+		corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250},
+	))
+
+	port443 := int32(443)
+	side := admissionregistrationv1.SideEffectClassNone
+	whcName := "ar-named-" + ns
+	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: whcName},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name: "named.example.com",
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				Service: &admissionregistrationv1.ServiceReference{
+					Namespace: ns, Name: "webhook", Port: &port443,
+				},
+			},
+			SideEffects:             &side,
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	})
+	t.Cleanup(func() {
+		_ = testClient.Delete(context.Background(),
+			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
+	})
+
+	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
+		t.Errorf("named targetPort `webhook-tls` should resolve to containerPort 10250, got %d; policy=%+v",
+			got, pol.Spec.Ingress[0].Ports)
+	}
+}
+
+// TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears
+// covers the Service-before-Pod ordering. Without the Pod-create watcher
+// the policy would only appear after the 30s requeue; with the watcher
+// it appears as soon as the matching pod is created.
+func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(t *testing.T) {
+	ns := uniqueNS(t, "ar-pending")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeWebhookService(ns, "webhook",
+		corev1.ServicePort{Name: "https", Port: 443, TargetPort: intstr.FromString("webhook-tls"), Protocol: corev1.ProtocolTCP},
+	)
+	mustCreate(t, svc)
+
+	port443 := int32(443)
+	side := admissionregistrationv1.SideEffectClassNone
+	whcName := "ar-pending-" + ns
+	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: whcName},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name: "pending.example.com",
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				Service: &admissionregistrationv1.ServiceReference{
+					Namespace: ns, Name: "webhook", Port: &port443,
+				},
+			},
+			SideEffects:             &side,
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	})
+	t.Cleanup(func() {
+		_ = testClient.Delete(context.Background(),
+			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
+	})
+
+	// No pod yet → reconciler must NOT emit a policy with the wrong port.
+	// Sleep briefly to let the reconciler attempt, then assert absent.
+	time.Sleep(2 * time.Second)
+	var stale networkingv1.NetworkPolicy
+	err := testClient.Get(context.Background(),
+		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "webhook")}, &stale)
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("policy should not yet exist (named port unresolvable); got err=%v pol=%+v", err, stale)
+	}
+
+	// Pod-create watcher should fire on this and the policy should appear.
+	mustCreate(t, makeWebhookPod(ns, "webhook",
+		corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250},
+	))
+
+	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
+		t.Errorf("after Pod create, named targetPort should resolve to 10250, got %d", got)
+	}
+}

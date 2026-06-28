@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -131,7 +134,24 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 
-	desired := buildApiserverReachablePolicy(svc, ports, r.SourceCIDR)
+	// Named targetPorts (e.g. `targetPort: https` in cert-manager-webhook's
+	// Service) need pod-side resolution: walk pods matching the Service
+	// selector to find the containerPort whose name matches. Same machinery
+	// as ADR 0038 — `resolveTargetPort` lives in external_allow_controller.go.
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	desired, err := buildApiserverReachablePolicy(svc, pods.Items, ports, r.SourceCIDR)
+	if err != nil {
+		if errors.Is(err, errNamedPortUnresolvable) {
+			r.Recorder.Eventf(svc, nil, corev1.EventTypeWarning, "Pending", "Reconcile",
+				"apiserver-reachable policy pending: a named targetPort has no backing pod with the matching containerPort name")
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+		return ctrl.Result{}, err
+	}
 
 	if err := controllerutil.SetControllerReference(svc, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -335,31 +355,54 @@ func derefPortOr443(p *int32) int32 {
 // must be non-empty and pre-sorted; ingress.ports[i] mirrors that order
 // for stable diffs.
 //
-// Resolution of named targetPorts is NOT done here: discovery resources
-// declare the *Service port* (the port the apiserver dials), not the
-// pod's targetPort. kube-proxy DNATs Service port → pod targetPort. So
-// we emit the SERVICE port, then look up the matching targetPort from
-// the Service's spec.ports. If the Service doesn't declare the discovery
-// port (rare but possible: webhook config out of sync), we fall back to
-// using the discovery port directly — the policy still functions because
-// kube-proxy's DNAT is what makes the packet land on the right pod port.
+// Why pods are an input: NetworkPolicy is enforced after kube-proxy DNATs
+// the apiserver's `Service:port` connection to `pod:targetPort`. The
+// kernel sees the POD-side port. So we MUST emit the resolved pod-side
+// targetPort, not the Service-side port — including resolving the
+// `targetPort: <name>` (named string) form to its containerPort number
+// by walking the backing pods. Reuses `resolveTargetPort` from
+// external_allow_controller.go, which has handled this since ADR 0038.
 //
-// Numeric targetPorts: emit pod-side targetPort.
-// Named targetPorts: pod resolution would require a Pod list; v1 punts
-// and emits the Service-side port. Works correctly when targetPort ==
-// servicePort (the common case for webhook backends).
-func buildApiserverReachablePolicy(svc *corev1.Service, ports []int32, sourceCIDR string) *networkingv1.NetworkPolicy {
+// Returns errNamedPortUnresolvable if any referenced Service port maps
+// to a named targetPort whose backing pod isn't running yet (or doesn't
+// declare a matching containerPort name). Caller treats this as a
+// transient state — emits a Pending Event and requeues. Multi-port
+// Services with one unresolvable port return the error rather than
+// partial emission, matching ADR 0038's all-or-nothing behavior.
+//
+// If the Service spec doesn't declare the discovery-referenced port at
+// all (rare: webhook config out of sync with the Service), the policy
+// emits the discovery port directly as a safe passthrough. Avoids
+// dropping admission silently while the user reconciles their config.
+func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, ports []int32, sourceCIDR string) (*networkingv1.NetworkPolicy, error) {
 	if sourceCIDR == "" {
 		sourceCIDR = "0.0.0.0/0"
 	}
 	policyPorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
 	for _, port := range ports {
+		var targetPort int32
+		sp, ok := findServicePort(svc, port)
+		if ok {
+			tp, err := resolveTargetPort(sp, svc.Spec.Selector, podsInNS)
+			if err != nil {
+				return nil, err
+			}
+			targetPort = tp
+		} else {
+			// Service spec doesn't declare the discovery port at all —
+			// pass it through. kube-proxy will fail to DNAT this
+			// connection anyway, but emitting the policy is the
+			// right thing to do (drops a `kubectl describe svc`
+			// breadcrumb for the user).
+			targetPort = port
+		}
+
 		// Default protocol: TCP. Webhook + APIService traffic is always
 		// HTTPS over TCP per spec.
 		proto := corev1.ProtocolTCP
 		policyPorts = append(policyPorts, networkingv1.NetworkPolicyPort{
 			Protocol: &proto,
-			Port:     ptrIntOrString(intstr.FromInt32(resolveTargetPortNumeric(svc, port))),
+			Port:     ptrIntOrString(intstr.FromInt32(targetPort)),
 		})
 	}
 	return &networkingv1.NetworkPolicy{
@@ -391,32 +434,19 @@ func buildApiserverReachablePolicy(svc *corev1.Service, ports []int32, sourceCID
 			},
 			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
 		},
-	}
+	}, nil
 }
 
-// resolveTargetPortNumeric translates a Service-side port into the pod-
-// side targetPort if the Service declares it. Falls back to the Service
-// port itself when the Service has no matching port entry (i.e., the
-// discovery resource references a port not in spec.ports — kube-proxy
-// still DNATs correctly because the discovery port matches no Service
-// port, so kube-proxy delivers as-is). String targetPorts emit the
-// Service port (named-port resolution would require a Pod walk, deferred).
-func resolveTargetPortNumeric(svc *corev1.Service, servicePort int32) int32 {
+// findServicePort returns the spec.ports entry whose Port matches the
+// discovery-referenced port. The second value is false if no entry
+// declares that port (webhook config out of sync with the Service).
+func findServicePort(svc *corev1.Service, port int32) (corev1.ServicePort, bool) {
 	for _, sp := range svc.Spec.Ports {
-		if sp.Port != servicePort {
-			continue
-		}
-		switch sp.TargetPort.Type {
-		case intstr.Int:
-			if sp.TargetPort.IntVal == 0 {
-				return sp.Port
-			}
-			return sp.TargetPort.IntVal
-		case intstr.String:
-			return sp.Port
+		if sp.Port == port {
+			return sp, true
 		}
 	}
-	return servicePort
+	return corev1.ServicePort{}, false
 }
 
 func ptrIntOrString(v intstr.IntOrString) *intstr.IntOrString {
@@ -481,6 +511,16 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			l[LabelSourceKind] == LabelSourceKindApiserver
 	})
 
+	// Pod creates only — a new pod is the only event that can unblock a
+	// previously-unresolvable named targetPort. Mirrors the same predicate
+	// in ExternalAllowReconciler (ADR 0038).
+	podCreateOnly := predicate.Funcs{
+		CreateFunc:  func(event.CreateEvent) bool { return true },
+		UpdateFunc:  func(event.UpdateEvent) bool { return false },
+		DeleteFunc:  func(event.DeleteEvent) bool { return false },
+		GenericFunc: func(event.GenericEvent) bool { return false },
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("apiserver-reachable").
 		For(&corev1.Service{}).
@@ -492,6 +532,11 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToServices),
+		).
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.podToServicesWithNamedPorts),
+			builder.WithPredicates(podCreateOnly),
 		).
 		Watches(
 			&admissionregistrationv1.ValidatingWebhookConfiguration{},
@@ -510,6 +555,34 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			handler.EnqueueRequestsFromMapFunc(crdConversionToServices),
 		).
 		Complete(r)
+}
+
+// podToServicesWithNamedPorts enqueues every Service in the new pod's
+// namespace that uses any named (string-typed) targetPort — those are
+// the only Services whose policy emission might have been blocked
+// waiting for this pod's containerPort names. Numeric-targetPort
+// Services don't depend on Pod state at all. Bounded by NS size.
+//
+// Mirrors ExternalAllowReconciler.podToServicesWithNamedPorts; reuses
+// the same `hasNamedTargetPort` helper from external_allow_controller.go.
+func (r *ApiserverReachableReconciler) podToServicesWithNamedPorts(ctx context.Context, obj client.Object) []reconcile.Request {
+	var svcs corev1.ServiceList
+	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0)
+	for i := range svcs.Items {
+		if !hasNamedTargetPort(&svcs.Items[i]) {
+			continue
+		}
+		out = append(out, reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: svcs.Items[i].Namespace,
+				Name:      svcs.Items[i].Name,
+			},
+		})
+	}
+	return out
 }
 
 // apiserverReachablePolicyToService derives the source Service from the
