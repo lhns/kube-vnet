@@ -426,8 +426,19 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
+					// Two-peer from-rule for CNI portability — see
+					// hostport_controller.go and external_allow_controller.go
+					// for the full reasoning. `ipBlock` carries the user-
+					// configurable apiserverSourceCIDR for external sources;
+					// `namespaceSelector: {}` covers in-cluster sources that
+					// CNIs (Calico, Cilium, kube-router) deliberately exclude
+					// from ipBlock matching. The apiserver reaches webhooks
+					// via konnectivity-agent on k0s/managed clusters, which
+					// presents node-IP-sourced traffic that ipBlock won't
+					// match on those CNIs.
 					From: []networkingv1.NetworkPolicyPeer{
 						{IPBlock: &networkingv1.IPBlock{CIDR: sourceCIDR}},
+						{NamespaceSelector: &metav1.LabelSelector{}},
 					},
 					Ports: policyPorts,
 				},

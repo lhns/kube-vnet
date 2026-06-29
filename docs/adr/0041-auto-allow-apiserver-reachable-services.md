@@ -1,5 +1,7 @@
 # ADR 0041 — Auto-allow Services reached by the apiserver
 
+> **Amendment (2026-06-29, second same-day follow-up)**: the emitted policy's `from:` rule now includes BOTH `ipBlock: <apiserverSourceCIDR>` AND `namespaceSelector: {}` (empty selector → all namespaces). Many CNIs (Calico in some configs, Cilium, kube-router) treat `ipBlock` peers as off-cluster-source-only and do NOT match cluster-internal IPs against them — even `ipBlock: 0.0.0.0/0`. On k0s / kubeadm-with-Konnectivity / GKE private clusters the apiserver reaches webhook backends via a konnectivity-agent that presents node-IP-sourced traffic; without the namespaceSelector peer, that traffic was being dropped despite the apparent allow-all (user-reported `No agent available` after the named-port fix). The `namespaceSelector: {}` makes the policy CNI-portable. Webhook servers still authenticate the apiserver via caBundle/requestheader CA at the TLS layer, so the broader peer set doesn't compromise security.
+
 > **Amendment (2026-06-29, same-day follow-up)**: the initial implementation emitted policies scoped to the Service-side port rather than the pod-side targetPort. NetworkPolicy is enforced after kube-proxy DNATs to `pod:targetPort`, so a Service-port allow doesn't actually permit the apiserver's traffic — admission silently times out. Symptom on the user's cluster:
 >
 > ```
