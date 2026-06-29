@@ -1,7 +1,5 @@
 # ADR 0040 — Auto-allow for hostPort pods via per-port stamping
 
-> **Amendment (2026-06-29)**: the emitted policy's `from:` rule now includes BOTH `ipBlock: 0.0.0.0/0` AND `namespaceSelector: {}` (empty selector → all namespaces). Many CNIs (Calico, Cilium, kube-router in some configs) treat `ipBlock` peers as off-cluster-source-only and do NOT match cluster-internal IPs (node IPs, pod IPs) against them. Cluster-internal sources hitting hostPort (sidecars, in-cluster pods using the node IP) were being dropped. The `namespaceSelector: {}` makes the policy CNI-portable. See ADR 0041 amendment for the matching change and full reasoning.
-
 **Status**: Accepted (2026-06-26)
 
 ## Context

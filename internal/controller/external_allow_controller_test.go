@@ -50,19 +50,12 @@ func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
 	if got := pol.Spec.PodSelector.MatchLabels["app"]; got != "traefik" {
 		t.Errorf("podSelector.matchLabels[app] = %q, want traefik", got)
 	}
-	// from-rule has two peers: ipBlock 0.0.0.0/0 (external sources) AND
-	// namespaceSelector: {} (in-cluster sources — Calico/Cilium/kube-router
-	// don't match cluster-internal traffic via ipBlock; the empty NS
-	// selector covers them portably). See ADR 0038 amendment.
-	if len(pol.Spec.Ingress) != 1 || len(pol.Spec.Ingress[0].From) != 2 {
-		t.Fatalf("expected one ingress rule with two from-peers (ipBlock + namespaceSelector), got %+v", pol.Spec.Ingress)
+	if len(pol.Spec.Ingress) != 1 || len(pol.Spec.Ingress[0].From) != 1 ||
+		pol.Spec.Ingress[0].From[0].IPBlock == nil {
+		t.Fatalf("expected one from-rule with ipBlock, got %+v", pol.Spec.Ingress)
 	}
-	if pol.Spec.Ingress[0].From[0].IPBlock == nil ||
-		pol.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("first peer should be ipBlock 0.0.0.0/0, got %+v", pol.Spec.Ingress[0].From[0])
-	}
-	if pol.Spec.Ingress[0].From[1].NamespaceSelector == nil {
-		t.Errorf("second peer should be namespaceSelector (empty matches all NSes), got %+v", pol.Spec.Ingress[0].From[1])
+	if pol.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
+		t.Errorf("ipBlock cidr = %q, want 0.0.0.0/0", pol.Spec.Ingress[0].From[0].IPBlock.CIDR)
 	}
 	if len(pol.Spec.Ingress[0].Ports) != 1 {
 		t.Fatalf("expected one port, got %d", len(pol.Spec.Ingress[0].Ports))

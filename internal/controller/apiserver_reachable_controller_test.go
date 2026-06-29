@@ -277,19 +277,12 @@ func TestBuildApiserverReachablePolicy(t *testing.T) {
 	if !mapsEqual(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
 		t.Errorf("podSelector matchLabels mismatch: %v", p.Spec.PodSelector.MatchLabels)
 	}
-	// Two-peer from-rule per ADR 0041 amendment for CNI portability:
-	// ipBlock 0.0.0.0/0 (external sources) + namespaceSelector: {} (in-
-	// cluster sources, since Calico/Cilium/kube-router don't match
-	// cluster-internal traffic via ipBlock).
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 2 {
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
 		t.Fatalf("unexpected ingress shape: %+v", p.Spec.Ingress)
 	}
 	if p.Spec.Ingress[0].From[0].IPBlock == nil ||
 		p.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("first peer should be ipBlock 0.0.0.0/0: %+v", p.Spec.Ingress[0].From[0])
-	}
-	if p.Spec.Ingress[0].From[1].NamespaceSelector == nil {
-		t.Errorf("second peer should be namespaceSelector: %+v", p.Spec.Ingress[0].From[1])
+		t.Errorf("ipBlock CIDR mismatch: %+v", p.Spec.Ingress[0].From[0].IPBlock)
 	}
 	if len(p.Spec.Ingress[0].Ports) != 1 ||
 		p.Spec.Ingress[0].Ports[0].Port.IntValue() != 10250 {
@@ -453,54 +446,6 @@ func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods
 	}
 	if got := p.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
 		t.Errorf("expected port 8443 from matching pod, got %d", got)
-	}
-}
-
-// TestBuildApiserverReachablePolicy_HasNamespaceSelector_ForCNICompat
-// is the contract test for the ADR 0041 amendment: the from-rule MUST
-// include `namespaceSelector: {}` alongside `ipBlock` so Calico /
-// Cilium / kube-router (which match ipBlock only against off-cluster
-// sources) accept in-cluster traffic (apiserver via konnectivity-agent,
-// kube-proxy SNAT, kubelet probes from node IPs). Without this peer,
-// the policy looks like it allows everything but actually doesn't on
-// those CNIs.
-//
-// Don't "simplify" the builder to a single ipBlock peer without
-// re-reading the ADR amendment first.
-func TestBuildApiserverReachablePolicy_HasNamespaceSelector_ForCNICompat(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
-		},
-	}
-	for _, cidr := range []string{"0.0.0.0/0", "10.1.2.0/24", ""} {
-		t.Run("cidr="+cidr, func(t *testing.T) {
-			p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, cidr)
-			if err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if len(p.Spec.Ingress[0].From) != 2 {
-				t.Fatalf("expected 2 from-peers (ipBlock + namespaceSelector), got %d: %+v",
-					len(p.Spec.Ingress[0].From), p.Spec.Ingress[0].From)
-			}
-			var sawIPBlock, sawNSSelector bool
-			for _, peer := range p.Spec.Ingress[0].From {
-				if peer.IPBlock != nil {
-					sawIPBlock = true
-				}
-				if peer.NamespaceSelector != nil {
-					sawNSSelector = true
-				}
-			}
-			if !sawIPBlock {
-				t.Errorf("from-rule missing ipBlock peer")
-			}
-			if !sawNSSelector {
-				t.Errorf("from-rule missing namespaceSelector peer (CNI portability regression)")
-			}
-		})
 	}
 }
 

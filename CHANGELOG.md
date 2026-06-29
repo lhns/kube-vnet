@@ -10,31 +10,6 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
-### Fixed
-
-- **`from: ipBlock 0.0.0.0/0` was not matching cluster-internal traffic on
-  Calico / Cilium / kube-router.** Affected the three external-allow ADRs
-  (0038 LB/NodePort, 0040 hostPort, 0041 apiserver-reachable webhooks).
-  Many CNIs deliberately match `ipBlock` peers only against off-cluster
-  source IPs and skip cluster-internal addresses (node IPs, pod IPs) even
-  when CIDR is `0.0.0.0/0`. The emitted policies looked like they allowed
-  everything but actually denied cluster-internal traffic — admission
-  webhook traffic via k0s konnectivity-agent, kube-proxy SNAT for
-  `externalTrafficPolicy: Cluster` Services, hostNetwork-sourced traffic,
-  in-cluster pods using a LB hostname.
-
-  All three external-allow policies now emit two `from:` peers — the
-  existing `ipBlock` (for true off-cluster sources) AND a new
-  `namespaceSelector: {}` (matches every pod in every namespace, the
-  CNI-portable way to express "in-cluster sources"). Same security
-  posture, just expressed in the way every CNI agrees on.
-
-  User-reported symptom this resolves: on k0s, cert-manager admission
-  failed with `No agent available` even after the per-port and named-port
-  fixes in ADR 0041 — the konnectivity-agent forwarded apiserver requests
-  with the worker node IP as source, which the CNI didn't match against
-  ipBlock.
-
 ### Changed
 
 - **Uniform kind-prefixed naming for every operator-emitted NetworkPolicy

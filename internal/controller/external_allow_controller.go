@@ -265,15 +265,8 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
-					// Two-peer from-rule for CNI portability — see
-					// hostport_controller.go for the full reasoning.
-					// `ipBlock` matches off-cluster IPs; `namespaceSelector: {}`
-					// matches in-cluster pod sources, which Calico / Cilium /
-					// kube-router DON'T match via ipBlock even with CIDR
-					// 0.0.0.0/0. The pair makes the policy CNI-agnostic.
 					From: []networkingv1.NetworkPolicyPeer{
 						{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}},
-						{NamespaceSelector: &metav1.LabelSelector{}},
 					},
 					Ports: ports,
 				},

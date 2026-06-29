@@ -191,19 +191,8 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
-					// Two-peer from-rule for CNI portability. Many CNIs
-					// (Calico, Cilium, kube-router in some configs) match
-					// `ipBlock` only against off-cluster source IPs and skip
-					// it for cluster-internal IPs (node IPs, pod IPs). Without
-					// the additional `namespaceSelector: {}`, traffic from
-					// in-cluster non-pod sources (kubelet probes via node IP,
-					// kube-proxy SNAT to node IP, hostNetwork pods) would be
-					// dropped despite the apparent allow-all. The empty
-					// namespaceSelector matches every NS's pods, covering the
-					// cluster-internal side.
 					From: []networkingv1.NetworkPolicyPeer{
 						{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}},
-						{NamespaceSelector: &metav1.LabelSelector{}},
 					},
 					Ports: []networkingv1.NetworkPolicyPort{
 						{Protocol: &proto, Port: &portIS},
