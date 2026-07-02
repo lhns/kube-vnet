@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -215,33 +214,6 @@ func hostPortPolicyName(ns string, key hostPortKey) string {
 	return prefix + identity + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 
-// parseHostSourceLabel decodes the `host-<port>-<proto>` LabelSource
-// value emitted by buildHostPortPolicy. Returns ok=false if the format
-// doesn't match (e.g., it's a Service-source label).
-func parseHostSourceLabel(v string) (hostPortKey, bool) {
-	const prefix = "host-"
-	if !strings.HasPrefix(v, prefix) {
-		return hostPortKey{}, false
-	}
-	rest := strings.TrimPrefix(v, prefix)
-	// rest = "<port>-<proto>" where proto is tcp/udp/sctp
-	dash := strings.LastIndex(rest, "-")
-	if dash <= 0 || dash == len(rest)-1 {
-		return hostPortKey{}, false
-	}
-	portStr := rest[:dash]
-	protoStr := strings.ToUpper(rest[dash+1:])
-	var port int32
-	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port <= 0 {
-		return hostPortKey{}, false
-	}
-	switch corev1.Protocol(protoStr) {
-	case corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP:
-		return hostPortKey{port: port, protocol: corev1.Protocol(protoStr)}, true
-	}
-	return hostPortKey{}, false
-}
-
 func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Pod creates/updates/deletes that touch hostPort declarations need to
 	// re-trigger the NS reconcile. Filter to only pods that *currently*
@@ -299,18 +271,3 @@ func networkPolicyToNamespace(_ context.Context, obj client.Object) []reconcile.
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }
 
-// sortedHostPortKeys returns the desired-set keys in deterministic order.
-// Useful for test assertions; not used at runtime.
-func sortedHostPortKeys(m map[hostPortKey]bool) []hostPortKey {
-	out := make([]hostPortKey, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].port != out[j].port {
-			return out[i].port < out[j].port
-		}
-		return out[i].protocol < out[j].protocol
-	})
-	return out
-}

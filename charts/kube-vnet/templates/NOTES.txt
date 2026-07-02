@@ -21,18 +21,18 @@ migration where you want to preserve the existing policy set):
 
 See ADR 0036 for the full lifecycle.
 
-{{- $iso := default (dict) .Values.operator.ingressIsolation }}
-{{- $mode := $iso.mode }}
-{{- if eq $mode "pod" }}
+{{- $cb := default (dict) .Values.operator.clusterBaseline }}
+{{- if eq ($cb.ingressIsolationLevel | default "") "pod" }}
 
-WARNING: ingressIsolation.mode is "pod". Every namespace not in
-disabledNamespaces and not in ingressIsolation.namespaceOverrides.none will
-get the default-deny baseline (no ingress allowed except via vnet membership
-policies). Workloads that previously relied on default-allow will lose
-ingress connectivity from outside their vnet.
+WARNING: operator.clusterBaseline.ingressIsolationLevel is "pod" — the
+strictest preset. Every managed namespace gets the deny-all ingress
+baseline, and pods receive ingress ONLY via explicit vnet membership
+(label, binding, or baseline membership). Workloads that previously
+relied on Kubernetes default-allow will lose ingress connectivity until
+they are joined to a vnet.
 
-By default, kube-system / kube-public / kube-node-lease are protected via
-ingressIsolation.namespaceOverrides.none. Keep them there unless you have a
-deliberate reason to apply a baseline to the control plane.
+Namespaces in operator.disabledNamespaces (default: kube-system,
+kube-public, kube-node-lease) are exempt — keep the system namespaces
+there unless you have a deliberate reason to isolate the control plane.
 
 {{- end }}

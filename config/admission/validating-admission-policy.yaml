@@ -1,0 +1,52 @@
+# Generated from charts/kube-vnet/templates/validating-admission-policy.yaml by 'make render-kustomize-vaps'.
+# Do not edit by hand -- run the make target instead. ADR 0031.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: kube-vnet-controller-join-label-direction
+  labels:
+    helm.sh/chart: kube-vnet-0.1.0
+    app.kubernetes.io/name: kube-vnet
+    app.kubernetes.io/instance: kube-vnet-controller
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: controller
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+  variables:
+    # CEL expressions, not string literals — the values these variables
+    # take must themselves be valid CEL. Wrap the rendered prefix in inner
+    # double-quotes so CEL parses it as a string literal rather than as
+    # `kube-vnet / net .` (identifier / division / identifier / accessor).
+    - name: joinKeyPrefix
+      expression: '"kube-vnet/net."'
+    - name: validValues
+      expression: '["both","ingress","egress","none"]'
+  validations:
+    - expression: |
+        object.metadata.labels.all(k,
+          !k.startsWith(variables.joinKeyPrefix) ||
+          object.metadata.labels[k] in variables.validValues)
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+---
+# Source: kube-vnet/templates/validating-admission-policy.yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: kube-vnet-controller-join-label-direction
+  labels:
+    helm.sh/chart: kube-vnet-0.1.0
+    app.kubernetes.io/name: kube-vnet
+    app.kubernetes.io/instance: kube-vnet-controller
+    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/component: controller
+spec:
+  policyName: kube-vnet-controller-join-label-direction
+  validationActions: [Deny]

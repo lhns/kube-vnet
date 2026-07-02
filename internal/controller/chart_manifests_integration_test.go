@@ -73,12 +73,12 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 		})
 	}
 
-	// Also exercise each kustomize-shipped VAP directly. The direction-VAP
-	// is hand-written in config/admission/policy.yaml; the system-labels and
-	// system-vnet VAPs are generated from the chart templates by
-	// `make render-kustomize-vaps`. Reading them as static files avoids
-	// needing kubectl on PATH in the integration job.
-	for _, p := range []string{"policy.yaml", "system-labels-vap.yaml", "system-vnet-vap.yaml"} {
+	// Also exercise each kustomize-shipped VAP directly. All three are
+	// generated from the chart templates by `make render-kustomize-vaps`
+	// (the direction-VAP joined the loop after its hand-maintained copy
+	// silently drifted from the chart). Reading them as static files
+	// avoids needing kubectl on PATH in the integration job.
+	for _, p := range []string{"validating-admission-policy.yaml", "system-labels-vap.yaml", "system-vnet-vap.yaml"} {
 		p := p
 		t.Run("kustomize-vap-"+p, func(t *testing.T) {
 			path := filepath.Join("..", "..", "config", "admission", p)

@@ -85,8 +85,8 @@ generate: controller-gen ## Generate deepcopy methods
 	$(CONTROLLER_GEN) object paths="./api/v1alpha1/..."
 
 .PHONY: render-kustomize-vaps
-render-kustomize-vaps: ## Render the chart's system-* VAPs into config/admission/. Run after editing charts/kube-vnet/templates/system-*-vap.yaml.
-	@for tpl in system-labels-vap system-vnet-vap; do \
+render-kustomize-vaps: ## Render the chart's VAPs into config/admission/. Run after editing any VAP template under charts/kube-vnet/templates/.
+	@for tpl in validating-admission-policy system-labels-vap system-vnet-vap; do \
 	  out=config/admission/$${tpl}.yaml; \
 	  { \
 	    echo "# Generated from charts/kube-vnet/templates/$${tpl}.yaml by 'make render-kustomize-vaps'."; \

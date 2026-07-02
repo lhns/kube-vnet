@@ -39,7 +39,6 @@ type VirtualNetworkBaselineStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=vnbl;vnbls,scope=Namespaced
-// +kubebuilder:printcolumn:name="Memberships",type=integer,JSONPath=`.spec.memberships`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == 'default'",message="VirtualNetworkBaseline must be named 'default' (singleton per namespace; ADR 0031)"

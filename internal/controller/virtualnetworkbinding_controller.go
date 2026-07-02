@@ -8,7 +8,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -168,42 +167,14 @@ func upsertBindingCondition(b *vnetv1alpha1.VirtualNetworkBinding, c metav1.Cond
 	b.Status.Conditions = append(b.Status.Conditions, c)
 }
 
-// nsPermits is a free-standing equivalent of VirtualNetworkReconciler.permits
-// so the binding controller doesn't need to hold a reference to the vnet
-// reconciler. Keeps the two reconcilers independent.
+// nsPermits routes the binding's allowedNamespaces decision through the
+// shared PermitsForVnet helper — the single source of truth in
+// permits.go. This was previously a hand-rolled reimplementation that
+// was missing the cluster-vnet short-circuit and agreed with the shared
+// logic only via the `AllowedNamespaces{All:true}` coupling on the
+// cluster system vnet.
 func nsPermits(ctx context.Context, c client.Client, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	if ns == vnet.Namespace {
-		return true, nil
-	}
-	sel := vnet.Spec.AllowedNamespaces
-	if sel == nil {
-		return false, nil
-	}
-	if sel.All {
-		return true, nil
-	}
-	for _, n := range sel.Names {
-		if n == ns {
-			return true, nil
-		}
-	}
-	if sel.Selector != nil {
-		nsObj := &corev1.Namespace{}
-		if err := c.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		s, err := metav1.LabelSelectorAsSelector(sel.Selector)
-		if err != nil {
-			return false, err
-		}
-		if s.Matches(labels.Set(nsObj.Labels)) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return PermitsForVnet(ctx, c, vnet, ns)
 }
 
 func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {

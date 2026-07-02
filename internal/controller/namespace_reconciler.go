@@ -81,6 +81,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 		logger.Error(err, "apply baseline failed")
+		applyErrors.WithLabelValues(ApplyErrorBaseline).Inc()
 		return ctrl.Result{}, err
 	}
 

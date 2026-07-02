@@ -52,7 +52,6 @@ type ClusterVirtualNetworkBaselineStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=cvnbl;cvnbls,scope=Cluster
-// +kubebuilder:printcolumn:name="Memberships",type=integer,JSONPath=`.spec.memberships`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == 'default'",message="ClusterVirtualNetworkBaseline must be named 'default' (singleton; ADR 0031)"

@@ -49,10 +49,11 @@ const (
 	LabelSystemHostPortPrefix = "kube-vnet.system/host-port."
 	// LabelSource is the operator-owned reference back to the identity that
 	// caused this external-allow policy to be emitted. Per ADR 0039 it's
-	// symmetrically kind-prefixed across both source kinds:
+	// symmetrically kind-prefixed across all source kinds:
 	//
-	//   svc-<service-name>            — Service-source (LB/NodePort/ClusterIP+externalIPs)
-	//   host-<port>-<protocol>        — host-source (hostPort)
+	//   svc-<service-name>            — Service-source (LB/NodePort/ClusterIP+externalIPs, ADR 0038)
+	//   host-<port>-<protocol>        — host-source (hostPort, ADR 0040)
+	//   apiserver-<service-name>      — apiserver-source (webhook/APIService backends, ADR 0041)
 	//
 	// Bare name (no slashes — label values forbid `/`). The companion
 	// LabelSourceKind label carries the kind explicitly so reconcilers
@@ -60,15 +61,18 @@ const (
 	LabelSource = "kube-vnet.system/source"
 
 	// LabelSourceKind disambiguates the LabelSource value's namespace.
-	// Per ADR 0039 / 0040:
+	// Per ADR 0039 / 0040 / 0041:
 	//
 	//   svc                          — Service-source (ExternalAllowReconciler owns it)
 	//   host                         — host-source (HostPortReconciler owns it)
+	//   apiserver                    — apiserver-source (ApiserverReachableReconciler owns it)
 	//
 	// Reconcilers filter their cleanup tail-step by this label so they
 	// only sweep policies they actually own; a Service literally named
 	// `host-8080-tcp` (pathological but legal) won't be mistakenly
-	// claimed by the HostPortReconciler.
+	// claimed by the HostPortReconciler. Where a sweep can't narrow its
+	// List filter to one kind (the ExternalAllow legacy-migration sweep),
+	// the claimedByOtherSourceKind predicate does the per-item exemption.
 	LabelSourceKind = "kube-vnet.system/source-kind"
 
 	// LabelSourceKindService / LabelSourceKindHost / LabelSourceKindApiserver

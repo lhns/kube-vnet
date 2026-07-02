@@ -135,37 +135,6 @@ func TestHostPortPolicyName_NSInHash(t *testing.T) {
 	}
 }
 
-func TestParseHostSourceLabel_RoundTrip(t *testing.T) {
-	cases := []hostPortKey{
-		{port: 80, protocol: corev1.ProtocolTCP},
-		{port: 8080, protocol: corev1.ProtocolUDP},
-		{port: 5000, protocol: corev1.ProtocolSCTP},
-	}
-	for _, c := range cases {
-		val := "host-" + (hostPortKey{port: c.port, protocol: c.protocol}).String()
-		// Convert to the LabelSource value as buildHostPortPolicy does: <port>-<proto-lower>
-		// (vs hostPortKey.String() which uses dot separator).
-		// Use the exact format the builder emits:
-		valBuilder := buildHostPortPolicy("ns", c).Labels[LabelSource]
-		got, ok := parseHostSourceLabel(valBuilder)
-		if !ok {
-			t.Errorf("parse failed for %q (built from %v); raw=%q", valBuilder, c, val)
-			continue
-		}
-		if got != c {
-			t.Errorf("parsed %v, want %v (source=%q)", got, c, valBuilder)
-		}
-	}
-}
-
-func TestParseHostSourceLabel_RejectsServiceSource(t *testing.T) {
-	// Service-source LabelSource values are bare service names, no "host-" prefix.
-	_, ok := parseHostSourceLabel("traefik")
-	if ok {
-		t.Error("expected parse to reject service-source label")
-	}
-}
-
 func TestDesiredHostPortStamps_RespectsHostNetwork(t *testing.T) {
 	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
 	stamps := desiredHostPortStamps(p)
