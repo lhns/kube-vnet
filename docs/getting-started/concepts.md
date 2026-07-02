@@ -74,6 +74,10 @@ The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0
 
 Unknown values (typos like `"bothh"`) are rejected at admission by the chart's `ValidatingAdmissionPolicy`, and on older clusters surface on the vnet's `Degraded` condition with reason `UnknownDirection`, naming the offending pods. The pod is excluded from membership; nothing is silently allowed.
 
+### The `default-*` variants (baseline tiers only)
+
+Baselines (`ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`) accept four additional values: `default-both`, `default-ingress`, `default-egress`, `default-none`. The `default-` prefix marks the value **advisory** — a lower tier (a namespace baseline under the cluster baseline, or a binding/pod label under either) may override it per vnet. A *bare* value at a baseline is **enforced**: override attempts are rejected (surfaced as `OverrideRejected` on the overriding baseline) and the upstream value stays in effect. Pod-tier sources (labels, bindings) accept only the bare four; the prefix is consumed during resolution, so the stamped result on the pod is always bare. See [ADR 0031](../adr/0031-baseline-tier-resolution.md) and [the deny-all baseline section](#the-deny-all-baseline) below for how the chart presets use these.
+
 ### Traffic-flow algebra
 
 For two members `X` and `Y` of the same vnet, traffic flows `X → Y` iff:
@@ -92,7 +96,7 @@ For two members `X` and `Y` of the same vnet, traffic flows `X → Y` iff:
 
 ### Membership policy emission
 
-The operator emits **one ingress-only policy per (vnet, namespace) with at least one receiver-capable member**, named `kube-vnet.<homeNS>.<vnet>-<8hex>` (per ADR 0033). The selector matches the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` with `value In [both, ingress]` — every member that can accept ingress. `policyTypes: [Ingress]`.
+The operator emits **one ingress-only policy per (vnet, namespace) with at least one receiver-capable member**, named `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` (identity per [ADR 0033](../adr/0033-canonical-fq-system-labels.md), kind-prefixed name per [ADR 0039](../adr/0039-uniform-kind-prefixed-policy-naming.md)). The selector matches the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` with `value In [both, ingress]` — every member that can accept ingress. `policyTypes: [Ingress]`.
 
 `egress`-only members produce **no self-policy** — they accept no ingress, and the operator never restricts egress (ADR 0025). They still appear in *other* members' `ingress.from` peer rules via the `In [both, egress]` selector.
 
@@ -279,7 +283,7 @@ A pod that hasn't yet been processed by `ResolutionReconciler` carries no `kube-
 
 For each VirtualNetwork with at least one receiver-capable member, the operator generates **one membership `NetworkPolicy` per (vnet, namespace)**. Bindings do not produce additional policies — binding-targeted pods are stamped with the same canonical FQ system label and are covered by the regular membership policy (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
-Naming: `kube-vnet.<homeNS>.<vnet>-<8hex>` uniformly. The 8-hex suffix is a SHA-256-based identity hash that disambiguates against name collisions. The truncate-and-hash overflow handler still applies if the rendered name exceeds Kubernetes' 253-character resource-name limit. See [ADR 0011](../adr/0011-policy-naming-and-truncation.md) (refined by [ADR 0033](../adr/0033-canonical-fq-system-labels.md)) and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
+Naming: `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` uniformly (`kube-vnet.mem.cluster-<8hex>` for the cluster system vnet). The 8-hex suffix is a SHA-256-based identity hash that disambiguates against name collisions. The truncate-and-hash overflow handler still applies if the rendered name exceeds Kubernetes' 253-character resource-name limit. See [ADR 0011](../adr/0011-policy-naming-and-truncation.md) (refined by [ADR 0033](../adr/0033-canonical-fq-system-labels.md)) and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
 Labels on every operator-managed `NetworkPolicy`:
 

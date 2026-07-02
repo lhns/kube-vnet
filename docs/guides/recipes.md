@@ -335,7 +335,7 @@ Effect (the X→Y algebra: traffic flows iff X is `both`/`egress` AND Y is `both
 - metrics-api → app: no (same reason).
 - log-shipper → log-shipper (peers): no (egress-only — never accepts).
 
-Generated policies in `platform`: `kube-vnet-telemetry-platform` (bidi, selecting `both`), `kube-vnet-telemetry-platform-ingress` (selecting `ingress`), `kube-vnet-telemetry-platform-egress` (selecting `egress`). Direction classes with no members produce no policy.
+Generated policy in `platform`: one membership policy, `kube-vnet.mem.platform.telemetry-<8hex>`. It selects the receivers (pods stamped `both` or `ingress`) and allows ingress from the senders (pods stamped `both` or `egress`) via `In` matches on the stamped `kube-vnet.system/net.platform.telemetry` label. Egress-only members appear as allowed sources but are not themselves selected — nothing needs to allow ingress *to* them.
 
 See [ADR 0021](../adr/0021-direction-modes-on-join-labels.md).
 
@@ -410,13 +410,16 @@ Bindings are an escape hatch — the join label is the recommended primary mecha
 
 You have a running namespace with workloads relying on default-allow Kubernetes networking. You want to bring it under kube-vnet without breaking anything in the middle.
 
-The goal of the migration: at the end, every workload in the namespace either belongs to a vnet or is explicitly allowed by a user-managed NetworkPolicy. The ingress-isolation baseline is what makes this real.
+The goal of the migration: at the end, every workload in the namespace either belongs to a vnet or is explicitly allowed by a user-managed NetworkPolicy. The baseline-tier model ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) is what makes this safe to do gradually: install with the permissive `cluster` preset, label workloads at leisure, then tighten one namespace at a time with a per-namespace `VirtualNetworkBaseline`.
 
 Step-by-step:
 
 ```bash
-# 1. Make sure the operator is installed and healthy.
+# 1. Make sure the operator is installed and healthy — ideally installed
+#    with the adoption-friendly preset, so nothing is isolated yet:
+#      --set operator.clusterBaseline.ingressIsolationLevel=cluster
 kubectl get deploy -n kube-vnet-system kube-vnet-controller
+kubectl get cvnbl default -o yaml    # confirm the seeded cluster baseline
 
 # 2. Define the vnets your workloads need. Don't label any pods yet.
 kubectl apply -f - <<EOF
@@ -428,9 +431,9 @@ metadata:
 spec: {}
 EOF
 
-# 3. Label workloads gradually. Without ingress-isolation set, this only
-#    enables membership reachability (vnet peers reach each other); other
-#    pods in the namespace are unaffected.
+# 3. Label workloads gradually. Under the `cluster` preset every pod still
+#    inherits cluster=default-both, so adding a membership only ADDS
+#    reachability (vnet peers reach each other); nothing loses traffic.
 kubectl patch deployment orders -n platform --type=merge -p '
 spec:
   template:
@@ -444,18 +447,32 @@ spec:
 
 # 5. Repeat step 3 for each additional workload that should join.
 
-# 6. Once you're ready to flip the namespace into ingress-deny posture, set
-#    Per ADR 0030 the deny-all baseline applies to every managed namespace
-#    automatically; non-member pods are unreachable on ingress (they can
-#    still initiate outbound). To opt a namespace out entirely, annotate
-#    it kube-vnet/disabled=true.
+# 6. Flip THIS namespace into the strict posture by overriding the cluster
+#    default with a per-namespace VirtualNetworkBaseline. This is the moment
+#    non-migrated pods in `platform` lose ingress reachability — everything
+#    before this step is risk-free.
+kubectl apply -f - <<EOF
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBaseline
+metadata:
+  name: default            # singleton per namespace
+  namespace: platform
+spec:
+  memberships:
+    - virtualNetworkRef: { name: namespace, namespace: kube-vnet-system }
+      direction: none      # drop same-namespace blanket reachability
+    - virtualNetworkRef: { name: cluster, namespace: kube-vnet-system }
+      direction: egress    # keep outbound (DNS etc.); accept nothing by default
+EOF
 
 # 7. For workloads that need ingress NOT covered by any vnet (accepting
 #    external Ingress controller traffic, etc.), add a user-managed
 #    NetworkPolicy. kube-vnet's baseline + your allows compose additively.
+#    (Externally-exposed Services and webhook backends are auto-allowed —
+#    see the auto-allow guide.)
 ```
 
-The key safety property under the new model: ingress-isolation is decoupled from membership. You can label pods first, watch traffic with no risk of breakage, and only flip the baseline when you're ready. Step 6 is the moment non-migrated pods lose ingress reachability — all earlier steps are safe.
+The key safety property: the isolation posture (baseline tier) is decoupled from membership. You can label pods first, watch traffic with no risk of breakage, and only tighten the namespace's baseline when you're ready. The per-namespace override in step 6 works because the `cluster` preset seeds `default-*` directions — advisory values a namespace baseline may override. Repeat step 6 per namespace as each one finishes migrating; when all namespaces are strict, you can tighten the cluster preset itself.
 
 If migration will take a while, opt the namespace out of kube-vnet entirely while you work:
 
@@ -477,7 +494,7 @@ Not every connectivity need fits the membership model:
 - An external monitoring agent in `monitoring` needs to scrape `/metrics` on a specific port.
 - A pod needs to reach the public internet.
 
-Kubernetes' NetworkPolicy is **additive**: a pod's allowed traffic is the union of allow-rules from every policy that selects it. So the operator's baseline + your custom NetworkPolicy compose: the baseline restricts ingress per the namespace's `ingress-isolation` mode; your NetworkPolicy adds specific allows on top.
+Kubernetes' NetworkPolicy is **additive**: a pod's allowed traffic is the union of allow-rules from every policy that selects it. So the operator's policies + your custom NetworkPolicy compose: the `kube-vnet.base` baseline denies ingress by default, the membership policies allow same-vnet traffic, and your NetworkPolicy adds specific allows on top.
 
 Example: allow Ingress controller pods to reach webapp pods on port 80, alongside kube-vnet's vnet-driven isolation.
 

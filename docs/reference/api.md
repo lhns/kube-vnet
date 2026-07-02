@@ -167,7 +167,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 |---|---|---|---|
 | False | `NoIssues` | "" | Reconcile clean; no issues observed. |
 | True | `InvalidJoiners` | "<N> invalid joiner(s): <ns/pod>, <ns/pod>, …" | Some pods carry the prefixed join label but their namespace is non-permitted (`NamespaceNotAllowed`) or excluded (`NamespaceExcluded`). The Degraded message names the offending pods. |
-| True | `UnknownDirection` | "<N> pod(s) with unknown direction: <ns/pod>=<value>, …" | At least one pod's join-label value is not one of `both`/`ingress`/`egress`/`none` (or the legacy `"true"`/`"false"`). The pod is excluded from membership. See [ADR 0021](../adr/0021-direction-modes-on-join-labels.md). |
+| True | `UnknownDirection` | "<N> pod(s) with unknown direction: <ns/pod>=<value>, …" | At least one pod's join-label value is not one of `both`/`ingress`/`egress`/`none` (the legacy `"true"`/`"false"`/empty aliases are rejected at admission on K8s >= 1.30 and excluded at reconcile time everywhere). The pod is excluded from membership. See [ADR 0021](../adr/0021-direction-modes-on-join-labels.md). |
 | True | `ResolutionConflict` | "<N> pod(s) with cross-source resolution conflicts: <ns/pod>, …" | At least one pod has conflicting `Direction` values from two distinct resolution sources for this vnet (e.g. a binding says `both` while a pod label says `egress`, or two bindings disagree). The conflict is intersected fail-closed and the per-pod conflict annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. See [ADR 0033](../adr/0033-canonical-fq-system-labels.md). |
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
@@ -201,12 +201,12 @@ References to the `NetworkPolicy` resources the operator has applied for this Vi
 status:
   generatedPolicies:
     - namespace: platform
-      name: kube-vnet-payments-platform
+      name: kube-vnet.mem.platform.payments-1a2b3c4d
     - namespace: webapp
-      name: kube-vnet-payments-webapp
+      name: kube-vnet.mem.platform.payments-1a2b3c4d
 ```
 
-This list does **not** include the `kube-vnet` baseline (see [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)). The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet.system/role=baseline`).
+This list does **not** include the `kube-vnet.base` baseline (see [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)). The baseline is a namespace-level concern, not a per-vnet concern; it's tracked separately by labels (`kube-vnet.system/role=baseline`).
 
 ### `status.observedGeneration`
 

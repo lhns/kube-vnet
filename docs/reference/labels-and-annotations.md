@@ -72,7 +72,7 @@ When a join label is present but membership can't be honored, kube-vnet surfaces
 | `PrefixedJoinLabelVnetNotFound` | Pod has `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` doesn't exist. |
 | `JoinLabelNamespaceNotAllowed` | The vnet exists at the named home, but its `spec.allowedNamespaces` does not permit the pod's namespace. |
 
-In addition, on Kubernetes ≥ 1.30 the chart installs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]`. On older clusters the same condition still surfaces at reconcile time as `Degraded`/`UnknownDirection` on the vnet.
+In addition, on Kubernetes ≥ 1.30 the chart installs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none]`. On older clusters the same condition still surfaces at reconcile time as `Degraded`/`UnknownDirection` on the vnet.
 
 See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [`../troubleshooting.md`](../guides/troubleshooting.md#pod-events-kube-vnet-emits).
 
@@ -195,7 +195,7 @@ Example: an operator-managed membership policy in `webapp` for vnet `monitoring/
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet-observability-webapp
+  name: kube-vnet.mem.monitoring.observability-2b3c4d5e
   namespace: webapp
   labels:
     kube-vnet.system/managed-by: kube-vnet
@@ -209,7 +209,7 @@ And the corresponding baseline in `webapp`:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: kube-vnet
+  name: kube-vnet.base
   namespace: webapp
   labels:
     kube-vnet.system/managed-by: kube-vnet
@@ -305,12 +305,12 @@ podSelector:
       # OR
       key: kube-vnet/net.<homeNS>.<vnet> # prefixed form
       operator: In
-      values: [true, both, ingress]      # all receiver-capable members
+      values: [both, ingress]           # all receiver-capable members
 ```
 
 `egress`-only members are deliberately not in this set — they accept no ingress, and the operator no longer restricts egress (ADR 0025), so there's nothing to allow on a self-policy. They still appear as *peer initiators* in other members' ingress.from rules.
 
-Peer rules narrow to initiator-capable members on the source side: `ingress.from` selects peers via `kube-vnet/net.<vnet> In [true, both, egress]`. (The bidi+ingress merge is documented in [ADR 0021 Addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--bidi--ingress-self-policies-merged); the older split into separate `-ingress` / `-egress` self-policies is gone.)
+Peer rules narrow to initiator-capable members on the source side: `ingress.from` selects peers via `kube-vnet.system/net.<homeNS>.<vnet> In [both, egress]`. (The bidi+ingress merge is documented in [ADR 0021 Addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--bidi--ingress-self-policies-merged); the older split into separate `-ingress` / `-egress` self-policies is gone.)
 
 This is what enforces "join eligibility, not blanket access" at the policy level: a pod in the namespace without the join label, or with `value=none`, doesn't match the selector and gets nothing from the membership policy.
 

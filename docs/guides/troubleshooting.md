@@ -9,7 +9,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 ## Index
 
 - [Pod events kube-vnet emits](#pod-events-kube-vnet-emits)
-- [`kubectl apply` rejected my pod: "value not in [both, ingress, egress, none, true, false]"](#kubectl-apply-rejected-my-pod-value-not-in-both-ingress-egress-none-true-false)
+- [`kubectl apply` rejected my pod: "must be one of: both, ingress, egress, none"](#kubectl-apply-rejected-my-pod-must-be-one-of-both-ingress-egress-none)
 - [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
@@ -116,12 +116,13 @@ Or move the pod to a permitted namespace. (The vnet owner has to make the policy
 
 ---
 
-## `kubectl apply` rejected my pod: "value not in [both, ingress, egress, none, true, false]"
+## `kubectl apply` rejected my pod: "must be one of: both, ingress, egress, none"
 
 ```
 $ kubectl apply -f mypod.yaml
-The pods "my-pod" is invalid: ValidatingAdmissionPolicy "kube-vnet-direction-values"
-denied request: kube-vnet/net.* label value must be one of [both ingress egress none true false ""]
+The pods "my-pod" is invalid: ValidatingAdmissionPolicy "kube-vnet-join-label-direction"
+denied request: kube-vnet join label values must be one of: both, ingress, egress, none.
+The legacy true/false/empty aliases were removed per ADR 0030.
 ```
 
 **Cause.** Kubernetes ≥ 1.30 with the kube-vnet chart installed runs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has an unrecognized value (typo like `bothh`, or an arbitrary string). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
@@ -231,7 +232,7 @@ For the full design, see the [deny-all baseline section in `concepts.md`](../get
 
 2. **Is the deny-all baseline present in the receiving namespace?**
 
-   Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a `kube-vnet`-named deny-all baseline. If it's missing, the namespace is `disabled` (operator stays out entirely).
+   Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a deny-all baseline named `kube-vnet.base`. If it's missing, the namespace is `disabled` (operator stays out entirely).
 
    ```bash
    kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.system/role=baseline
@@ -374,7 +375,7 @@ If you need per-workload egress restriction, write a user-managed `NetworkPolicy
 
 ## The deny-all baseline didn't appear
 
-Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a deny-all baseline named `kube-vnet`. If it's missing, the namespace is excluded:
+Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a deny-all baseline named `kube-vnet.base`. If it's missing, the namespace is excluded:
 
 1. Is the namespace excluded?
 
@@ -396,7 +397,7 @@ Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), every ma
 3. Otherwise, the baseline should be present:
 
    ```bash
-   kubectl get netpol -n <name> kube-vnet
+   kubectl get netpol -n <name> kube-vnet.base
    ```
 
 ---
@@ -434,7 +435,7 @@ Once the binding is `Ready=True`, the resolution controller stamps the canonical
 kubectl get networkpolicy -A -l kube-vnet.system/network=<homeNS>.<vnet>
 ```
 
-The membership policy is named `kube-vnet.<homeNS>.<vnet>-<8hex>` and lives in each member-bearing namespace.
+The membership policy is named `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` and lives in each member-bearing namespace.
 
 ---
 

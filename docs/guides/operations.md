@@ -375,14 +375,23 @@ See [`troubleshooting.md`](troubleshooting.md) — most common causes: CNI doesn
 
 ## Resource overhead in the cluster
 
+Per managed **namespace** (owned by the `NamespaceReconciler`, independent of any vnet):
+
+- 1 deny-all baseline `NetworkPolicy` (`kube-vnet.base`) — uniform, in every managed namespace.
+- 1 per-namespace system `VirtualNetwork` (`namespace`).
+
 Per `VirtualNetwork`:
 
 - 1 CRD object.
-- Up to 1 `NetworkPolicy` per (namespace, direction class) with members. In the home namespace, when both bare and prefixed label forms are in use for a given direction class, two policies appear (one suffixed `-prefixed`). Empty member sets generate nothing.
-- 1 extra `NetworkPolicy` per `VirtualNetworkBinding` attached to the vnet.
-- Baselines are owned by the `NamespaceReconciler` (not by per-vnet reconciliation): 1 baseline per namespace whose resolved `ingress-isolation` mode is `namespace` or `pod`. Namespaces with mode `none` get no baseline.
+- 1 membership `NetworkPolicy` per namespace that has receiver members (`kube-vnet.mem.<homeNS>.<vnet>-<8hex>`). One policy covers all direction classes and both label forms; bindings do NOT add extra policies — binding-driven members are folded into the same membership policy via the stamped system label ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)). Namespaces with only egress-only members (or none) generate nothing.
 
-Per labeled pod: 0 (the label is on a pod the user owns; the operator doesn't add anything to the pod itself).
+Per auto-allow trigger ([guide](auto-allow.md)):
+
+- 1 `kube-vnet.ext.svc.*` policy per externally-exposed Service.
+- 1 `kube-vnet.ext.host.*` policy per distinct `(namespace, hostPort, protocol)`.
+- 1 `kube-vnet.ext.apiserver.*` policy per webhook/APIService-referenced Service.
+
+Per labeled pod: the operator stamps `kube-vnet.system/net.*` labels (and `host-port.*` markers for hostPort pods) onto the pod object — a few extra labels, no additional API objects.
 
 The operator-managed `NetworkPolicy` resources are small (a few KB each). At cluster scale, even thousands of them are negligible compared to typical apiserver state.
 
