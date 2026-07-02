@@ -1,8 +1,17 @@
-# API reference: VirtualNetwork and VirtualNetworkBinding
+# API reference: the four CRDs
 
-Full reference for the `VirtualNetwork` and `VirtualNetworkBinding` CRDs. For the conceptual model see [`../concepts.md`](../getting-started/concepts.md); this document is for look-up.
+Full field-level reference for all four kube-vnet CRDs, in this order:
+
+1. [`VirtualNetwork`](#group--version--kind) — a named network
+2. [`VirtualNetworkBinding`](#virtualnetworkbinding) — no-label pod attachment
+3. [`VirtualNetworkBaseline`](#virtualnetworkbaseline) — namespace-tier defaults
+4. [`ClusterVirtualNetworkBaseline`](#clustervirtualnetworkbaseline) — cluster-tier defaults
+
+For the conceptual model see [`concepts.md`](../getting-started/concepts.md); this document is for look-up.
 
 ---
+
+# VirtualNetwork
 
 ## Group / version / kind
 
@@ -341,3 +350,134 @@ The binding controller writes only the binding's status. The desired-state compu
 
 - Same `kube-vnet.lhns.de/v1alpha1` versioning as `VirtualNetwork`.
 - Bindings are an additive feature; existing label-driven membership continues to work unchanged.
+
+---
+
+# VirtualNetworkBaseline
+
+The namespace-wide tier default: memberships that every pod in the namespace inherits, unless a lower tier (binding or pod label) overrides them. Singleton per namespace. See [ADR 0031](../adr/0031-baseline-tier-resolution.md) for the tier model.
+
+## Group / version / kind
+
+| Field | Value |
+|---|---|
+| Group | `kube-vnet.lhns.de` |
+| Version | `v1alpha1` |
+| Kind | `VirtualNetworkBaseline` |
+| Scope | Namespaced |
+| Short names | `vnbl`, `vnbls` |
+| Singleton | must be named `default` (CEL-enforced at admission) |
+
+## Resource shape
+
+```yaml
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetworkBaseline
+metadata:
+  name: default            # only accepted name
+  namespace: webapp
+spec:
+  memberships:
+    - virtualNetworkRef:
+        name: payments
+        namespace: platform
+      direction: default-ingress
+```
+
+## spec
+
+| Field | Type | Required | Meaning |
+|---|---|---|---|
+| `memberships` | `[]BaselineMembership` | no (empty = no NS-tier defaults) | Memberships every pod in this namespace inherits. Atomic list; order not significant. |
+| `memberships[].virtualNetworkRef.name` | string | yes | Target vnet's name. |
+| `memberships[].virtualNetworkRef.namespace` | string | yes | Target vnet's home namespace. |
+| `memberships[].direction` | string | yes | One of the eight direction values: `both`, `ingress`, `egress`, `none`, `default-both`, `default-ingress`, `default-egress`, `default-none` (enum-enforced). Bare values are **enforced** — bindings and pod labels in this namespace cannot override them. `default-*` values are **advisory** — lower tiers may override per vnet. |
+
+This baseline itself inherits from the [`ClusterVirtualNetworkBaseline`](#clustervirtualnetworkbaseline): it may override only entries the cluster baseline marked `default-*`. An attempt to override a bare cluster-pinned value is rejected (see `OverrideRejected` below); the cluster value stays in effect.
+
+## status
+
+| Condition type | Meaning |
+|---|---|
+| `Ready` | Baseline validated and folded into resolution. |
+| `Conflicts` | Two entries reference the same vnet with disagreeing directions. Resolution still proceeds fail-closed (directions intersect); the condition surfaces the disagreement. |
+| `OverrideRejected` | This baseline tried to override a vnet the cluster baseline pinned with a **bare** direction. The entry is ignored, the cluster value applies, and the condition message names the vnet. |
+
+`status.observedGeneration` mirrors the reconciled `metadata.generation`.
+
+## Printer columns
+
+`kubectl get vnbl` shows `Ready` and `Age`.
+
+## Lifecycle
+
+| Event | What happens |
+|---|---|
+| Create / spec edit | Every pod in the namespace re-resolves; stamped `kube-vnet.system/net.*` labels and membership policies update. |
+| Delete | The namespace falls back to the cluster baseline's defaults; pods re-resolve. |
+
+---
+
+# ClusterVirtualNetworkBaseline
+
+The cluster-wide tier default — the root of the inheritance chain. Singleton per cluster. The Helm chart seeds it from `operator.clusterBaseline.ingressIsolationLevel` (or an explicit `memberships` map); it is annotated `helm.sh/resource-policy: keep` so `helm uninstall` leaves it in place.
+
+## Group / version / kind
+
+| Field | Value |
+|---|---|
+| Group | `kube-vnet.lhns.de` |
+| Version | `v1alpha1` |
+| Kind | `ClusterVirtualNetworkBaseline` |
+| Scope | Cluster |
+| Short names | `cvnbl`, `cvnbls` |
+| Singleton | must be named `default` (CEL-enforced at admission) |
+
+## Resource shape
+
+```yaml
+apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: ClusterVirtualNetworkBaseline
+metadata:
+  name: default             # only accepted name
+spec:
+  memberships:
+    - virtualNetworkRef:
+        name: namespace      # per-NS system vnet
+        namespace: kube-vnet-system
+      direction: default-both
+    - virtualNetworkRef:
+        name: cluster        # cluster-wide system vnet
+        namespace: kube-vnet-system
+      direction: default-egress
+```
+
+(The example above is exactly what `ingressIsolationLevel: namespace` seeds; see [the configuration reference](configuration.md) for all three presets.)
+
+## spec
+
+Identical shape to `VirtualNetworkBaseline.spec` — `memberships[]` with `virtualNetworkRef` + the eight-value `direction` enum. Semantics of bare vs `default-*` are the same, applied one tier higher: a **bare** direction here binds the entire cluster (namespace baselines, bindings, and pod labels cannot override it); `default-*` lets namespaces and pods adjust.
+
+## status
+
+| Condition type | Meaning |
+|---|---|
+| `Ready` | Baseline validated and folded into resolution. |
+| `Conflicts` | Duplicate vnet refs with disagreeing directions; resolution intersects fail-closed. |
+
+(No `OverrideRejected` — there is no tier above this one.)
+
+## Printer columns
+
+`kubectl get cvnbl` shows `Ready` and `Age`.
+
+## Lifecycle
+
+| Event | What happens |
+|---|---|
+| Create / spec edit | Every pod in every managed namespace re-resolves. This is the cluster-wide isolation-posture knob — changes here are cluster-wide events. |
+| Delete | All cluster-tier defaults disappear; pods keep only namespace-baseline / binding / label memberships. Under the strict interpretation this means "everything not explicitly joined becomes isolated" — treat deletion as a deliberate posture change. |
+
+## Compatibility
+
+Both baseline CRDs ship in the same chart and version as `VirtualNetwork`. They replaced the removed `ClusterVirtualNetworkBinding` CRD and `--default-memberships` flag ([ADR 0031](../adr/0031-baseline-tier-resolution.md)).

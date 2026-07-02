@@ -16,6 +16,7 @@ The operator binary (`/manager` in the container) accepts these flags. They map 
 | `--health-probe-bind-address` | string | `:8081` | Address the `/healthz` and `/readyz` endpoints listen on. |
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--disabled-namespaces` | string (comma-separated) | `kube-system,kube-public,kube-node-lease` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). |
+| `--apiserver-source-cidr` | string (CIDR) | `0.0.0.0/0` | Source CIDR allowed by the auto-emitted `kube-vnet.ext.apiserver.*` policies for Services the apiserver dials (admission webhooks, APIServices, CRD conversion webhooks). The default matches the no-NetworkPolicy baseline; tighten to your control-plane subnet when the pod network is externally reachable. Validated at startup — an unparseable CIDR exits 1. See [the auto-allow guide](../guides/auto-allow.md#apiserver-reachable-services-extapiserver) and [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md). |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
@@ -87,6 +88,7 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `operator.disabledNamespaces` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. |
+| `operator.apiserverSourceCIDR` | string | `"0.0.0.0/0"` | → `--apiserver-source-cidr`. Source CIDR for the `kube-vnet.ext.apiserver.*` auto-allow policies (webhook / APIService backends the apiserver dials). See [auto-allow](../guides/auto-allow.md#apiserver-reachable-services-extapiserver). |
 | `operator.clusterBaseline.create` | bool | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default`. Set to `false` to manage that CR outside Helm. ADR 0031. |
 | `operator.clusterBaseline.ingressIsolationLevel` | string (`pod` / `namespace` / `cluster`) | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset that maps to a system-vnet membership pair. Mutually exclusive with `memberships`. |
 | `operator.clusterBaseline.memberships` | map `<vnet-key>: <direction>` | `null` | Explicit override map. Keys: bare for system vnets (resolves to release-namespace), `<namespace>.<name>` for user vnets. Mutually exclusive with `ingressIsolationLevel`. |
@@ -152,6 +154,17 @@ See [`security.md`](../guides/security.md#who-can-write-what) for the trust-mode
 | `podMonitor.interval` | string | `30s` | Scrape interval. |
 | `podMonitor.scrapeTimeout` | string | `10s` | Scrape timeout. |
 | `podMonitor.labels` | object | `{}` | Extra labels on the PodMonitor (used for Prometheus-operator selector matching). |
+
+### `cleanup.*` (uninstall hook)
+
+A Helm **pre-delete hook** Job that removes every operator-managed `NetworkPolicy` (selector `kube-vnet.system/managed-by=kube-vnet`) cluster-wide before the controller is torn down — without it, the deny-all baselines would keep enforcing after uninstall with nothing left to manage them. CRDs and CRs (annotated `helm.sh/resource-policy: keep`) survive uninstall. See [ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `cleanup.enabled` | bool | `true` | Run the pre-delete cleanup hook on `helm uninstall`. Skip ad-hoc with `helm uninstall --no-hooks` (then clean up manually). |
+| `cleanup.image.repository` | string | `registry.k8s.io/kubectl` | Image for the hook Job (distroless kubectl). |
+| `cleanup.image.tag` | string | `v1.30.0` | |
+| `cleanup.image.pullPolicy` | string | `IfNotPresent` | |
 
 ### Misc
 

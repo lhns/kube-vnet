@@ -128,7 +128,7 @@ Pod labels admit two forms for the vnet suffix in `kube-vnet/net.<key>`: bare (`
 
 ### Validation limits on baseline references
 
-CRD CEL on baseline kinds cannot validate that the referenced vnets exist — admission-time CEL only sees the document being admitted, and a webhook that read other resources would race with vnet creation/deletion. A reference to a non-existent vnet is accepted at admission and silently becomes a no-op at pod-resolution time (no `kube-vnet.system/net.<vnet>` label is stamped for that membership). Bare-keyed entries are even more dynamic — the effective vnet differs per pod's namespace, so a single baseline entry can be valid for some pods and a no-op for others. Validation surfaces at pod-resolution: status conditions, the `kube_vnet_resolution_conflicts_total` metric, and missing system labels on pods that should have inherited them. Use `kubectl get vnet -A` to confirm references resolve.
+CRD CEL on baseline kinds cannot validate that the referenced vnets exist — admission-time CEL only sees the document being admitted, and a webhook that read other resources would race with vnet creation/deletion. A reference to a non-existent vnet is accepted at admission and silently becomes a no-op at pod-resolution time (no `kube-vnet.system/net.<vnet>` label is stamped for that membership). Bare-keyed entries are even more dynamic — the effective vnet differs per pod's namespace, so a single baseline entry can be valid for some pods and a no-op for others. Validation surfaces at pod-resolution: baseline status conditions (`Conflicts`, `OverrideRejected`) and missing system labels on pods that should have inherited them. Use `kubectl get vnet -A` to confirm references resolve.
 
 ---
 
@@ -215,6 +215,61 @@ metadata:
     kube-vnet.system/managed-by: kube-vnet
     kube-vnet.system/role: baseline
 ```
+
+### `kube-vnet.system/role=external-allow` + `source-kind` + `source`
+
+| | |
+|---|---|
+| **On** | Every auto-allow policy (`kube-vnet.ext.*`) emitted by the [auto-allow reconcilers](../guides/auto-allow.md). |
+| **Set by** | The operator. |
+| **Meaning** | `role=external-allow` marks the policy class; `source-kind` names which reconciler family owns it (`svc` — externally-exposed Service, ADR 0038; `host` — hostPort pod, ADR 0040; `apiserver` — Service the apiserver dials, ADR 0041); `source` is the back-reference to the triggering identity (`svc-<serviceName>`, `host-<port>-<proto>`, `apiserver-<serviceName>`). |
+| **Used by** | Each reconciler filters its cleanup sweep by `source-kind` so it never touches another family's policies; drift watches re-enqueue the source object from these labels; `kubectl get netpol -A -l kube-vnet.system/role=external-allow` enumerates every auto-allow in the cluster. |
+
+Example — the policy emitted for cert-manager's webhook Service:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-vnet.ext.apiserver.cert-manager-webhook-943e7fca
+  namespace: cert-manager
+  labels:
+    kube-vnet.system/managed-by: kube-vnet
+    kube-vnet.system/role: external-allow
+    kube-vnet.system/source-kind: apiserver
+    kube-vnet.system/source: apiserver-cert-manager-webhook
+```
+
+### `kube-vnet.system/host-port.<port>.<protocol>=true`
+
+| | |
+|---|---|
+| **On** | Pods declaring `hostPort` — one label per distinct `(port, protocol)` the pod exposes (protocol lowercase: `tcp`/`udp`/`sctp`). |
+| **Set by** | The resolution controller (stamped, like the `net.*` membership labels; VAP-protected). |
+| **Meaning** | Marks the pod as a hostPort exposer so the per-`(namespace, port, protocol)` policy `kube-vnet.ext.host.<port>.<proto>-<8hex>` can select it. Keying the policy on the port rather than the pod keeps policies stable across Deployment rollouts. |
+| **Used by** | The `HostPortReconciler`'s podSelector. `hostNetwork: true` pods are never stamped (NetworkPolicy enforcement on them is CNI-dependent). |
+
+---
+
+## Annotations on Services
+
+### `kube-vnet/external-allow`
+
+| | |
+|---|---|
+| **On** | A `Service` — or a `Namespace` to cover every Service in it. |
+| **Set by** | You. |
+| **Value** | Only the literal `"false"` has an effect. Absent / empty / `"true"` / anything else leaves auto-allow on (deliberately asymmetric: this is an explicit opt-out signal, not a boolean). |
+| **Effect** | Opts the Service (or namespace) out of **all** auto-allow families — the `ext.svc.*` policy for external exposure AND the `ext.apiserver.*` policy for apiserver-dialed backends. Existing auto-allow policies are removed on the next reconcile; you take over reachability with your own NetworkPolicy. See [the auto-allow guide](../guides/auto-allow.md). |
+
+### `kube-vnet/apiserver-reachable`
+
+| | |
+|---|---|
+| **On** | A `Service`. |
+| **Set by** | You. |
+| **Value** | Only the literal `"true"` has an effect. |
+| **Effect** | Opts the Service **in** to the apiserver-reachable auto-allow (`kube-vnet.ext.apiserver.*`) even when none of the four built-in discovery resources (Validating/MutatingWebhookConfiguration, APIService, CRD conversion) reference it. The escape hatch for future Kubernetes APIs or third-party operators whose callback registration kube-vnet doesn't know about. See [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md). |
 
 ---
 
