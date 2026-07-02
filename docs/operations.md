@@ -356,8 +356,8 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 | `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}` | (removed; use the per-namespace `kube-vnet/disabled` annotation, a per-NS `VirtualNetworkBaseline`, or per-pod vnet membership) |
 | `operator.ingressIsolation.force{None,Namespace,Pod}` | (removed; same migration as above) |
 | CLI `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}` | (removed) |
-| CLI `--default-memberships` / `operator.defaultMemberships` | (removed in 0.4 ADR-0031 cleanup; use `operator.clusterBaseline.{ingressIsolationLevel, memberships}` instead) |
-| `ClusterVirtualNetworkBinding` CRD | (removed in 0.4 ADR-0031 cleanup; broad-selector usage migrates to `ClusterVirtualNetworkBaseline`, narrow-selector to `VirtualNetworkBinding` in the target NS) |
+| CLI `--default-memberships` / `operator.defaultMemberships` | (removed in the [ADR 0031](adr/0031-baseline-tier-resolution.md) cleanup; use `operator.clusterBaseline.{ingressIsolationLevel, memberships}` instead) |
+| `ClusterVirtualNetworkBinding` CRD | (removed in the [ADR 0031](adr/0031-baseline-tier-resolution.md) cleanup; broad-selector usage migrates to `ClusterVirtualNetworkBaseline`, narrow-selector to `VirtualNetworkBinding` in the target NS) |
 | `VirtualNetworkBinding` with empty `podSelector` | (rejected at admission; namespace-wide defaults move to `VirtualNetworkBaseline`) |
 | CLI `--default-deny-everywhere` and `operator.defaultDenyEverywhere` | (removed) |
 | `kube-vnet/ingress-isolation` namespace annotation | (removed) |
