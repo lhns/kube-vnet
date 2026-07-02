@@ -140,55 +140,7 @@ scrape_configs:
 
 ### Sample alerting rules
 
-```yaml
-groups:
-  - name: kube-vnet
-    rules:
-      - alert: KubeVnetApplyErrors
-        expr: |
-          increase(kube_vnet_apply_errors_total[5m]) > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "kube-vnet failed to apply NetworkPolicies"
-          description: "{{ $value }} apply errors in the last 5m. Check operator logs."
-
-      - alert: KubeVnetReconcileErrorRate
-        expr: |
-          sum(rate(kube_vnet_reconciliations_total{result="error"}[5m]))
-            / sum(rate(kube_vnet_reconciliations_total[5m])) > 0.1
-        for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "kube-vnet reconcile error rate above 10%"
-
-      - alert: KubeVnetSlowReconcile
-        expr: |
-          histogram_quantile(0.95, rate(kube_vnet_reconcile_duration_seconds_bucket[5m])) > 5
-        for: 15m
-        labels:
-          severity: info
-        annotations:
-          summary: "kube-vnet p95 reconcile latency > 5s"
-          description: "Likely high vnet count or apiserver pressure."
-
-      - alert: KubeVnetPolicyRestoredRepeatedly
-        expr: |
-          sum by (namespace) (
-            increase(kube_events{reason="PolicyRestored"}[15m])
-          ) > 5
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "kube-vnet keeps restoring deleted NetworkPolicies in {{ $labels.namespace }}"
-          description: |
-            Something is repeatedly deleting operator-managed policies and the
-            operator is restoring them. Could be a misbehaving controller, a
-            CI loop, or an attempted bypass — investigate.
-```
+The four recommended alert rules (apply errors, reconcile error rate, slow reconcile, repeated PolicyRestored) live with the metric definitions in [`../reference/metrics-and-events.md` (Sample alert rules)](../reference/metrics-and-events.md#sample-alert-rules) - one canonical copy, kept in sync with the metrics they reference.
 
 (The `kube_events` series above is from `kube-state-metrics`. If you're not running it, watch `kubectl get events --field-selector reason=PolicyRestored -A` instead.)
 

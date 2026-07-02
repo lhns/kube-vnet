@@ -328,8 +328,9 @@ Transitions also emit Kubernetes Events. See [ADR 0012](../adr/0012-status-condi
 
 ## Where to go from here
 
-- **Try it**: [`install.md`](install.md) → [`recipes.md`](../guides/recipes.md).
+- **Try it**: [`install.md`](install.md) → [`first-vnet.md`](first-vnet.md) (hands-on walkthrough) → [`recipes.md`](../guides/recipes.md).
 - **Look up a field or value**: [`reference/`](../reference/).
 - **Run it in production**: [`operations.md`](../guides/operations.md), [`security.md`](../guides/security.md).
+- **Understand the policies the operator creates on its own**: [`auto-allow.md`](../guides/auto-allow.md).
 - **Debug it**: [`troubleshooting.md`](../guides/troubleshooting.md).
 - **Read the design rationale**: [`adr/`](../adr/README.md).

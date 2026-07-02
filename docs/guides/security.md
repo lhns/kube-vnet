@@ -111,6 +111,8 @@ The signing identity is the release workflow itself: `https://github.com/lhns/ku
 
 Verification:
 
+The exact, copy-pasteable verify commands (image, chart, SBOM attestations) are maintained in one place: [`install.md` (Verifying signatures)](../getting-started/install.md#verifying-signatures). The identity to pin:
+
 ```bash
 cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \

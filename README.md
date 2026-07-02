@@ -82,14 +82,13 @@ That's the whole core idea. Everything else in this README is variations on it (
 
 ## Documentation
 
-Full docs live under [`docs/`](docs/README.md):
+Full docs live under [`docs/`](docs/README.md), organized as a tree:
 
-- **New here** → [`docs/concepts.md`](docs/getting-started/concepts.md) (the model in depth) and [`docs/faq.md`](docs/faq.md).
-- **Installing** → [`docs/install.md`](docs/getting-started/install.md) (Helm, kubectl, signature verification).
-- **Day-to-day usage** → [`docs/recipes.md`](docs/guides/recipes.md) (worked examples) and [`docs/reference/`](docs/reference/) (look-up tables).
-- **Running it in production** → [`docs/operations.md`](docs/guides/operations.md) and [`docs/security.md`](docs/guides/security.md).
-- **Something is broken** → [`docs/troubleshooting.md`](docs/guides/troubleshooting.md).
-- **Contributing** → [`docs/development.md`](docs/internals/development.md), [`docs/architecture.md`](docs/internals/architecture.md), and the [ADRs](docs/adr/README.md).
+- **New here?** Follow the numbered path: [concepts](docs/getting-started/concepts.md) → [install](docs/getting-started/install.md) → [your first VirtualNetwork](docs/getting-started/first-vnet.md) (hands-on, with a live isolation probe).
+- [`docs/guides/`](docs/README.md#guides) — [recipes](docs/guides/recipes.md), [auto-allow](docs/guides/auto-allow.md), [operations](docs/guides/operations.md), [security](docs/guides/security.md), [troubleshooting](docs/guides/troubleshooting.md).
+- [`docs/reference/`](docs/README.md#reference) — look-up tables: [CRDs](docs/reference/api.md), [flags & values](docs/reference/configuration.md), [labels & annotations](docs/reference/labels-and-annotations.md), [metrics & events](docs/reference/metrics-and-events.md), [glossary](docs/reference/glossary.md).
+- [`docs/internals/`](docs/README.md#internals) — for contributors: [architecture](docs/internals/architecture.md), [source map](docs/internals/code-structure.md), [development](docs/internals/development.md).
+- [`docs/faq.md`](docs/faq.md) — cross-cutting Q&A. [`docs/adr/`](docs/adr/README.md) — every accepted decision.
 
 ## Prerequisites
 
@@ -127,19 +126,15 @@ kubectl apply -k config/default
 
 Either way you get the `kube-vnet-system` namespace, the `VirtualNetwork` CRD, RBAC, and the controller Deployment.
 
-### 2. Define a VirtualNetwork
+### 2. Create a network and join pods
 
 ```yaml
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
-metadata:
-  name: payments
-  namespace: platform
+metadata: { name: payments, namespace: platform }
 ```
 
-### 3. Label pods that should join
-
-In your Deployment's pod template:
+Add the join label to any pod template that should be a member:
 
 ```yaml
 metadata:
@@ -147,7 +142,7 @@ metadata:
     kube-vnet/net.payments: "both"
 ```
 
-### 4. Inspect
+### 3. Inspect
 
 ```bash
 kubectl get vnet -A
@@ -155,31 +150,11 @@ kubectl describe vnet payments -n platform
 kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 ```
 
+**→ The full hands-on walkthrough — including how to *prove* the isolation works with a live probe — is [`docs/getting-started/first-vnet.md`](docs/getting-started/first-vnet.md).**
+
 ## Cross-namespace reach
 
-`spec.allowedNamespaces` controls **which namespaces' pods are allowed to join** the network — not which pods are blanket-granted access. A pod in an allowed namespace still needs to opt in by adding the prefixed join label; pods in those namespaces that *don't* carry the label get nothing.
-
-By default (field omitted), only pods in the home namespace can join. To let pods from other namespaces in:
-
-```yaml
-spec:
-  allowedNamespaces:
-    names: [webapp, monitoring]   # explicit list
-```
-
-Three matchers are supported, and they union:
-
-| Field | Meaning |
-|---|---|
-| `all: true` | Pods in any namespace may join (when they add the join label). |
-| `names: [a, b]` | Pods in these namespaces may join (when they add the join label). Names match exactly — no glob/regex; use `selector` for groups. |
-| `selector: { matchLabels: { tier: prod } }` | Pods in namespaces matching the label selector may join (when they add the join label). |
-
-The home namespace is always allowed implicitly. Glob patterns are deliberately not supported — use `selector` for groups.
-
-### Two label forms
-
-A pod's join label depends on whether it lives in the home namespace or another one:
+`spec.allowedNamespaces` controls **which namespaces' pods are allowed to join** — join eligibility, not blanket access; pods there still need the join label. Three union-able matchers (`all: true`, `names: [...]`, `selector: {...}`); the home namespace is always included. Pods outside the home namespace use the prefixed label form with the home namespace baked into the key:
 
 ```yaml
 # Pod in the VirtualNetwork's home namespace (here: platform):
@@ -187,10 +162,9 @@ labels: { kube-vnet/net.payments: "both" }
 
 # Pod in any other namespace (only if allowedNamespaces permits it):
 labels: { kube-vnet/net.platform.payments: "both" }
-#                       ^^^^^^^^ home namespace baked into the label key
 ```
 
-VirtualNetwork names cannot contain dots — the apiserver rejects names that aren't DNS-1123 labels (no dots, lowercase alphanumeric and hyphens) via a CRD validation rule.
+Full semantics: [`docs/getting-started/concepts.md § Cross-namespace reach`](docs/getting-started/concepts.md#cross-namespace-reach-allowednamespaces).
 
 ## Examples
 
@@ -203,6 +177,9 @@ End-to-end manifests demonstrating each configuration. Each is self-contained �
 | [`config/samples/03_label_selector.yaml`](config/samples/03_label_selector.yaml) | `allowedNamespaces.selector: { matchLabels: { tier: prod } }` — label-based. |
 | [`config/samples/04_all_namespaces.yaml`](config/samples/04_all_namespaces.yaml) | `allowedNamespaces.all: true` — wildcard, any namespace. |
 | [`config/samples/05_disabled_namespace.yaml`](config/samples/05_disabled_namespace.yaml) | Per-namespace opt-out via `kube-vnet/disabled=true`. |
+| [`config/samples/06_virtualnetworkbinding.yaml`](config/samples/06_virtualnetworkbinding.yaml) | `VirtualNetworkBinding` — enrolling pods without editing their labels. |
+| [`config/samples/08_virtualnetworkbaseline.yaml`](config/samples/08_virtualnetworkbaseline.yaml) | `VirtualNetworkBaseline` — namespace-tier default memberships. |
+| [`config/samples/09_clustervirtualnetworkbaseline.yaml`](config/samples/09_clustervirtualnetworkbaseline.yaml) | `ClusterVirtualNetworkBaseline` — the cluster-tier default (what the chart seeds). |
 
 ## What the operator does for you
 
@@ -235,51 +212,32 @@ When a namespace is unmanaged: no baseline is created, no membership policies ar
 
 ## Ingress posture (cluster-wide via baselines)
 
-The baseline shape is uniform: every managed namespace gets a deny-all ingress `NetworkPolicy` named `kube-vnet.base`. Pods open ingress allows by joining vnets — driven by inheritance through three tiers:
-
-| Tier | Resource | Authority |
-|---|---|---|
-| Cluster baseline | `ClusterVirtualNetworkBaseline` (singleton named `default`; chart-seeded from `operator.clusterBaseline.ingressIsolationLevel`) | cluster-admin |
-| Namespace baseline | `VirtualNetworkBaseline` (singleton per namespace named `default`) | namespace-admin |
-| Pod tier | `VirtualNetworkBinding` (must select specific pods) + the `kube-vnet/net.<vnet>=<dir>` pod label | namespace-admin / pod author |
-
-Direction values are the bare four (`both`, `ingress`, `egress`, `none`) at the pod tier; baselines also accept four `default-*` variants that mark the value as override-permitted by lower tiers (bare = enforced). Conflicts at the pod tier (binding vs label, or two bindings) intersect — fail-closed.
-
-The chart's `operator.clusterBaseline.ingressIsolationLevel` preset maps to:
+Every managed namespace gets the deny-all ingress baseline `kube-vnet.base`; how much of it bites is set by a three-tier inheritance chain — cluster baseline → namespace baseline → pod tier (bindings + labels) — where `default-*` direction values are overridable by lower tiers and bare values are enforced. The chart's required `operator.clusterBaseline.ingressIsolationLevel` preset seeds the cluster tier:
 
 | Level | Seeded cluster baseline |
 |---|---|
-| `pod` | `namespace=default-egress, cluster=default-egress` — strict; ingress only via explicit binding/label |
+| `pod` | `namespace=default-egress, cluster=default-egress` — strict; ingress only via explicit membership |
 | `namespace` | `namespace=default-both, cluster=default-egress` — same-NS reachable, cross-NS egress only |
-| `cluster` | `namespace=default-both, cluster=default-both` — no isolation (allow-all) |
+| `cluster` | `namespace=default-both, cluster=default-both` — no isolation (safe adoption default) |
 
-For more, see [`docs/concepts.md`](docs/getting-started/concepts.md), [`docs/install.md`](docs/getting-started/install.md), and [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
+Full model: [`docs/getting-started/concepts.md § The deny-all baseline`](docs/getting-started/concepts.md#the-deny-all-baseline) and [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
 
 ## Configuration
 
-| Flag | Default | Description |
-|---|---|---|
-| `--metrics-bind-address` | `:8080` | Prometheus metrics endpoint |
-| `--health-probe-bind-address` | `:8081` | health/readiness endpoint |
-| `--leader-elect` | `false` | enable leader election (turn on for HA) |
-| `--disabled-namespaces` | `kube-system,kube-public,kube-node-lease` | comma-separated namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
+The values you'll actually set (everything else has sensible defaults):
 
-Baseline contents come from the `ClusterVirtualNetworkBaseline` CR, configured in the chart via `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}`. See [`docs/reference/configuration.md`](docs/reference/configuration.md).
+| Helm value | Default | Why you'd set it |
+|---|---|---|
+| `operator.clusterBaseline.ingressIsolationLevel` | *(none — required)* | The isolation decision: `pod` / `namespace` / `cluster`. |
+| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches. |
+| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Narrow the auto-allow for apiserver-dialed webhooks to your control-plane subnet. |
+| `replicaCount` | `1` | `2` for HA (leader election is already on). |
+
+Every flag, value, and env var: [`docs/reference/configuration.md`](docs/reference/configuration.md).
 
 ## Observability
 
-The operator exposes the controller-runtime defaults plus six domain-specific metrics on `:8080/metrics`:
-
-| Metric | Type | Description |
-|---|---|---|
-| `kube_vnet_reconciliations_total{result}` | counter | Reconcile outcomes (`success`/`error`) |
-| `kube_vnet_reconcile_duration_seconds` | histogram | Reconcile latency |
-| `kube_vnet_networks_total` | gauge | VirtualNetwork resources observed |
-| `kube_vnet_managed_policies_total` | gauge | NetworkPolicies managed by the operator |
-| `kube_vnet_members_total{network}` | gauge | Members per VirtualNetwork |
-| `kube_vnet_apply_errors_total{kind}` | counter | Apply errors (`membership_policy`/`baseline`) |
-
-Status conditions and Events on transitions complement the metrics — see [ADR 0012](docs/adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](docs/adr/0016-emit-events-on-condition-transitions.md).
+Six domain metrics on `:8080/metrics` (reconcile outcomes/latency, vnet/policy/member counts, apply errors), plus status conditions and Kubernetes Events on every transition. The full surface with sample Prometheus alert rules: [`docs/reference/metrics-and-events.md`](docs/reference/metrics-and-events.md).
 
 ## Project layout
 
@@ -289,7 +247,7 @@ cmd/main.go           # operator entrypoint
 internal/controller/  # reconciler, policy generator, baseline, namespace filter
 config/               # CRD, RBAC, Deployment manifests (kustomize)
 config/samples/       # runnable example VirtualNetworks
-docs/                 # design doc + ADRs
+docs/                 # documentation tree (getting-started/, guides/, reference/, internals/, adr/)
 test/e2e/             # kind+CNI traffic tests
 ```
 
@@ -310,7 +268,7 @@ The three test rungs (unit, integration, e2e against kube-router and Calico) and
 
 ## Architecture decisions
 
-Significant design and implementation choices are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/kube-vnet-design.md`](docs/internals/design.md); where the design doc and the ADRs disagree (the doc was written first), the ADRs are the source of truth.
+Significant design and implementation choices are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/internals/design.md`](docs/internals/design.md) (historical); where the design doc and the ADRs disagree (the doc was written first), the ADRs are the source of truth.
 
 ## Status
 

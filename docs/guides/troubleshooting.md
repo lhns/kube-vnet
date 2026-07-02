@@ -306,7 +306,7 @@ Error from server (InternalError): error when creating "cert.yaml":
 
 Background: the kube-apiserver dials the webhook backend Service directly. The apiserver isn't a pod, so its source IP (control-plane node IP for kubeadm / k0s / k3s; managed-control-plane IP for GKE / EKS / AKS) doesn't match any `namespaceSelector` or `podSelector`. The webhook NS's baseline + membership policies reject the connection. Admission times out.
 
-As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. See [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md).
+As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. Model + opt-outs: [the auto-allow guide](auto-allow.md); design: [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md).
 
 **Diagnostic steps in order**:
 

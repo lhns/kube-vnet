@@ -237,7 +237,7 @@ The kube-apiserver is calling an admission webhook or an aggregated API server h
 
 The apiserver isn't a pod in any user namespace — its source IP is either the control-plane node's IP (kubeadm / k0s / k3s) or a managed-control-plane IP (GKE / EKS / AKS). Pod-centric `namespaceSelector` / `podSelector` rules never match it. Without an `ipBlock`-based allow on the webhook's targetPort, the apiserver gives up after the webhook timeout (default 30s).
 
-As of v0.5 kube-vnet ships **[ADR 0041](adr/0041-auto-allow-apiserver-reachable-services.md)** — an `ApiserverReachableReconciler` that auto-emits the right `ipBlock`-based allow whenever it sees a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or `CustomResourceDefinition.spec.conversion.webhook` pointing at a Service in a managed namespace. The emitted policy carries `kube-vnet.system/source-kind=apiserver` and is named `kube-vnet.ext.apiserver.<svcName>-<8hex>`.
+As of v0.5 kube-vnet ships **[ADR 0041](adr/0041-auto-allow-apiserver-reachable-services.md)** — an `ApiserverReachableReconciler` that auto-emits the right `ipBlock`-based allow whenever it sees a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or `CustomResourceDefinition.spec.conversion.webhook` pointing at a Service in a managed namespace. The emitted policy carries `kube-vnet.system/source-kind=apiserver` and is named `kube-vnet.ext.apiserver.<svcName>-<8hex>`. The full model (all three auto-allow families, triggers, opt-outs) is in [the auto-allow guide](guides/auto-allow.md).
 
 Verify it's in place:
 
