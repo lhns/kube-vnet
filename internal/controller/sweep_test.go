@@ -189,6 +189,7 @@ func TestSweepStalePoliciesByOwner_DeletesLegacyKeepsCurrent(t *testing.T) {
 		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
 		"Service", "web", types.UID("svc-web-uid"),
 		keep,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -232,6 +233,7 @@ func TestSweepStalePoliciesByOwner_EmptyKeepDeletesAll(t *testing.T) {
 		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
 		"Service", "web", types.UID("svc-web-uid"),
 		nil, // nuke-all
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -243,6 +245,71 @@ func TestSweepStalePoliciesByOwner_EmptyKeepDeletesAll(t *testing.T) {
 	}
 	if len(list.Items) != 0 {
 		t.Errorf("expected 0 policies remaining, got %d", len(list.Items))
+	}
+}
+
+// TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind is
+// the regression test for the cross-reconciler deletion bug: both the
+// ExternalAllowReconciler (source-kind=svc) and ApiserverReachableReconciler
+// (source-kind=apiserver) own Service-owned role=external-allow policies.
+// The ExternalAllow sweep uses claimedByOtherSourceKind to exempt the
+// apiserver family — without it, every reconcile of a not-externally-
+// exposed webhook Service deleted the apiserver-reachable policy.
+func TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme)
+
+	truePtr := true
+	svcRef := &metav1.OwnerReference{
+		APIVersion: "v1", Kind: "Service",
+		Name: "webhook", UID: types.UID("svc-webhook-uid"),
+		Controller: &truePtr,
+	}
+	svcKind := map[string]string{
+		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+		LabelSourceKind: LabelSourceKindService,
+	}
+	apiserverKind := map[string]string{
+		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+		LabelSourceKind: LabelSourceKindApiserver,
+	}
+	legacyNoKind := map[string]string{
+		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+	}
+
+	// Same Service owns all three:
+	//   svcPol:       source-kind=svc       → swept (empty keep set)
+	//   apiserverPol: source-kind=apiserver → PROTECTED by the predicate
+	//   legacyPol:    no source-kind        → swept (legacy migration path)
+	svcPol := mkPolicy("kube-vnet.ext.svc.webhook-aaaa1111", "ns1", svcKind, svcRef)
+	apiserverPol := mkPolicy("kube-vnet.ext.apiserver.webhook-bbbb2222", "ns1", apiserverKind, svcRef)
+	legacyPol := mkPolicy("kube-vnet.external-webhook-cccc3333", "ns1", legacyNoKind, svcRef)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(svcPol, apiserverPol, legacyPol).Build()
+
+	// Simulate ExternalAllowReconciler.deletePolicyForService: role-only
+	// List filter, empty keep set, claimedByOtherSourceKind predicate.
+	err := sweepStalePoliciesByOwner(context.Background(), c,
+		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
+		"Service", "webhook", types.UID("svc-webhook-uid"),
+		nil,
+		claimedByOtherSourceKind,
+	)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var got networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.svc.webhook-aaaa1111"}, &got); err == nil {
+		t.Errorf("svc-source policy should have been swept")
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.external-webhook-cccc3333"}, &got); err == nil {
+		t.Errorf("legacy (label-less) policy should have been swept")
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.apiserver.webhook-bbbb2222"}, &got); err != nil {
+		t.Errorf("apiserver-source policy was deleted by the svc-family sweep (cross-reconciler deletion bug regressed): %v", err)
 	}
 }
 
@@ -261,6 +328,7 @@ func TestSweepStalePoliciesByOwner_SkipsPoliciesWithoutOwner(t *testing.T) {
 	err := sweepStalePoliciesByOwner(context.Background(), c,
 		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
 		"Service", "web", types.UID("svc-web-uid"),
+		nil,
 		nil,
 	)
 	if err != nil {

@@ -4,6 +4,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -502,5 +503,155 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(
 	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
 		t.Errorf("after Pod create, named targetPort should resolve to 10250, got %d", got)
+	}
+}
+
+// TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile is the
+// regression test for the cross-reconciler deletion bug found in the
+// project audit: the ExternalAllowReconciler's owner-ref sweeps filtered
+// only on role=external-allow (no source-kind), so reconciling a
+// not-externally-exposed webhook Service (plain ClusterIP — the exact
+// cert-manager-webhook shape) deleted the ApiserverReachableReconciler's
+// policy for the same Service on every pass. The drift watch recreated
+// it, producing a permanent delete/recreate loop with windows where the
+// apiserver→webhook allow was absent.
+//
+// The fix exempts other-source-kind policies via claimedByOtherSourceKind.
+// This test asserts the policy's UID stays STABLE across ExternalAllow
+// reconciles — existence alone would pass even under thrash, because the
+// drift watch recreates within milliseconds.
+func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testing.T) {
+	ns := uniqueNS(t, "ar-coexist")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	// Plain ClusterIP webhook Service — NOT externally exposed, so every
+	// ExternalAllowReconciler pass takes the deletePolicyForService path.
+	mustCreate(t, makeWebhookService(ns, "webhook"))
+
+	port443 := int32(443)
+	side := admissionregistrationv1.SideEffectClassNone
+	whcName := "ar-coexist-" + ns
+	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: whcName},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name: "coexist.example.com",
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				Service: &admissionregistrationv1.ServiceReference{
+					Namespace: ns, Name: "webhook", Port: &port443,
+				},
+			},
+			SideEffects:             &side,
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	})
+	t.Cleanup(func() {
+		_ = testClient.Delete(context.Background(),
+			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
+	})
+
+	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	originalUID := pol.UID
+
+	// Force several ExternalAllowReconciler passes via inert annotation
+	// flips on the Service (Service updates are its primary trigger).
+	for i := 0; i < 3; i++ {
+		iter := i
+		eventually(t, 5*time.Second, func() error {
+			latest := &corev1.Service{}
+			if err := testClient.Get(context.Background(),
+				client.ObjectKey{Namespace: ns, Name: "webhook"}, latest); err != nil {
+				return err
+			}
+			if latest.Annotations == nil {
+				latest.Annotations = map[string]string{}
+			}
+			latest.Annotations["test-trigger"] = fmt.Sprintf("pass-%d", iter)
+			return testClient.Update(context.Background(), latest)
+		})
+		time.Sleep(1 * time.Second)
+	}
+
+	// The policy must still exist AND be the SAME object (UID unchanged) —
+	// a delete/recreate cycle would produce a new UID.
+	var after networkingv1.NetworkPolicy
+	if err := testClient.Get(context.Background(),
+		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "webhook")}, &after); err != nil {
+		t.Fatalf("apiserver-reachable policy missing after ExternalAllow passes: %v", err)
+	}
+	if after.UID != originalUID {
+		t.Errorf("policy was deleted and recreated during ExternalAllow reconciles (UID %s → %s): cross-reconciler deletion bug regressed",
+			originalUID, after.UID)
+	}
+}
+
+// TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookService
+// covers the both-families-on-one-Service shape: a LoadBalancer Service
+// that is ALSO referenced by a webhook config. Both ext.svc.* (ADR 0038)
+// and ext.apiserver.* (ADR 0041) policies must coexist stably — each
+// reconciler's sweep must leave the other family's policy alone.
+func TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookService(t *testing.T) {
+	ns := uniqueNS(t, "ar-lbwh")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeWebhookService(ns, "gateway")
+	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
+	mustCreate(t, svc)
+
+	port443 := int32(443)
+	side := admissionregistrationv1.SideEffectClassNone
+	whcName := "ar-lbwh-" + ns
+	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: whcName},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name: "lbwh.example.com",
+			ClientConfig: admissionregistrationv1.WebhookClientConfig{
+				Service: &admissionregistrationv1.ServiceReference{
+					Namespace: ns, Name: "gateway", Port: &port443,
+				},
+			},
+			SideEffects:             &side,
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	})
+	t.Cleanup(func() {
+		_ = testClient.Delete(context.Background(),
+			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
+	})
+
+	apiserverPol := waitForApiserverReachablePolicy(t, ns, "gateway", 10*time.Second)
+	extSvcPol := waitForExternalAllowPolicy(t, ns, "gateway", 10*time.Second)
+	apiserverUID := apiserverPol.UID
+	extSvcUID := extSvcPol.UID
+
+	// Trigger both reconcilers, then verify both policies survived
+	// untouched (stable UIDs).
+	eventually(t, 5*time.Second, func() error {
+		latest := &corev1.Service{}
+		if err := testClient.Get(context.Background(),
+			client.ObjectKey{Namespace: ns, Name: "gateway"}, latest); err != nil {
+			return err
+		}
+		if latest.Annotations == nil {
+			latest.Annotations = map[string]string{}
+		}
+		latest.Annotations["test-trigger"] = "coexist-check"
+		return testClient.Update(context.Background(), latest)
+	})
+	time.Sleep(2 * time.Second)
+
+	var after networkingv1.NetworkPolicy
+	if err := testClient.Get(context.Background(),
+		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "gateway")}, &after); err != nil {
+		t.Fatalf("ext.apiserver policy missing: %v", err)
+	}
+	if after.UID != apiserverUID {
+		t.Errorf("ext.apiserver policy recreated (UID changed) — swept by the other family")
+	}
+	if err := testClient.Get(context.Background(),
+		client.ObjectKey{Namespace: ns, Name: extAllowPolicyName(ns, "gateway")}, &after); err != nil {
+		t.Fatalf("ext.svc policy missing: %v", err)
+	}
+	if after.UID != extSvcUID {
+		t.Errorf("ext.svc policy recreated (UID changed) — swept by the other family")
 	}
 }

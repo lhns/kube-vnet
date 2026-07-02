@@ -72,12 +72,23 @@ func sweepStalePolicies(
 //
 // `keep` of nil or empty means "delete every policy owned by this owner
 // matching the filter."
+//
+// `skip`, when non-nil, exempts individual policies from the sweep even
+// when owner-ref and keep-set say "delete". Needed when two reconcilers
+// emit policies with the SAME owner and overlapping labels: e.g. both
+// the ExternalAllowReconciler (source-kind=svc) and the
+// ApiserverReachableReconciler (source-kind=apiserver) set the Service
+// as controller-owner and stamp role=external-allow. A sweep that can't
+// narrow its List filter to one source-kind (because it must also catch
+// label-less legacy policies) uses `skip` to leave the other family's
+// policies alone.
 func sweepStalePoliciesByOwner(
 	ctx context.Context,
 	c client.Client,
 	listOpts []client.ListOption,
 	ownerKind, ownerName string, ownerUID types.UID,
 	keep map[client.ObjectKey]bool,
+	skip func(*networkingv1.NetworkPolicy) bool,
 ) error {
 	var existing networkingv1.NetworkPolicyList
 	if err := c.List(ctx, &existing, listOpts...); err != nil {
@@ -86,6 +97,9 @@ func sweepStalePoliciesByOwner(
 	for i := range existing.Items {
 		p := &existing.Items[i]
 		if !hasControllerOwner(p, ownerKind, ownerName, ownerUID) {
+			continue
+		}
+		if skip != nil && skip(p) {
 			continue
 		}
 		key := client.ObjectKey{Namespace: p.Namespace, Name: p.Name}

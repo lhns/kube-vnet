@@ -175,6 +175,7 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}),
 		"Service", svc.Name, svc.UID,
 		keep,
+		nil, // List filter already narrows to source-kind=apiserver
 	); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -479,7 +480,8 @@ func (r *ApiserverReachableReconciler) deletePolicyForService(ctx context.Contex
 			LabelSourceKind: LabelSourceKindApiserver,
 		}),
 		"Service", svc.Name, svc.UID,
-		nil,
+		nil, // keep nothing
+		nil, // List filter already narrows to source-kind=apiserver
 	)
 }
 

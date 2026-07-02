@@ -154,7 +154,9 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// and owner-refs are stable across labeling changes. Filter still
 	// includes role=external-allow to bound the List() to the relevant
 	// candidates; the owner-ref check inside the sweep does the per-
-	// Service narrowing.
+	// Service narrowing, and claimedByOtherSourceKind exempts the
+	// ApiserverReachableReconciler's policies (same owner, same role,
+	// different source-kind) from OUR sweep.
 	keep := map[client.ObjectKey]bool{
 		{Namespace: svc.Namespace, Name: desired.Name}: true,
 	}
@@ -164,17 +166,43 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}),
 		"Service", svc.Name, svc.UID,
 		keep,
+		claimedByOtherSourceKind,
 	); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
 }
 
-// deletePolicyForService removes every operator-emitted external-allow
+// claimedByOtherSourceKind reports whether an external-allow policy
+// belongs to a DIFFERENT reconciler family than the Service-source one.
+// The ApiserverReachableReconciler (ADR 0041) also sets the Service as
+// controller-owner and stamps role=external-allow — only the source-kind
+// label distinguishes its policies from ours. Policies with source-kind
+// set to anything but `svc` are another family's; policies with NO
+// source-kind label are pre-ADR-0039/0040 legacy Service-source policies
+// that we must still sweep for the rename migration.
+//
+// Without this exemption, every reconcile of a not-externally-exposed
+// Service (e.g. a plain ClusterIP webhook backend like
+// cert-manager-webhook) deleted the apiserver-reachable policy for the
+// same Service — the ApiserverReachableReconciler's drift watch then
+// recreated it, in a permanent delete/recreate loop with windows where
+// the apiserver→webhook allow was absent.
+func claimedByOtherSourceKind(p *networkingv1.NetworkPolicy) bool {
+	sk, ok := p.Labels[LabelSourceKind]
+	return ok && sk != LabelSourceKindService
+}
+
+// deletePolicyForService removes every Service-source external-allow
 // policy owned by this Service. Uses the owner-ref-based sweeper with
 // an empty keep set — handles both current (`ext.svc.<name>`) and
 // legacy (`external-<name>`) name formats because both carry the same
-// OwnerReference back to the Service.
+// OwnerReference back to the Service. The apiserver-reachable policy for
+// the same Service (also Service-owned, also role=external-allow) is
+// exempted via claimedByOtherSourceKind — it belongs to the
+// ApiserverReachableReconciler and is cleaned up on ITS terms (discovery
+// resource removed / annotation opt-out), not because the Service
+// stopped being externally exposed.
 func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
 	return sweepStalePoliciesByOwner(ctx, r.Client,
 		inNamespacePolicyLabels(svc.Namespace, map[string]string{
@@ -182,6 +210,7 @@ func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, sv
 		}),
 		"Service", svc.Name, svc.UID,
 		nil, // nothing to keep — sweep them all
+		claimedByOtherSourceKind,
 	)
 }
 
