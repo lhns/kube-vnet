@@ -1,84 +1,149 @@
 # kube-vnet
 
-A Kubernetes operator that lets you declare **named networks** as a first-class resource. Services join a network with a label; the operator generates the underlying `NetworkPolicy` resources so only same-network pods can talk to each other.
+A Kubernetes operator that lets you declare **named networks** as a first-class resource. Services join a network with a label; the operator generates the underlying `NetworkPolicy` resources so only same-network pods can talk to each other. The output is plain `networking.k8s.io/v1` — no CNI extensions, no lock-in; uninstall the operator and the generated policies keep working.
 
----
+## The idea
 
-## Why?
-
-By default, every pod in a Kubernetes cluster can reach every other pod. Most teams want the opposite — services should only reach the services they explicitly need.
-
-`NetworkPolicy` exists to tighten this, but it's awkward to use directly. You write rules in terms of label selectors and exceptions ("allow ingress from pods with these labels in those namespaces"), which doesn't match how teams actually reason about connectivity. The natural mental model is the other way around: *"the payments service joins the payments network; so does orders; so do their dependencies. Nothing else can reach them."*
-
-`kube-vnet` flips the model. You declare a `VirtualNetwork`. Services join it by adding a label. The operator emits the underlying `NetworkPolicy` set — and an automatic default-deny baseline so non-members are actually isolated, not just decoratively excluded.
-
-The output is plain `networking.k8s.io/v1` `NetworkPolicy`. No CNI extensions, no lock-in. If you ever uninstall the operator, the policies it generated keep working.
-
-## The mental model
-
-If you've used Docker Swarm: a `VirtualNetwork` is the same idea — a named group that services join. Same-network pods can communicate; pods on different networks (or none) cannot.
-
-The "virtual" qualifier is deliberate: there's no separate network plane. Traffic still flows through whatever CNI your cluster runs. The operator just shapes the `NetworkPolicy` set so connectivity follows membership.
-
-## How it works (a worked example)
-
-You declare a network:
+Raw `NetworkPolicy` is exception-based and selector-based; teams think in memberships: *"payments joins the payments network, so does orders — nothing else reaches them."* kube-vnet gives you that model (Docker Swarm's named networks, on stock Kubernetes):
 
 ```yaml
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
-metadata:
-  name: payments
-  namespace: platform
+metadata: { name: payments, namespace: platform }
 ```
-
-You label pods that should join it:
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata: { name: orders, namespace: platform }
+# in any pod template that should be a member:
+metadata:
+  labels:
+    kube-vnet/net.payments: "both"
+```
+
+From this the operator maintains, in every managed namespace, a deny-all ingress baseline (`kube-vnet.base`) and, per network, a membership policy (`kube-vnet.mem.platform.payments-<8hex>`) that lets members reach each other. Non-members are isolated; egress is never restricted. Full model with diagrams: [`docs/getting-started/concepts.md`](docs/getting-started/concepts.md).
+
+---
+
+## Running it — the cheat sheet
+
+Everything you need to operate kube-vnet, on one screen. Details behind each link.
+
+### Install
+
+Kubernetes ≥ 1.25 and a CNI that **enforces** NetworkPolicy (Calico, Cilium, kube-router, Antrea, managed-cloud variants — [list](docs/getting-started/install.md#prerequisites)).
+
+```bash
+helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
+  --version 0.1.0 \
+  --namespace kube-vnet-system --create-namespace \
+  --set operator.clusterBaseline.ingressIsolationLevel=cluster   # ← required choice, see below
+```
+
+No Helm: `kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml` or `kubectl apply -k config/default` ([other paths, air-gapped, signatures](docs/getting-started/install.md)).
+
+### The one required choice: isolation level
+
+| `ingressIsolationLevel` | Effect | Seeded cluster baseline |
+|---|---|---|
+| `cluster` | No isolation yet — **safe adoption default**; traffic flows as before, tighten later per namespace | `namespace=default-both, cluster=default-both` |
+| `namespace` | Same-namespace pods reach each other; cross-namespace only via membership | `namespace=default-both, cluster=default-egress` |
+| `pod` | Strict — ingress only via explicit membership | `namespace=default-egress, cluster=default-egress` |
+
+`default-*` values are overridable per namespace/pod, so any preset can be tightened or loosened locally ([how](docs/getting-started/concepts.md#the-deny-all-baseline)).
+
+### Values you'll actually set
+
+| Helm value | Default | Purpose |
+|---|---|---|
+| `operator.clusterBaseline.ingressIsolationLevel` | *(none — required)* | The isolation choice above |
+| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches |
+| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Narrow the webhook auto-allow to your control-plane subnet |
+| `replicaCount` | `1` | `2` for HA (leader election already on) |
+
+Everything else: [`docs/reference/configuration.md`](docs/reference/configuration.md).
+
+### The CRDs
+
+| Kind | Short | Scope | Purpose |
+|---|---|---|---|
+| `VirtualNetwork` | `vnet` | namespaced | A named network; `spec.allowedNamespaces` controls who may join |
+| `VirtualNetworkBinding` | `vnb` | namespaced | Join pods **without editing their labels** (third-party charts) |
+| `VirtualNetworkBaseline` | `vnbl` | namespaced, singleton `default` | Namespace-wide default memberships |
+| `ClusterVirtualNetworkBaseline` | `cvnbl` | cluster, singleton `default` | Cluster-wide defaults — what the chart seeds |
+
+Two system vnets exist automatically: `namespace` (per-NS, = "reachable by my namespace") and `cluster` (= "reachable cluster-wide"). Field-level reference: [`docs/reference/api.md`](docs/reference/api.md).
+
+### Joining a network — three mechanisms
+
+| Mechanism | How | Use when |
+|---|---|---|
+| Pod label | `kube-vnet/net.<vnet>: both` (vnet in own NS) or `kube-vnet/net.<homeNS>.<vnet>: both` (elsewhere) | You own the pod template |
+| `VirtualNetworkBinding` | `spec: { virtualNetworkRef: {name, namespace}, direction: both, podSelector: {...} }` in the pods' namespace | You can't touch the template |
+| Baselines | `memberships:` list on `vnbl`/`cvnbl` | Defaults every pod inherits |
+
+### Directions
+
+| Value | Meaning | Legal on |
+|---|---|---|
+| `both` | accept from + initiate to members | label, binding, baseline |
+| `ingress` | accept only | label, binding, baseline |
+| `egress` | initiate only | label, binding, baseline |
+| `none` | not a member (cancels inherited) | label, binding, baseline |
+| `default-both` / `-ingress` / `-egress` / `-none` | same, but overridable by lower tiers | baselines only |
+
+Resolution is fail-closed: within a tier, conflicting directions intersect; across tiers, bare values are enforced, `default-*` may be overridden ([algebra](docs/getting-started/concepts.md#direction-modes-on-the-join-label)).
+
+### Cross-namespace
+
+```yaml
 spec:
-  template:
-    metadata:
-      labels:
-        app: orders
-        kube-vnet/net.payments: "both"   # ← join the payments network
-    spec:
-      containers: [{ name: app, image: nginx:alpine }]
+  allowedNamespaces:        # join ELIGIBILITY — pods still need a membership
+    all: true               # any namespace, OR
+    names: [webapp, mon]    # explicit list, OR
+    selector: { matchLabels: { tier: prod } }   # by NS label (matchers union)
 ```
 
-The operator notices and produces, in the `platform` namespace:
+Home namespace is always included. Foreign pods use the prefixed label form (`kube-vnet/net.<homeNS>.<vnet>`).
 
-- `kube-vnet.mem.platform.payments-<8hex>` — a `NetworkPolicy` selecting any pod with the operator-stamped `kube-vnet.system/net.platform.payments` label, allowing ingress from peers in the same vnet (filtered by their declared direction).
-- `kube-vnet.base` — a uniform deny-all ingress baseline, installed in every managed namespace, so non-members aren't reachable. Egress is unrestricted by kube-vnet — for per-workload egress restriction, add a user-managed `NetworkPolicy` with `policyTypes: [Egress]`.
+### Annotations & opt-outs
 
-The picture:
+| Annotation | On | Effect |
+|---|---|---|
+| `kube-vnet/disabled: "true"` | Namespace | Operator does nothing here (no baseline, no policies, pods not joinable) |
+| `kube-vnet/external-allow: "false"` | Service or Namespace | Opt out of all auto-allow families |
+| `kube-vnet/apiserver-reachable: "true"` | Service | Opt IN to the apiserver auto-allow when no webhook/APIService declares it |
+
+### What the operator emits
 
 ```
-┌─ namespace: platform ──────────────────────────────────────┐
-│                                                            │
-│   VirtualNetwork: payments                                 │
-│         │                                                  │
-│         ▼ generates                                        │
-│   ┌─ NetworkPolicy: kube-vnet.mem.platform.payments-… ─┐  │
-│   │ select: pods labeled kube-vnet.system/net.…        │  │
-│   │ ingress: from same-vnet peers                      │  │
-│   └─────────────────────────────────────────────────────┘  │
-│                                                            │
-│   ┌─ NetworkPolicy: kube-vnet.base ─────────────────────┐  │
-│   │ select: all pods   ingress: deny (egress free)     │  │
-│   └─────────────────────────────────────────────────────┘  │
-│                                                            │
-│   pod orders-1 [kube-vnet/net.payments=both] ──┐           │
-│                                                ▼ talks     │
-│   pod orders-2 [kube-vnet/net.payments=both]               │
-│                                                            │
-│   pod cron-x   (no label)  ←── isolated by baseline        │
-└────────────────────────────────────────────────────────────┘
+kube-vnet.base                             deny-all ingress baseline (per managed NS)
+kube-vnet.mem.<homeNS>.<vnet>-<8hex>       membership policy per (vnet, member NS)
+kube-vnet.ext.svc.<service>-<8hex>         auto-allow: LoadBalancer/NodePort Service
+kube-vnet.ext.host.<port>.<proto>-<8hex>   auto-allow: hostPort pod
+kube-vnet.ext.apiserver.<service>-<8hex>   auto-allow: Service the apiserver dials
 ```
 
-That's the whole core idea. Everything else in this README is variations on it (cross-namespace reach, opt-outs, etc.) or operational details.
+Hand-edits to any of these are reverted (drift correction); deleting a vnet removes everything it generated.
+
+### Allowed automatically
+
+So the deny-all baseline doesn't break traffic whose source no pod selector can match ([full guide](docs/guides/auto-allow.md)):
+
+- **Externally-exposed Services** (LoadBalancer / NodePort / externalIPs) — your ingress controller keeps working.
+- **hostPort pods** — node-bound daemons stay reachable.
+- **Services the apiserver dials** — admission webhooks (cert-manager, kyverno, …), metrics-server keep answering.
+
+### Inspect
+
+```bash
+kubectl get vnet -A                                              # networks + Ready status
+kubectl describe vnet payments -n platform                       # members, policies, conditions
+kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
+kubectl get events -A --field-selector reason=PolicyRestored     # drift-correction activity
+```
+
+Six Prometheus metrics on `:8080/metrics` + Events on every condition transition: [`docs/reference/metrics-and-events.md`](docs/reference/metrics-and-events.md).
+
+---
 
 ## Documentation
 
@@ -90,85 +155,9 @@ Full docs live under [`docs/`](docs/README.md), organized as a tree:
 - [`docs/internals/`](docs/README.md#internals) — for contributors: [architecture](docs/internals/architecture.md), [source map](docs/internals/code-structure.md), [development](docs/internals/development.md).
 - [`docs/faq.md`](docs/faq.md) — cross-cutting Q&A. [`docs/adr/`](docs/adr/README.md) — every accepted decision.
 
-## Prerequisites
-
-- A Kubernetes cluster (1.25+ for the CRD's CEL validation).
-- A CNI that **enforces** `NetworkPolicy`: Calico, Cilium, kube-router, Antrea, etc. The operator generates the policies — your CNI is what actually drops packets. Older versions of the default `kindnetd` CNI do not enforce `NetworkPolicy`; check your distribution.
-
-## Quickstart
-
-### 1. Install the operator
-
-Helm (recommended):
-
-```bash
-helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
-  --namespace kube-vnet-system --create-namespace \
-  --set operator.clusterBaseline.ingressIsolationLevel=cluster
-```
-
-The chart has no default for `operator.clusterBaseline.ingressIsolationLevel`; pick one of `pod`, `namespace`, or `cluster` at install time (`cluster` is the existing-cluster-friendly choice — every pod auto-joins the cluster system vnet, so ingress posture barely changes). See [`docs/install.md`](docs/getting-started/install.md) for the trade-offs.
-
-> Picking `cluster` is the safe adoption default at the cluster level — every pod inherits a `cluster=default-both` membership, so existing traffic keeps flowing. Per-namespace `VirtualNetworkBaseline`s and per-pod labels can opt specific workloads into stricter postures as you migrate. Each example under [`config/samples/`](config/samples/) demonstrates a slice of the baseline-tier model — apply one and run a few `kubectl exec ... curl` probes to see kube-vnet in action.
-
-Or install the rendered manifests directly:
-
-```bash
-kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml
-```
-
-Or, against the working tree:
-
-```bash
-kubectl apply -k config/default
-```
-
-Either way you get the `kube-vnet-system` namespace, the `VirtualNetwork` CRD, RBAC, and the controller Deployment.
-
-### 2. Create a network and join pods
-
-```yaml
-apiVersion: kube-vnet.lhns.de/v1alpha1
-kind: VirtualNetwork
-metadata: { name: payments, namespace: platform }
-```
-
-Add the join label to any pod template that should be a member:
-
-```yaml
-metadata:
-  labels:
-    kube-vnet/net.payments: "both"
-```
-
-### 3. Inspect
-
-```bash
-kubectl get vnet -A
-kubectl describe vnet payments -n platform
-kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
-```
-
-**→ The full hands-on walkthrough — including how to *prove* the isolation works with a live probe — is [`docs/getting-started/first-vnet.md`](docs/getting-started/first-vnet.md).**
-
-## Cross-namespace reach
-
-`spec.allowedNamespaces` controls **which namespaces' pods are allowed to join** — join eligibility, not blanket access; pods there still need the join label. Three union-able matchers (`all: true`, `names: [...]`, `selector: {...}`); the home namespace is always included. Pods outside the home namespace use the prefixed label form with the home namespace baked into the key:
-
-```yaml
-# Pod in the VirtualNetwork's home namespace (here: platform):
-labels: { kube-vnet/net.payments: "both" }
-
-# Pod in any other namespace (only if allowedNamespaces permits it):
-labels: { kube-vnet/net.platform.payments: "both" }
-```
-
-Full semantics: [`docs/getting-started/concepts.md § Cross-namespace reach`](docs/getting-started/concepts.md#cross-namespace-reach-allowednamespaces).
-
 ## Examples
 
-End-to-end manifests demonstrating each configuration. Each is self-contained — `kubectl apply -f` works on a fresh cluster.
+Self-contained manifests — `kubectl apply -f` works on a fresh cluster:
 
 | File | Demonstrates |
 |---|---|
@@ -181,98 +170,24 @@ End-to-end manifests demonstrating each configuration. Each is self-contained �
 | [`config/samples/08_virtualnetworkbaseline.yaml`](config/samples/08_virtualnetworkbaseline.yaml) | `VirtualNetworkBaseline` — namespace-tier default memberships. |
 | [`config/samples/09_clustervirtualnetworkbaseline.yaml`](config/samples/09_clustervirtualnetworkbaseline.yaml) | `ClusterVirtualNetworkBaseline` — the cluster-tier default (what the chart seeds). |
 
-## What the operator does for you
-
-- **Direction modes.** The join label value declares which directions a pod participates in: `both` (default), `ingress`, `egress`, `none`. Asymmetric workloads (a logging sidecar that only sends, a read-only API that only accepts) model their needs directly. See [ADR 0021](docs/adr/0021-direction-modes-on-join-labels.md).
-- **`VirtualNetworkBinding` CRD** (short names `vnb`, `vnbs`) — the no-label alternative for enrolling pods you can't modify (third-party Helm charts, pods owned by another operator). A binding lives in the namespace with the pods it selects via a non-empty `podSelector`. See [ADR 0026](docs/adr/0026-virtualnetworkbinding-crd.md).
-- **Baselines and inheritance.** The chart seeds a singleton `ClusterVirtualNetworkBaseline` named `default` from `operator.clusterBaseline.ingressIsolationLevel` (one of `pod`/`namespace`/`cluster`). Per-namespace defaults go in a `VirtualNetworkBaseline` (also singleton, named `default`); per-pod overrides go in a `VirtualNetworkBinding` or pod label. Every managed namespace gets a uniform deny-all `NetworkPolicy` named `kube-vnet.base`; vnet membership opens additive ingress allows. Egress is unrestricted by kube-vnet — write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` for per-workload egress restriction. See [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
-- **One or more policies per (vnet, namespace, direction class).** Selectors use an `In` match on the join label value to scope each policy to a single direction class.
-- **Auto-allow for externally-exposed Services.** Once the deny-all baseline selects a pod, external traffic (which never matches a `namespaceSelector`) would be blocked — so the operator automatically emits a port-scoped allow (`kube-vnet.ext.svc.<name>-<8hex>`) for every Service of `type: LoadBalancer`, `NodePort`, or `ClusterIP` with `externalIPs`. Ingress controllers and LB-fronted UIs keep working out of the box. Opt out per Service or namespace with `kube-vnet/external-allow=false`. See [ADR 0038](docs/adr/0038-auto-allow-externally-exposed-services.md).
-- **Auto-allow for `hostPort` pods.** The same treatment for pods bound directly to node ports: one policy per `(namespace, port, protocol)` (`kube-vnet.ext.host.<port>.<proto>-<8hex>`). See [ADR 0040](docs/adr/0040-auto-allow-hostport-pods.md).
-- **Auto-allow for Services the apiserver calls.** Admission webhooks (cert-manager, kyverno, gatekeeper, …), aggregated APIServices (metrics-server, …), and CRD conversion webhooks are dialed by the kube-apiserver — which isn't a pod, so no selector-based rule can admit it. The operator watches the four discovery resources that declare these backends and emits `kube-vnet.ext.apiserver.<name>-<8hex>` allows on the referenced targetPorts; admission keeps working without disabling kube-vnet for those namespaces. The allowed source CIDR is configurable via `operator.apiserverSourceCIDR` (default `0.0.0.0/0`, matching the no-NetworkPolicy baseline). See [ADR 0041](docs/adr/0041-auto-allow-apiserver-reachable-services.md).
-- **Drift correction.** If someone edits an operator-managed `NetworkPolicy` by hand, the next reconcile reverts it.
-- **Clean deletion.** Deleting a VirtualNetwork removes every policy it generated, including across namespaces.
-- **Status & events.** Each VirtualNetwork carries `Ready` and `Degraded` conditions; transitions emit Kubernetes Events visible in `kubectl describe` and event aggregators. The full reason taxonomy is in [ADR 0012](docs/adr/0012-status-conditions-ready-and-degraded.md).
-
-## Disabling the operator for a namespace
-
-Two equivalent ways:
-
-- **Per-namespace** — annotate the namespace:
-
-  ```yaml
-  metadata:
-    annotations:
-      kube-vnet/disabled: "true"
-  ```
-
-- **Operator-wide** — pass `--disabled-namespaces=foo,bar` to the controller (Helm: `operator.disabledNamespaces`). Default: `[kube-system, kube-public, kube-node-lease]`. The operator's own namespace is always added implicitly. Disabled namespaces get no kube-vnet objects of any kind: no baseline, no system vnets, no membership policies, no resolution stamping.
-
-When a namespace is unmanaged: no baseline is created, no membership policies are generated for pods in that namespace, and pods in that namespace are not eligible joiners for any VirtualNetwork (regardless of `allowedNamespaces`).
-
-## Ingress posture (cluster-wide via baselines)
-
-Every managed namespace gets the deny-all ingress baseline `kube-vnet.base`; how much of it bites is set by a three-tier inheritance chain — cluster baseline → namespace baseline → pod tier (bindings + labels) — where `default-*` direction values are overridable by lower tiers and bare values are enforced. The chart's required `operator.clusterBaseline.ingressIsolationLevel` preset seeds the cluster tier:
-
-| Level | Seeded cluster baseline |
-|---|---|
-| `pod` | `namespace=default-egress, cluster=default-egress` — strict; ingress only via explicit membership |
-| `namespace` | `namespace=default-both, cluster=default-egress` — same-NS reachable, cross-NS egress only |
-| `cluster` | `namespace=default-both, cluster=default-both` — no isolation (safe adoption default) |
-
-Full model: [`docs/getting-started/concepts.md § The deny-all baseline`](docs/getting-started/concepts.md#the-deny-all-baseline) and [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
-
-## Configuration
-
-The values you'll actually set (everything else has sensible defaults):
-
-| Helm value | Default | Why you'd set it |
-|---|---|---|
-| `operator.clusterBaseline.ingressIsolationLevel` | *(none — required)* | The isolation decision: `pod` / `namespace` / `cluster`. |
-| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches. |
-| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Narrow the auto-allow for apiserver-dialed webhooks to your control-plane subnet. |
-| `replicaCount` | `1` | `2` for HA (leader election is already on). |
-
-Every flag, value, and env var: [`docs/reference/configuration.md`](docs/reference/configuration.md).
-
-## Observability
-
-Six domain metrics on `:8080/metrics` (reconcile outcomes/latency, vnet/policy/member counts, apply errors), plus status conditions and Kubernetes Events on every transition. The full surface with sample Prometheus alert rules: [`docs/reference/metrics-and-events.md`](docs/reference/metrics-and-events.md).
-
-## Project layout
-
-```
-api/v1alpha1/         # CRD Go types
-cmd/main.go           # operator entrypoint
-internal/controller/  # reconciler, policy generator, baseline, namespace filter
-config/               # CRD, RBAC, Deployment manifests (kustomize)
-config/samples/       # runnable example VirtualNetworks
-docs/                 # documentation tree (getting-started/, guides/, reference/, internals/, adr/)
-test/e2e/             # kind+CNI traffic tests
-```
-
 ## Development & testing
 
 ```bash
-make manifests           # regenerate CRD + RBAC
-make generate            # regenerate deepcopy
+make manifests generate  # regenerate CRDs, RBAC, deepcopy
 make test                # unit tests (sub-second)
-make integration-test    # envtest-backed integration suite (~10s; needs Go only)
-make e2e                 # kind end-to-end (needs Docker). Default CNI: kube-router.
-                         #   override with: ./test/e2e/up.sh calico
-make build               # build the binary into bin/manager
-make docker-build IMG=…  # build the container image
+make integration-test    # envtest suite (~10s; needs Go only)
+make e2e                 # kind end-to-end (needs Docker; CNI: kube-router or calico)
 ```
 
-The three test rungs (unit, integration, e2e against kube-router and Calico) and their CI lanes are described in [ADR 0018](docs/adr/0018-test-strategy-envtest-and-kind-calico.md).
+The three test rungs and CI lanes: [ADR 0018](docs/adr/0018-test-strategy-envtest-and-kind-calico.md). Source map: [`docs/internals/code-structure.md`](docs/internals/code-structure.md).
 
 ## Architecture decisions
 
-Significant design and implementation choices are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/internals/design.md`](docs/internals/design.md) (historical); where the design doc and the ADRs disagree (the doc was written first), the ADRs are the source of truth.
+Every significant choice is an ADR in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/internals/design.md`](docs/internals/design.md) (historical); where they disagree, the ADRs win.
 
 ## Status
 
-`v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. The remaining gap to v1-complete (a label-cardinality stress test) is tracked in [ADR 0014](docs/adr/0014-deferred-v1-items.md).
+`v1alpha1`. Single-cluster only. Generates plain `networking.k8s.io/v1` `NetworkPolicy`. The remaining gap to v1-complete is tracked in [ADR 0014](docs/adr/0014-deferred-v1-items.md).
 
 ## License
 
