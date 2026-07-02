@@ -10,716 +10,257 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
-### Changed
+Nothing yet.
 
-- **Uniform kind-prefixed naming for every operator-emitted NetworkPolicy
-  (ADR 0039).** All operator-managed policies now carry a visible kind segment
-  as the second dot-component of their name:
+## [0.4.0] — 2026-07-02
 
-  | Kind | Before | After |
-  |---|---|---|
-  | Baseline | `kube-vnet` | `kube-vnet.base` |
-  | Cluster vnet membership | `kube-vnet.cluster-<8hex>` | `kube-vnet.mem.cluster-<8hex>` |
-  | Namespaced vnet membership | `kube-vnet.<homeNS>.<vnet>-<8hex>` | `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` |
-  | External-allow (Service) | `kube-vnet.external-<svcName>-<8hex>` | `kube-vnet.ext.svc.<svcName>-<8hex>` |
+The biggest release so far: a redesigned membership model with
+cluster/namespace/pod baseline tiers, three auto-allow families so real
+clusters (ingress controllers, hostPort daemons, admission webhooks) work out
+of the box, a Helm cleanup hook, and a fully restructured documentation set.
 
-  Three-letter kind slugs (`base`, `mem`, `ext`) make the policy's purpose
-  visible at a glance instead of implicit in segment count, and leave room
-  for the upcoming `ext.host.<port>.<proto>` shape for hostPort policies
-  (ADR 0040).
-
-  **Pre-1.0; no migration code.** This release ships without a sweep step
-  for legacy-named policies because there's no production userbase to
-  protect. Dev/test installations upgrading across this change should clear
-  out any pre-existing operator-managed policies first:
-
-  ```bash
-  kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
-  ```
-
-  The operator re-emits everything under the new names on next reconcile.
-  Membership policies in particular are self-healing through the existing
-  `deleteStale` label-based sweep.
-
-  Label-driven tooling is unaffected because labels
-  (`kube-vnet.system/managed-by`, `kube-vnet.system/role`,
-  `kube-vnet.system/network`) are independent of policy names — the cleanup
-  hook (ADR 0036), system-labels VAP (ADR 0037), and every diagnostic
-  query in the operations playbook keep working unchanged.
-
-  If you maintain dashboards or alerting rules keyed on specific policy
-  names, update them.
-
-### Added
-
-- **Auto-allow Services reached by the apiserver (ADR 0041).** Closes the
-  in-cluster non-pod-source gap that ADR 0038 (LB/NodePort) and ADR 0040
-  (hostPort) don't cover. A new `ApiserverReachableReconciler` watches four
-  cluster-scoped discovery resources that declare "the apiserver dials
-  this Service":
-
-  - `ValidatingWebhookConfiguration` (cert-manager, kyverno, gatekeeper, kube-prometheus-stack, vault, …)
-  - `MutatingWebhookConfiguration` (cert-manager mutator, istio sidecar injector, kyverno mutator, sigstore policy, …)
-  - `APIService` (metrics-server, custom-metrics-apiserver, knative-serving, kueue, kubevirt, gateway-api, …)
-  - `CustomResourceDefinition.spec.conversion.webhook` (multi-version CRD conversion)
-
-  For each `clientConfig.service` reference (URL-only webhooks are skipped)
-  the reconciler emits one `kube-vnet.ext.apiserver.<svcName>-<8hex>`
-  NetworkPolicy in the Service's NS, with `podSelector` mirroring the
-  Service's selector and `from: ipBlock` allowing the configured CIDR on
-  the discovery-referenced target port(s).
-
-  Same opt-out as ADR 0038: `kube-vnet/external-allow=false` on the
-  Service or NS. Same composability — coexists with `ext.svc.*` and
-  `ext.host.*` policies via NetworkPolicy union semantics.
-
-  Plus a per-Service opt-in annotation `kube-vnet/apiserver-reachable=true`
-  for cases the four discovery resources don't cover (future K8s APIs,
-  third-party operators with custom webhook-shaped CRDs, ad-hoc).
-
-  Plus a chart-configurable allow CIDR: `operator.apiserverSourceCIDR`
-  (default `0.0.0.0/0`, matches the cluster's no-NetworkPolicy baseline;
-  set to your control-plane subnet for tighter narrowing).
-
-  Resolves the canonical cert-manager symptom:
-  `failed calling webhook "webhook.cert-manager.io": context deadline exceeded`.
-
-- **Auto-allow for hostPort pods (ADR 0040).** Closes ADR 0038's deferred
-  hostPort case. A new `HostPortReconciler` watches Pods (filtered to those
-  declaring any `hostPort`) and emits one NetworkPolicy per
-  `(namespace, port, protocol)` triple seen in the namespace. The policy's
-  `podSelector` matches `kube-vnet.system/host-port.<port>.<protocol>=true`,
-  stamped on each backing pod by the resolution controller; ingress allows
-  `ipBlock: 0.0.0.0/0` on the matching `(port, protocol)`.
-
-  Per-`(port, protocol)` keying — not per-pod — keeps policies stable across
-  pod replacement (Deployment rollouts don't churn policies). Same port at
-  TCP vs UDP get distinct policies — no cross-protocol leakage.
-
-  Default-on. Opt out per-namespace via `kube-vnet/external-allow=false` or
-  `kube-vnet/disabled=true` on the Namespace. `hostNetwork: true` pods are
-  skipped — NetworkPolicy enforcement on them is CNI-dependent.
-
-  Policies carry `kube-vnet.system/role=external-allow`,
-  `kube-vnet.system/source=host-<port>-<protocol>`. Cleanup hook (ADR 0036)
-  and system-labels VAP (ADR 0037) cover them automatically.
-
-- **Auto-allow for externally-exposed Services (ADR 0038).** A new
-  `ExternalAllowReconciler` watches `corev1.Service` and emits a dedicated
-  port-scoped `from: ipBlock 0.0.0.0/0` `NetworkPolicy` for every Service of
-  `type: LoadBalancer`, `type: NodePort`, or `type: ClusterIP` with non-empty
-  `spec.externalIPs`. This closes the longstanding gap where Services of these
-  types were silently unreachable from outside the cluster in kube-vnet-managed
-  namespaces — NetworkPolicy `namespaceSelector` rules only match pod-IP
-  sources, never external traffic (which arrives SNAT'd to a node IP, or as
-  the original external client IP under `externalTrafficPolicy: Local`). The
-  emitted policy is additive: pod-to-pod isolation via vnet membership keeps
-  working unchanged, *and* external traffic on the exposed `targetPort` reaches
-  the pod.
-  - Default-on. Opt out per-Service or per-Namespace via
-    `kubectl annotate ... kube-vnet/external-allow=false`.
-  - Port-scoped to `targetPort` only — admin/metrics ports on the same pod
-    stay protected.
-  - Headless Services, `ExternalName` Services, and Services with no
-    `spec.selector` don't trigger emission (no pod set to scope to).
-  - Emitted policies carry `kube-vnet.system/role=external-allow`; protected
-    by the `system-labels-vap` (extended in ADR 0037); cleaned up by the
-    ADR 0036 pre-delete hook on `helm uninstall`.
-  - New RBAC: `corev1.Services` get/list/watch on the operator's ClusterRole.
-
-### Removed
-
-- **`--label-prefix` flag and `operator.labelPrefix` chart value removed.**
-  The flag governed only the pod-input join label prefix (`<prefix>net.<vnet>`),
-  not the operator-output labels (`kube-vnet/managed-by`, etc.), system labels
-  (`kube-vnet.system/*`), or the `kube-vnet/disabled` namespace annotation —
-  making it a partial knob that never actually isolated the operator from a
-  hypothetical second `kube-vnet/`-using operator. Every comparable operator
-  (cert-manager, prometheus-operator, istio) hardcodes its label prefix as
-  part of its identity; kube-vnet now does the same. If you had set a custom
-  prefix, switch your pods' join labels back to `kube-vnet/net.<vnet>` before
-  upgrade.
-
-### Changed
-
-- **Operator-managed labels moved to `kube-vnet.system/` prefix (ADR 0037).**
-  Per the same convention already used for operator-stamped pod labels
-  (`kube-vnet.system/net.*`, `kube-vnet.system/resolved-generation`), the
-  remaining operator-owned sentinels migrate from the user-surface
-  `kube-vnet/` prefix to the operator-contract `kube-vnet.system/` prefix:
-  `kube-vnet/managed-by` → `kube-vnet.system/managed-by`,
-  `kube-vnet/network` → `kube-vnet.system/network`,
-  `kube-vnet/role` → `kube-vnet.system/role`. The redundant
-  `kube-vnet/system=true` sentinel on operator-created VirtualNetworks is
-  removed and merged into `kube-vnet.system/managed-by=kube-vnet` — the
-  same key now identifies operator-managed `NetworkPolicy` and
-  `VirtualNetwork` resources. The chart's cleanup hook, system-vnet VAP,
-  and the system-labels VAP (now extended to cover `networkpolicies` and
-  `virtualnetworks` admission) flip in lockstep. Clean cutover, no
-  dual-emit: SSA reconciles existing on-disk policies on first operator
-  reconcile after upgrade (the new field-manager declaration strips the
-  old keys). User-facing keys (`kube-vnet/net.<vnet>`,
-  `kube-vnet/disabled`) are unchanged. If you had `kubectl` runbooks
-  selecting on `kube-vnet/managed-by=kube-vnet`, switch them to
-  `kube-vnet.system/managed-by=kube-vnet`.
-
-- **Event recorder migrated to `events.k8s.io/v1`.** controller-runtime's
-  `mgr.GetEventRecorderFor` returns a struct explicitly tagged
-  `// Deprecated: will be removed in a future release.` (it implements the
-  legacy core/v1 Events API). The reconcilers now use the modern
-  `events.EventRecorder` interface via `mgr.GetEventRecorder` (dedup +
-  rate limiting + the new API group; same path kube-controller-manager
-  moved to in K8s 1.27+). Each event-emission site gained a short `action`
-  verb (`Apply`, `Restore`, `Reconcile`, `Validate`) per the new signature.
-  No user-visible Event changes — `kubectl describe vnet` still surfaces
-  the same reasons and messages.
-
-- **`POD_NAMESPACE` env var centralized at operator startup.** Previously
-  read inline at every reconciler construction; now read once into a local,
-  with a single warning emitted if unset. Behavior unchanged.
-
-### Added
-
-- **Helm pre-delete hook cleans up operator-managed NetworkPolicies on
-  `helm uninstall` (ADR 0036).** Previously, `helm uninstall` left the
-  runtime-created `NetworkPolicy` objects (deny-all baseline + per-vnet
-  membership) in place — with no controller to drive transitions, clusters
-  ended up stuck in deny-all mode and new pods got permanent default-deny.
-  The chart now ships a self-contained pre-delete hook (`Job` + minimal
-  `ClusterRole`/`Binding`/`ServiceAccount`, all tagged
-  `before-hook-creation,hook-succeeded`) that runs
-  `kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet` before
-  Helm tears down the controller. Toggle via `cleanup.enabled` (default
-  `true`). CRDs and CR instances retain their `helm.sh/resource-policy:
-  keep` semantics — they survive uninstall as before so reinstall lands
-  cleanly. Escape hatch: `helm uninstall --no-hooks`.
-
-### Fixed
-
-- **Cluster membership policy was silently not emitted.** The ADR 0033
-  Amendment (commit `6547290`) updated `CanonicalSuffix`, `canonicalVnetKey`,
-  and `PolicyName` to collapse the cluster vnet's canonical key to bare, but
-  missed `SystemLabelKey`. Result: `discoverMembers` was looking for the
-  FQ-keyed label (`kube-vnet.system/net.<operatorNS>.cluster`) while pods
-  carried the bare-keyed one (`kube-vnet.system/net.cluster`); the cluster
-  vnet appeared to have zero members and the operator emitted no membership
-  policy. Manifested with `ingressIsolationLevel=cluster` as cross-namespace
-  traffic being silently denied. Fixed by adding the same bare-collapse
-  special case to `SystemLabelKey`.
-- **Cluster vnet didn't re-reconcile on pod label changes.** A related
-  regression: `podEventHandler` parsed the bare cluster label `cluster`
-  into `(podNS, "cluster")` and enqueued a request for the cluster vnet at
-  the wrong namespace. The reconciler silently no-ops on the missing vnet
-  → the cluster vnet's policy didn't refresh until the next controller
-  resync (~10h). Fixed by adding `OperatorNamespace` back to
-  `VirtualNetworkReconciler` and routing bare-cluster suffixes to
-  `{operatorNS, cluster}` explicitly.
-- **`BareJoinLabelVnetNotFound` false-positive for `cluster` system vnet.**
-  Pods opting into the cluster system vnet via the legitimate bare label
-  `kube-vnet/net.cluster=<dir>` were emitting a misleading "vnet not found"
-  Warning event because `diagBare` looked for a `cluster` vnet in the pod's
-  namespace (the cluster system vnet lives in the operator NS only).
-  Fixed by short-circuiting reserved system-vnet names in `diagBare`.
-
-### Removed
-
-- **`--elide-baseline-for` operator flag and `operator.elideBaselineFor` chart
-  value (ADR 0035).** The flag added a `NotIn` matchExpression to the baseline
-  `podSelector` that excluded cluster-receiver pods from the deny-all selector.
-  Per NetworkPolicy union semantics this had no observable effect: the baseline
-  contributes only deny-all (zero allows), and the cluster membership policy's
-  allows apply whether or not the baseline also selects the pod. Removing the
-  flag simplifies the operator surface; no connectivity changes. Existing
-  baselines are re-rendered with `podSelector: {}` (selects every pod) on the
-  first reconcile after upgrade. The `BaselineElideFor`, `OperatorNamespace`
-  fields on `NamespaceReconciler`, the `OperatorNamespace` field on
-  `ResolutionReconciler`, the `elideFor` and `operatorNS` parameters on
-  `DesiredBaseline`, and the `operatorNS` parameter on `CanonicalSuffix` were
-  all dropped alongside.
-
-### Changed
-
-- **Cluster vnet stamps and policy name collapse to bare (ADR 0033 Amendment).**
-  The cluster system vnet is the cluster-wide singleton; its `<operatorNS>.`
-  prefix carried no information. The canonicalization rule for cluster now
-  inverts: any input form (bare `cluster` or prefixed `<anything>.cluster`)
-  collapses to bare `cluster`. Pod-stamped system label is
-  `kube-vnet.system/net.cluster=<dir>` (was
-  `kube-vnet.system/net.<operatorNS>.cluster=<dir>`); membership policy is
-  named `kube-vnet.cluster-<hash>` (was `kube-vnet.<operatorNS>.cluster-<hash>`);
-  baseline elide-list emits `kube-vnet.system/net.cluster`. Cluster is the
-  *only* vnet where the suffix is removed rather than added — every other vnet
-  still stamps FQ for disambiguation. Migration: existing FQ-stamped pods are
-  re-stamped to bare on first reconcile after upgrade; the cleanup tail-step
-  removes the old FQ-named cluster policies and emits the new bare-named ones.
-
-- **Canonical fully-qualified system labels and uniform membership-policy
-  naming (ADR 0033).** The `ResolutionReconciler` now stamps every pod
-  membership as `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` (canonical
-  FQ form) regardless of whether the pod is in the vnet's home namespace or
-  uses the bare or prefixed pod-input label. The policy generator emits one
-  membership policy per `(vnet, namespace)` named uniformly
-  `kube-vnet.<homeNS>.<vnet>-<8hex>` — the bare-form output policy
-  (`kube-vnet.<vnet>-<8hex>`) and the per-binding policy
-  (`kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>`) are no longer emitted.
-  `VirtualNetworkBinding`-driven members are stamped with the same canonical
-  FQ system label and are covered by the regular per-`(vnet, namespace)`
-  membership policy. Pod-input ergonomic from ADR 0022 is preserved (bare and
-  prefixed pod labels are both still accepted); only the operator's *output*
-  is normalized. Baseline-spec membership keys stay bare for the user-facing
-  shorthand (`cluster`, `namespace`, or FQ `<homeNS>.<vnet>`); the operator
-  resolves bare entries to canonical FQ at render time.
-
-- **`ConflictingDirections` Degraded reason replaced by `ResolutionConflict`.**
-  Bare-vs-prefixed disagreement on the same pod is no longer a conflict —
-  both inputs canonicalize to the same key and intersect cleanly. The new
-  `ResolutionConflict` reason fires for cross-source disagreements that the
-  resolver has to intersect fail-closed (binding-vs-label, binding-vs-binding
-  on the same pod). The per-pod annotation
-  `kube-vnet.system/conflict.<homeNS>.<vnet>` continues to mark the granular
-  conflict surface; the metric `kube_vnet_resolution_conflicts_total` is
-  unchanged.
-
-- **Hard cleanup guarantee for managed resources (ADR 0033).** Every vnet
-  reconcile diffs the desired-vs-actual managed-policy set and deletes any
-  policy not in the desired set within one cycle. Stale bare-form and
-  per-binding policies left over from earlier releases are removed
-  deterministically on the first post-upgrade reconcile. The
-  `SystemVnetReconciler` now also deletes the per-NS `namespace` system vnet
-  on a managed → disabled namespace transition (the cluster vnet in the
-  operator's release namespace is intentionally exempt).
-
-### Added
-
-- **End-user RBAC: aggregated ClusterRoles for the kube-vnet CRDs.** The
-  chart now ships editor + viewer ClusterRoles per CRD. The namespace-scoped
-  ones (`VirtualNetwork`, `VirtualNetworkBinding`, `VirtualNetworkBaseline`)
-  carry `rbac.authorization.k8s.io/aggregate-to-{admin,edit,view}` labels —
-  anyone bound to the upstream `admin`/`edit`/`view` ClusterRole within a
-  namespace automatically gains the corresponding access on the kube-vnet
-  CRDs in that namespace. `ClusterVirtualNetworkBaseline` ships an
-  **unbound** `<release>-clustervirtualnetworkbaselines-editor` ClusterRole
-  for cluster-admins to delegate explicitly via their own
-  `ClusterRoleBinding` — the cluster baseline drives every namespace's
-  default ingress posture, so binding is opt-in. New chart toggle
-  `rbac.aggregate` (default `true`) enables/disables the entire block. See
-  `docs/security.md#who-can-write-what`.
-
-- **Two new CRDs and the chart-level `operator.clusterBaseline` block
-  introduce a baseline-tier resolution model (ADR 0031).**
-  `ClusterVirtualNetworkBaseline` (cluster-scoped singleton named `default`)
-  and `VirtualNetworkBaseline` (namespace-scoped singleton named `default`)
-  carry tier-defaults. The chart seeds the cluster baseline from
-  `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}`.
-  When `create=true`, **exactly one** of `ingressIsolationLevel` (one of
-  `pod`/`namespace`/`cluster`) or `memberships` (explicit map of
-  `<vnet-key>: <direction>`, where the key is a bare system-vnet name or
-  `<namespace>.<name>` for user vnets) must be set; both → `helm install`
-  fails with an XOR error; neither → fails with a "no default; pick
-  deliberately" error.
-  The `Direction` enum gains four `default-*` variants — bare values are
-  *enforced* (lower tiers cannot override), `default-*` values are
-  *advisory*. Within-tier and pod-tier binding-vs-label conflicts resolve
-  by **intersection** (fail-closed) rather than alphabetical-by-source.
-  CEL on each baseline pins it to the `default` name.
-
-### Changed
-
-- **`VirtualNetworkBinding.spec.podSelector` must select at least one pod.**
-  CRD CEL rejects empty selectors. The previously-supported
-  "empty-selector means all pods in this namespace" use-case migrates to
-  `VirtualNetworkBaseline` per ADR 0031.
-
-### Removed
-
-- **`ClusterVirtualNetworkBinding` CRD removed.** The 95% case
-  (broad-selector defaults) migrates to `ClusterVirtualNetworkBaseline`;
-  the rare per-pod cross-namespace case migrates to a
-  `VirtualNetworkBinding` in the target namespace. Convert any existing
-  CR before upgrading.
-
-  **Manual cleanup required**: because we removed the CVNB chart template
-  in a single release rather than the two-release pattern from
-  [ADR 0032](docs/adr/0032-chart-crd-removal-two-release-pattern.md),
-  the live CRD object on your cluster is now an orphan after this upgrade
-  — Helm respects the `helm.sh/resource-policy: keep` annotation and
-  won't delete it. After upgrading, confirm no `ClusterVirtualNetworkBinding`
-  CRs remain and then delete the CRD itself:
-
-  ```bash
-  kubectl get clustervirtualnetworkbindings -A   # expect: No resources found
-  kubectl delete crd clustervirtualnetworkbindings.kube-vnet.lhns.de
-  ```
-
-  Future CRD removals will follow the two-release pattern in ADR 0032 and
-  clean up automatically.
-- **`--default-memberships` operator flag and `operator.defaultMemberships`
-  chart value removed.** Use `operator.clusterBaseline.ingressIsolationLevel`
-  (one of `pod`/`namespace`/`cluster`) or
-  `operator.clusterBaseline.memberships` (explicit map) instead. The chart
-  fails fast at install time when neither is set under `create=true`.
-
-### Fixed
-
-- **Cluster system vnet was rejected as `HomeNamespaceExcluded` on every
-  install.** The cluster system vnet's home namespace is the operator
-  namespace, which `cmd/main.go` implicitly adds to `disabledNamespaces` as
-  a privilege-boundary safety measure. `VirtualNetworkReconciler` then
-  rejected any vnet whose home namespace was disabled, so the cluster vnet
-  reconciled to `Ready=False, Reason=HomeNamespaceExcluded` and the
-  `kube-vnet.system/net.cluster` membership policy never materialized.
-  System-labeled vnets (`kube-vnet/system=true`) are now exempt from the
-  home-namespace check; the new admission gate below keeps the label
-  honest.
-- **Helm chart's `ClusterRole` was missing verbs added by ADR 0030.** The
-  resolution controller's `pods/patch+update` and the system-vnet
-  controller's `virtualnetworks/create+update+patch` were never mirrored
-  into `charts/kube-vnet/templates/clusterrole.yaml`, and the new
-  `clustervirtualnetworkbindings` group was absent entirely. Helm-installed
-  operators failed to stamp `kube-vnet.system/*` labels and never created
-  the `namespace` or `cluster` system vnets. A new drift gate
-  (`internal/controller/chart_rbac_test.go`) now compares the rendered
-  chart ClusterRole against the kubebuilder-generated `config/rbac/role.yaml`
-  on every CI run; future divergence fails the chart-manifest job.
-- **CRDs now update on `helm upgrade`.** Previously the CRDs lived under
-  `charts/kube-vnet/crds/`, which Helm only applies on first install — so
-  upgrading a previously-installed chart to a version that introduced a new
-  CRD (e.g. `ClusterVirtualNetworkBinding` from ADR 0030) silently skipped
-  the new CRD, and the operator looped on `no matches for kind`. The CRDs
-  are now templated under `charts/kube-vnet/templates/crd-*.yaml` with
-  `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete
-  user-authored CRs.
-
-  **Migration for users on the broken intermediate version**: the previously
-  installed CRDs were created by Helm via the special `crds/` directory,
-  which does not stamp Helm ownership metadata. Now that CRDs are
-  templated, Helm refuses to adopt them with `invalid ownership metadata;
-  ... must be set to "Helm"`. Stamp the labels/annotations once, then
-  upgrade — substitute your release name/namespace if different:
-
-  ```bash
-  RELEASE=kube-vnet
-  NS=kube-vnet-system
-  for crd in virtualnetworks.kube-vnet.lhns.de \
-             virtualnetworkbindings.kube-vnet.lhns.de \
-             clustervirtualnetworkbindings.kube-vnet.lhns.de; do
-    kubectl get crd "$crd" >/dev/null 2>&1 || continue
-    kubectl label    crd "$crd" app.kubernetes.io/managed-by=Helm --overwrite
-    kubectl annotate crd "$crd" meta.helm.sh/release-name="$RELEASE" --overwrite
-    kubectl annotate crd "$crd" meta.helm.sh/release-namespace="$NS" --overwrite
-  done
-
-  helm upgrade --install "$RELEASE" oci://ghcr.io/lhns/charts/kube-vnet \
-    --namespace "$NS"
-  kubectl rollout restart deploy -n "$NS" "$RELEASE"
-  ```
-
-  Helm will create the missing `ClusterVirtualNetworkBinding` CRD itself
-  on the next upgrade now that CRDs are templated.
-
-  **k0s users (helm extension):** the `helm upgrade` step is replaced by
-  editing `k0sctl.yaml` to pin the new chart version and `k0sctl apply`.
-  The k0s helm reconciler does not re-trigger on `.metadata.annotations`
-  changes, so if it has already cached the old error, force a re-reconcile
-  by bumping `.spec` on the chart CR:
-
-  ```bash
-  kubectl -n kube-system patch chart k0s-addon-chart-kube-vnet \
-    --type=merge -p '{"spec":{"timeout":"5m0s"}}'
-  ```
-
-  After this fix lands, future upgrades self-heal — no manual step needed.
-
-### Changed
-
-- **VirtualNetwork admission now reserves the names `namespace` and
-  `cluster` and the `kube-vnet/system=true` label for the operator.** The
-  `system-vnet-protected` ValidatingAdmissionPolicy, previously gating only
-  UPDATE/DELETE, now also gates CREATE: a non-operator request to create a
-  vnet named `namespace`, named `cluster`, or carrying the system label is
-  rejected at admission. The operator's ServiceAccount is exempted via a
-  username equality check. Existing user-owned vnets with these shapes
-  continue to function (the policy only fires on new CREATE/UPDATE/DELETE
-  attempts), but new attempts will be rejected — rename to a non-reserved
-  name. There is no automated migration; auto-deletion would risk losing
-  user data. Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy
-  is GA); on older clusters the SystemVnetReconciler's drift-correction
-  remains the fallback as before.
+Features that were introduced *and removed again* during this development
+cycle (`ClusterVirtualNetworkBinding`, `--default-memberships`,
+`--elide-baseline-for`) never shipped in a tagged release and are not listed.
 
 ### Breaking
 
-- **CLI flags reworked under ADR 0030.** Operator-default vnet memberships
-  are declared via the new `--default-memberships=<vnet>=<dir>,...` flag
-  (the resolution controller stamps `kube-vnet.system/net.<vnet>` labels
-  on every pod accordingly). Pods that should be excluded from the
-  always-deny-all baseline are listed via `--elide-baseline-for=<csv>`.
-  **The `--ingress-isolation`, `--ingress-isolation-{none,namespace,pod}`
-  flags are removed** along with the `kube-vnet/ingress-isolation`
-  per-namespace annotation; the cluster-wide-isolation knob's job is
-  done by `--default-memberships` now. Helm chart values: replace
-  `operator.ingressIsolation.*` with `operator.defaultMemberships` and
-  `operator.elideBaselineFor`.
-- **Baseline shape changed.** Per-mode baselines (allow-all/same-NS/deny-all)
-  are gone. The baseline is always deny-all with `podSelector` excluding
-  receivers on the elide-list. ADR 0029's mode=none allow-all and ADR 0023's
-  mode-specific baselines are both superseded by ADR 0030.
-- **NetworkPolicy podSelectors now key on `kube-vnet.system/net.<vnet>`**
-  (operator-stamped by the resolution controller) rather than the user-input
-  `kube-vnet/net.<vnet>`. The user-input scheme remains the authoring surface.
-- **System VirtualNetworks `namespace` (per-NS) and `cluster` (cluster-wide)**
-  exist as managed CRs in every managed namespace and the operator namespace.
-  Marked `kube-vnet/system=true`; protected against user mutation by a
-  ValidatingAdmissionPolicy.
-- **Direction enum pruned.** Join-label values are now exactly `both` /
-  `ingress` / `egress` / `none`. The legacy aliases `true` and `false`,
-  and the empty-string value, are dropped. The chart's
-  `ValidatingAdmissionPolicy` rejects pods carrying legacy values at admission;
-  on older clusters the operator's `UnknownDirection` reason on the vnet's
-  Degraded condition catches them at reconcile. Migrate `=true`→`=both` and
-  `=false`/`=""`→`=none`. Per ADR 0030 (with the ADR 0021 2026-05-05 addendum).
-- **Mode=none now materializes an allow-all baseline.** Previously, a managed
-  namespace with `ingress-isolation=none` had no `kube-vnet`-owned baseline
-  policy. As of this release, mode=none generates a baseline whose ingress
-  rule is empty (the K8s idiom for "allow all sources, all ports"). Traffic
-  outcome is identical for non-member pods. Vnet member pods in mode=none
-  are no longer over-restricted: their effective ingress is now correctly
-  "allow-all ∪ vnet peers = allow-all," consistent with the outer-boundary
-  model used by the other modes. **Visible effect**: `kubectl get netpol -A`
-  in a mode=none namespace now lists one additional `kube-vnet` policy. See
-  [ADR 0029](docs/adr/0029-allow-all-baseline-and-system-ns-disabled.md).
-- **System namespaces are `disabled` by default again.** `kube-system`,
-  `kube-public`, and `kube-node-lease` move from
-  `operator.ingressIsolation.namespaceOverrides.none` (chart) /
-  `--ingress-isolation-none` (CLI) into `operator.disabledNamespaces` /
-  `--disabled-namespaces`. Net effect on most clusters: zero — those
-  namespaces remain free of kube-vnet objects. Users who *relied* on the
-  previous default to enroll a system-namespace pod in a vnet must remove
-  the relevant namespace from `disabledNamespaces`. ADR 0029 supersedes the
-  default-placement choice in ADR 0023; the decoupling principle in 0023
-  is unchanged.
-- **NetworkPolicy names changed.** The previous `kube-vnet-<vnet>-<ns>[-prefixed]`
-  / `kube-vnet-<vnet>-b-<binding>` / `kube-vnet-default-deny` scheme allowed
-  collisions (e.g. baseline vs membership where vnet=`default` and ns=`deny`,
-  or vnet=`foo`/ns=`bar-baz` vs vnet=`foo-bar`/ns=`baz`). New scheme uses a
-  dot-separated structural prefix and an 8-hex identity hash:
-  - Baseline: `kube-vnet` (per-namespace singleton)
-  - Membership bare (home NS): `kube-vnet.<vnet>-<8hex>`
-  - Membership prefixed: `kube-vnet.<homeNS>.<vnet>-<8hex>` (mirrors the
-    `kube-vnet/net.<homeNS>.<vnet>` label key)
-  - Per-binding: `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>`
+- **Join-label direction values are now strict.** `kube-vnet/net.<vnet>`
+  accepts only `both`, `ingress`, `egress`, `none`. The legacy `"true"` /
+  `"false"` / `""` aliases from 0.2.0 are rejected at admission (new
+  `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30) and excluded at reconcile
+  time everywhere. Migrate labels before upgrading.
+  ([ADR 0030](docs/adr/0030-unified-vnet-membership-with-resolution.md))
+- **The chart now requires an isolation decision.** Set exactly one of
+  `operator.clusterBaseline.ingressIsolationLevel` (`pod` | `namespace` |
+  `cluster`) or `operator.clusterBaseline.memberships` at install/upgrade —
+  there is no default. `cluster` reproduces pre-upgrade behavior (no
+  isolation). ([ADR 0031](docs/adr/0031-baseline-tier-resolution.md))
+- **Uniform deny-all baseline; the ingress-isolation model is gone.** Every
+  managed namespace gets the ingress-deny baseline. Removed: the
+  `kube-vnet/ingress-isolation` namespace annotation, the
+  `--ingress-isolation` / `--ingress-isolation-{none,namespace,pod}` flags,
+  and `operator.ingressIsolation.*` Helm values (all introduced 0.2.0–0.3.0).
+  Isolation posture is now controlled via the baseline tiers.
+- **Per-binding policies are gone.** `VirtualNetworkBinding` no longer emits
+  its own `kube-vnet-<vnet>-b-<binding>` policy; binding-selected pods fold
+  into the regular membership policy via operator-stamped labels.
+  ([ADR 0033](docs/adr/0033-canonical-fq-system-labels.md))
+- **Operator-owned labels moved to the `kube-vnet.system/` prefix**
+  (`managed-by`, `network`, `role`, and the stamped `net.*` membership
+  labels), protected by a new admission policy. `kube-vnet/…` is now
+  exclusively the user-input surface.
+  ([ADR 0037](docs/adr/0037-system-prefix-convention-for-operator-owned-keys.md))
+- **New policy names.** All operator-managed NetworkPolicies use
+  kind-prefixed names:
 
-  The dot prefix avoids visual confusion with dash-bearing namespace names
-  (e.g. `netpol-demo`); the 8-hex suffix is an *identity* hash (SHA-256 of
-  class+homeNS+vnet[+binding] joined by `\x00`, first 4 bytes hex'd) — stable
-  across membership churn.
+  | Kind | Name |
+  |---|---|
+  | Baseline | `kube-vnet.base` |
+  | Membership | `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` (`kube-vnet.mem.cluster-<8hex>`) |
+  | Auto-allow | `kube-vnet.ext.{svc,host,apiserver}.<identity>-<8hex>` |
 
-  Migration is automatic: the existing `deleteStale()` pass GCs old-named
-  membership policies on the first reconcile, and the namespace reconciler
-  now sweeps stale baseline policies (any policy labelled
-  `kube-vnet/role=baseline` whose name differs from the current
-  `BaselinePolicyName`). NetworkPolicy is additive, so traffic posture is
-  unchanged during the transition. **Action required**: any tooling/scripts
-  hard-coded to old policy names must update.
-
-- **Empty join-label value (`kube-vnet/net.X: ""`) now parses as `none`, not
-  `both`.** The legacy "presence-only meant member" rule mapped the empty
-  string to `both`; that no longer holds. A pod with `kube-vnet/net.X: ""` is
-  *not* a member. Update existing manifests to use an explicit `=both` (or the
-  legacy `=true` alias) if you intended membership. The legacy `"true"` /
-  `"false"` aliases are unchanged. See the
-  [ADR 0021 empty-string addendum](docs/adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--empty-string-value-reinterpreted-as-none)
-  and [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
-- **`operator.ingressIsolation.mode` (Helm) and `--ingress-isolation` (CLI) are
-  now required.** The chart no longer ships a default for `mode`; `helm install`
-  and `helm upgrade` fail fast via `required` if it's empty. The operator
-  binary exits non-zero at startup if `--ingress-isolation` is not set
-  explicitly. Existing chart users: add `mode: <none|namespace|pod>` to your
-  values (or pass `--set operator.ingressIsolation.mode=...`) before
-  upgrading. Operator-binary users: add `--ingress-isolation=...` to your
-  manager args.
-
-### Behavior changes (upgrade-impacting)
-
-- **`kube-system`, `kube-public`, and `kube-node-lease` are no longer in
-  `disabledNamespaces` by default.** They are
-  now in `operator.ingressIsolation.namespaceOverrides.none` (chart default
-  `[kube-system, kube-public, kube-node-lease]`; the operator's
-  `--ingress-isolation-none` default is the same CSV). The operator now
-  *discovers* deliberate joiner pods in those namespaces (so a cluster admin
-  can enroll a kube-system component in a vnet via the prefixed join label
-  and `allowedNamespaces`), but never installs an ingress-deny baseline
-  there, regardless of the cluster-wide `mode`. If you relied on the
-  operator never touching those namespaces *at all*, add them back to
-  `operator.disabledNamespaces` explicitly. The implicit `POD_NAMESPACE`
-  self-inclusion in `disabledNamespaces` is unchanged.
-
-- **The operator no longer restricts egress.** The baseline now carries
-  `policyTypes: [Ingress]` only. Membership policies still allow egress to
-  vnet peers, but generic egress (DNS, the apiserver, the public internet,
-  other namespaces) is unrestricted by kube-vnet. **Existing installs will
-  see their egress posture loosen on upgrade.** If you need per-workload
-  egress restriction, write a user-managed `NetworkPolicy` with
-  `policyTypes: [Egress]`. See ADR 0025 and `docs/security.md`.
-- **The implicit "first vnet member triggers the baseline" coupling is
-  gone.** Baseline existence is now decided purely by the resolved
-  `ingress-isolation` mode for the namespace. To preserve the previous
-  behavior, set `kube-vnet/ingress-isolation: pod` on each namespace
-  explicitly (or use `--ingress-isolation=pod` cluster-wide). See ADR 0023.
+  No migration code ships (pre-1.0). After upgrading, clear old-named
+  policies once with
+  `kubectl delete networkpolicy -A -l kube-vnet/managed-by=kube-vnet`;
+  the operator re-emits everything under the new names. Update dashboards
+  keyed on policy names.
+  ([ADR 0039](docs/adr/0039-uniform-kind-prefixed-policy-naming.md))
+- **`--label-prefix` flag and `operator.labelPrefix` Helm value removed** —
+  the label prefix is part of the operator's identity, as with every
+  comparable operator.
+- **Chart CRDs are now templated** (with `helm.sh/resource-policy: keep`) so
+  `helm upgrade` updates them and CRs survive uninstall.
+  ([ADR 0032](docs/adr/0032-chart-crd-removal-two-release-pattern.md))
 
 ### Added
 
-- **`ValidatingAdmissionPolicy` for join-label direction values
-  (Kubernetes ≥ 1.30).** The chart ships a VAP + binding that rejects Pod
-  create/update when any `kube-vnet/net.*` label has a value not in
-  `[both, ingress, egress, none, true, false, ""]`. Typos like
-  `kube-vnet/net.X=bothh` fail at `kubectl apply` instead of being caught
-  later by the operator. Older clusters skip the VAP and continue to rely on
-  the operator's runtime `Degraded`/`UnknownDirection` reason for the same
-  fault. See [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
-- **Pod-scoped Warning events for stateful join-label diagnostics.** A new
-  `JoinLabelDiagnosticReconciler` watches Pods carrying `kube-vnet/net.*`
-  labels and emits Warning events on the Pod itself —
-  `BareJoinLabelVnetNotFound` (bare-form label with no vnet of that name in
-  the pod's own namespace), `PrefixedJoinLabelVnetNotFound` (prefixed-form
-  label naming a vnet that doesn't exist), and `JoinLabelNamespaceNotAllowed`
-  (vnet exists but its `spec.allowedNamespaces` excludes the pod's
-  namespace). Visible via `kubectl describe pod`. Pods in disabled or
-  excluded namespaces are skipped by design. The vnet-status reasons
-  (`InvalidJoiners`, etc.) are unchanged — they serve the vnet-owner
-  audience; the new pod events serve the pod-owner audience. See
-  [ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md).
-- **Direction modes on join labels.** The label value declares the pod's
-  participation: `both` (default), `ingress`, `egress`, `none`. Legacy
-  aliases: `"true"` → `both`, `"false"` → `none`. Per-direction policies
-  are emitted (`-ingress` / `-egress` suffixes); the unsuffixed name keeps
-  the legacy form for the bidirectional case. Unknown values surface as
-  `Degraded`/`UnknownDirection`. See ADR 0021.
-- **Long-form join label accepted in the home namespace.** Both
-  `kube-vnet/net.<vnet>` and `kube-vnet/net.<homeNS>.<vnet>` work in the
-  home namespace, useful for templated workloads. Conflicting directions
-  across the two forms surface as `Degraded`/`ConflictingDirections`.
-  See ADR 0022.
-- **`kube-vnet/ingress-isolation` namespace annotation.** Three values:
-  `none` (no baseline), `namespace` (baseline allows ingress from
-  same-namespace pods), `pod` (strict ingress deny). Independent of
-  `kube-vnet/disabled` (which still turns the operator off entirely for
-  that namespace). See ADR 0023.
-- **`--ingress-isolation` flag family.** Cluster-wide default mode plus
-  three per-mode override CSV lists (`--ingress-isolation-none`,
-  `--ingress-isolation-namespace`, `--ingress-isolation-pod`). Helm:
-  `operator.ingressIsolation.{mode,namespaceOverrides.{none,namespace,pod}}`.
-  Per-namespace annotation > override list > cluster-wide default. See
-  ADR 0024.
-- **`VirtualNetworkBinding` CRD** (short names `vnb`, `vnbs`). Namespaced.
-  Selects pods *in its own namespace* via `spec.podSelector` and attaches
-  them to a target vnet (`spec.virtualNetworkRef.{name,namespace}`) for a
-  chosen `direction` (default `both`). The escape hatch for enrolling
-  pods whose template you can't modify (third-party Helm charts, pods
-  owned by another operator). The target vnet's `spec.allowedNamespaces`
-  is enforced. Status: `Ready` condition with reasons `PodsAttached`,
-  `NoPodsMatch`, `VirtualNetworkNotFound`, `NamespaceNotAllowed`,
-  `NamespaceExcluded`, `UnknownDirection`, `InvalidSelector`; plus
-  `attachedPods` and `observedGeneration`. Per-binding policies are
-  named `kube-vnet-<vnet>-b-<binding>` and labeled
-  `kube-vnet/binding=<binding>`. See ADR 0026.
+- **Unified membership model with a resolution layer**
+  ([ADR 0030](docs/adr/0030-unified-vnet-membership-with-resolution.md)):
+  pod labels, bindings, and baselines all resolve into operator-stamped
+  `kube-vnet.system/net.*` labels that the policy generator selects on. Two
+  managed **system vnets**: `namespace` (per-NS, same-namespace reachability)
+  and `cluster` (cluster-wide). Reserved names are admission-protected.
+- **Baseline tiers**
+  ([ADR 0031](docs/adr/0031-baseline-tier-resolution.md)): new
+  `ClusterVirtualNetworkBaseline` (cluster-scoped singleton `default`,
+  shortname `cvnbl`) and `VirtualNetworkBaseline` (per-namespace singleton
+  `default`, shortname `vnbl`) CRDs. The direction enum gains overridable
+  `default-both/ingress/egress/none` variants (bare = enforced); conflicts
+  resolve by fail-closed intersection; the chart's isolation presets seed the
+  cluster tier.
+- **Auto-allow: externally-exposed Services**
+  ([ADR 0038](docs/adr/0038-auto-allow-externally-exposed-services.md)) —
+  LoadBalancer / NodePort / ClusterIP+externalIPs Services get a port-scoped
+  allow (`kube-vnet.ext.svc.*`) so ingress controllers keep working under the
+  deny-all baseline. Named targetPorts resolve against backing pods. Opt out
+  with `kube-vnet/external-allow=false` on the Service or namespace.
+- **Auto-allow: hostPort pods**
+  ([ADR 0040](docs/adr/0040-auto-allow-hostport-pods.md)) — one policy per
+  `(namespace, port, protocol)` (`kube-vnet.ext.host.*`), keyed on the port so
+  Deployment rollouts don't churn policies. `hostNetwork` pods are skipped.
+- **Auto-allow: Services the apiserver dials**
+  ([ADR 0041](docs/adr/0041-auto-allow-apiserver-reachable-services.md)) —
+  admission webhooks (cert-manager, kyverno, …), aggregated APIServices
+  (metrics-server), and CRD conversion webhooks are detected from their
+  registration resources and allowed (`kube-vnet.ext.apiserver.*`). New
+  `operator.apiserverSourceCIDR` / `--apiserver-source-cidr` (default
+  `0.0.0.0/0`) to narrow the source; `kube-vnet/apiserver-reachable=true`
+  opts in undeclared backends. Fixes `failed calling webhook … context
+  deadline exceeded` after enabling isolation.
+- **Helm pre-delete cleanup hook**
+  ([ADR 0036](docs/adr/0036-helm-pre-delete-hook-cleanup.md)):
+  `helm uninstall` stops the operator, then removes all operator-managed
+  NetworkPolicies so deny-all baselines don't outlive their manager.
+  `cleanup.enabled=true` by default; skip with `--no-hooks`.
+- **Aggregated end-user RBAC** (`rbac.aggregate=true`): the namespaced CRDs
+  fold into the standard admin/edit/view ClusterRoles; unbound editor/viewer
+  roles ship for the cluster-scoped baseline.
+- **Pod-scoped diagnostics**
+  ([ADR 0027](docs/adr/0027-pod-scoped-join-label-events.md)): Warning events
+  on the Pod (`BareJoinLabelVnetNotFound`, `PrefixedJoinLabelVnetNotFound`,
+  `JoinLabelNamespaceNotAllowed`) plus the direction VAP for admission-time
+  typo rejection.
+- CI: Helm-installed e2e lanes (`e2e-helm`, `e2e-helm-namespace`) with real
+  external-reachability checks and uninstall-cleanup assertions; per-commit
+  dev image builds (`0.0.0-dev.<sha>`).
+
+### Fixed
+
+- **ExternalAllow could delete the apiserver-reachable policy for the same
+  Service** (both families share `role=external-allow` and the Service
+  owner-ref), causing a delete/recreate loop with windows where
+  admission-webhook traffic was denied.
+- **`kube-vnet/disabled` flips are honored promptly** — the resolution
+  controller now watches Namespaces and strips stamps immediately; membership
+  generation re-checks managed/permitted state per namespace as defense
+  against stale stamps.
+- **Transient apiserver errors no longer strip memberships** — resolution
+  input paths distinguish NotFound from transient errors and requeue instead
+  of collapsing to "deny".
+- **A malformed user label no longer suppresses a valid membership** coming
+  from a binding or baseline; the diagnostic is advisory only.
+- **Stamps can't lie**: all resolution inputs (labels, bindings, baselines)
+  gate through one shared `Permits()` check (vnet exists + namespace allowed)
+  before stamping.
+- Collision-safe policy naming (identity hash in every generated name);
+  bidi+ingress self-policies merged; cluster system vnet collapsed to its
+  canonical bare key.
+- Cleanup hook works with the distroless `registry.k8s.io/kubectl` image and
+  stops the operator before deleting policies.
+- Readable condition messages (`1 NetworkPolicy in 2 namespaces`), friendlier
+  admission-policy rejection texts, ClusterRole name regression, CEL
+  string-literal quoting in the direction VAP.
+
+### Documentation
+
+- Restructured into `docs/{getting-started,guides,reference,internals}/` with
+  a numbered start-here path, a hands-on first-network tutorial (with a live
+  isolation probe), and a dedicated auto-allow guide.
+- README rewritten as an operational cheat sheet: install, presets, values,
+  CRDs, membership mechanisms, directions, annotations, policy names,
+  inspection commands.
+- API reference covers all four CRDs; labels/annotations and configuration
+  references cover the full current surface; every stale pre-redesign name
+  swept.
+
+## [0.3.1] — 2026-05-04
+
+### Fixed
+
+- Drift correction for the baseline policy: a hand-deleted or hand-edited
+  baseline is restored by the `NamespaceReconciler` within one reconcile
+  cycle.
+
+## [0.3.0] — 2026-05-02
+
+### Breaking
+
+- **`operator.ingressIsolation.mode` (Helm) and `--ingress-isolation` (CLI)
+  became required.** The chart no longer shipped a default for `mode`;
+  `helm install`/`upgrade` failed fast if it was empty, and the binary exited
+  non-zero without `--ingress-isolation`. *(This model was replaced wholesale
+  in 0.4.0 by the baseline tiers.)*
+- **`kube-system`, `kube-public`, and `kube-node-lease` moved out of
+  `disabledNamespaces`** into
+  `operator.ingressIsolation.namespaceOverrides.none`: the operator could
+  discover deliberate joiner pods there but never installed a baseline.
+  *(Reverted in 0.4.0 — they are back in `disabledNamespaces` by default.)*
+
+### Renamed
+
+- `operator.excludedNamespaces` → `operator.disabledNamespaces`; CLI
+  `--excluded-namespaces` → `--disabled-namespaces` (mirrors the
+  `kube-vnet/disabled=true` annotation key).
+- `operator.ingressIsolation.force{None,Namespace,Pod}` →
+  `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`.
+
+### Removed
+
+- The deprecated aliases for the renames above, with no compatibility shim:
+  `--excluded-namespaces`, `--default-deny-everywhere`,
+  `operator.excludedNamespaces`, `operator.defaultDenyEverywhere`,
+  `operator.ingressIsolation.force{None,Namespace,Pod}`.
+
+## [0.2.0] — 2026-05-01
+
+### Behavior changes (upgrade-impacting)
+
+- **The operator no longer restricts egress.** The baseline carries
+  `policyTypes: [Ingress]` only; generic egress (DNS, apiserver, internet) is
+  unrestricted by kube-vnet. Per-workload egress restriction is a user-managed
+  `NetworkPolicy` with `policyTypes: [Egress]`. See
+  [ADR 0025](docs/adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+- The implicit "first vnet member triggers the baseline" coupling was
+  removed; baseline existence followed the resolved `ingress-isolation` mode.
+  ([ADR 0023](docs/adr/0023-decoupled-disabled-and-ingress-isolation.md))
+
+### Added
+
+- **Direction modes on join labels** (`both`/`ingress`/`egress`/`none`, with
+  the legacy `"true"`/`"false"` aliases still accepted — dropped in 0.4.0).
+  ([ADR 0021](docs/adr/0021-direction-modes-on-join-labels.md))
+- **Long-form join label accepted in the home namespace** for templated
+  workloads. ([ADR 0022](docs/adr/0022-long-form-join-label-in-home-namespace.md))
+- **`kube-vnet/ingress-isolation` namespace annotation** and the
+  **`--ingress-isolation` flag family** with per-mode override lists.
+  *(Both replaced in 0.4.0 by the baseline tiers.)*
+  ([ADR 0023](docs/adr/0023-decoupled-disabled-and-ingress-isolation.md),
+  [ADR 0024](docs/adr/0024-ingress-isolation-mode-and-overrides.md))
+- **`VirtualNetworkBinding` CRD** (shortnames `vnb`, `vnbs`): attach pods to
+  a vnet via `podSelector` without editing their templates.
+  ([ADR 0026](docs/adr/0026-virtualnetworkbinding-crd.md))
+
+### Changed
+
+- Baseline ownership moved to the `NamespaceReconciler`; the
+  `VirtualNetworkReconciler` owns only per-vnet membership policies.
+
+### Deprecated
+
+- `--default-deny-everywhere` / `operator.defaultDenyEverywhere`, aliased to
+  `--ingress-isolation=pod`. *(Removed in 0.3.0.)*
+
+## [0.1.0] — 2026-04-30
+
+### Added
+
 - Helm chart at `charts/kube-vnet`, published as an OCI artifact to
-  `ghcr.io/lhns/charts/kube-vnet` on every release tag. Install via
-  `helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet --version 0.1.0`.
+  `ghcr.io/lhns/charts/kube-vnet` on every release tag.
 - Keyless container-image and Helm-chart signing via `cosign` (Sigstore /
-  GitHub OIDC). No long-lived keys; verify with the workflow identity.
-- SPDX SBOMs for both the image and the chart, attached as `cosign`
-  attestations and as plain `.spdx.json` release assets.
-- `--version` flag on the operator binary; the binary is stamped at build
-  time with version / commit / build-date via `-ldflags`.
+  GitHub OIDC); SPDX SBOMs for both, attached as attestations and release
+  assets.
+- `--version` flag; the binary is stamped with version / commit / build date.
 - `CHANGELOG.md` (this file).
 
 ### Changed
 
-- **Build: dropped QEMU emulation for arm64.** Added
-  `--platform=$BUILDPLATFORM` to the Dockerfile builder stage so the Go
-  toolchain runs natively on the runner's amd64 even when buildx targets
-  arm64. The `RUN go build` already cross-compiled via GOOS/GOARCH; the
-  toolchain itself was just being emulated for no good reason. Multi-arch
-  releases build noticeably faster.
-- **CI: per-commit dev builds.** `release.yaml` now also runs on every
-  branch push (and `workflow_dispatch`), producing signed
-  `0.0.0-dev.<short-sha>` images and chart tags so users can `helm
-  install --version 0.0.0-dev.abc1234` to test a specific commit
-  without cutting a release tag. Dev builds are single-arch (amd64) and
-  use the GitHub Actions buildx cache; typical wall time is 2–4 min vs
-  ~20 min for a full multi-arch release. Image gets additional
-  `:sha-<short>` and `:<branch>` tags; chart only the immutable SemVer
-  pre-release version. GitHub Release asset upload is gated to
-  release-mode (tag pushes only); dev pushes don't touch any Release.
-- **Vnet `Degraded`/`InvalidJoiners` message format now includes the per-pod
-  reason.** Each per-pod entry in the Degraded message is
-  `<ns>/<pod>:<reason>` (was just `<ns>/<pod>`), so users can see which pod
-  failed for which reason at a glance via `kubectl describe vnet`. The cap at
-  3 entries still applies; the condition's `Reason` field stays
-  `InvalidJoiners`.
-- Baseline ownership moved to the `NamespaceReconciler`. The
-  `VirtualNetworkReconciler` no longer touches the baseline. The two
-  reconcilers now have clear, narrow ownership: per-vnet membership
-  policies vs. per-namespace baseline lifecycle.
-- **Bidi + ingress self-policies merged into one per (namespace,
-  key-form).** Since membership policies became ingress-only (ADR 0025),
-  the previously-separate bidi (`kube-vnet-<vnet>-<ns>`) and ingress-only
-  (`kube-vnet-<vnet>-<ns>-ingress`) self-policies were spec-identical
-  except for `podSelector` In-values. They're now a single policy whose
-  selector matches `[true, both, ingress]`. The `-ingress` policy-name
-  suffix is gone. Existing `-ingress`-suffixed policies are GC'd by
-  `deleteStale` on the next reconcile. `egress`-only members continue to
-  produce no self-policy. See [ADR 0021 Addendum](docs/adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-04--bidi--ingress-self-policies-merged).
-- **Docs canonicalize the join-label value as `"both"`.** Examples
-  across `README.md`, `docs/recipes.md`, `docs/kube-vnet-design.md`, and
-  `config/samples/01-05` now use `kube-vnet/net.<vnet>: "both"`. The
-  legacy `"true"` (and `"false"`) still parse as aliases for `both` and
-  `none` respectively — no manifest changes required for existing users.
-- The release workflow now publishes signed artifacts and SBOMs in addition
-  to the existing multi-arch container image and `release.yaml`.
-
-### Renamed
-
-- **`operator.excludedNamespaces` → `operator.disabledNamespaces`**, and CLI
-  flag **`--excluded-namespaces` → `--disabled-namespaces`**. Mirrors the
-  per-namespace `kube-vnet/disabled=true` annotation key. The default is now
-  `[]` (the three control-plane namespaces moved to
-  `operator.ingressIsolation.namespaceOverrides.none` — see "Behavior
-  changes" above).
-- **`operator.ingressIsolation.forceNone`/`forceNamespace`/`forcePod`** →
-  **`operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}`**.
-  The new keys nest under `ingressIsolation` and read the same way the
-  resolution rule reads ("override to mode `none`", etc.). CLI flag names
-  (`--ingress-isolation-none`, `--ingress-isolation-namespace`,
-  `--ingress-isolation-pod`) are unchanged — only the chart-side keys moved.
-
-### Removed
-
-The deprecated aliases that were briefly accepted for the renames above are
-gone. There is no compatibility shim — installs still using these names must
-migrate before upgrading.
-
-- CLI flag `--excluded-namespaces` (use `--disabled-namespaces`).
-- CLI flag `--default-deny-everywhere` (use `--ingress-isolation=pod`).
-- Helm value `operator.excludedNamespaces` (use `operator.disabledNamespaces`).
-- Helm value `operator.defaultDenyEverywhere` (use `operator.ingressIsolation.mode=pod`).
-- Helm value `operator.ingressIsolation.forceNone` (use `operator.ingressIsolation.namespaceOverrides.none`).
-- Helm value `operator.ingressIsolation.forceNamespace` (use `operator.ingressIsolation.namespaceOverrides.namespace`).
-- Helm value `operator.ingressIsolation.forcePod` (use `operator.ingressIsolation.namespaceOverrides.pod`).
-
-### Superseded ADRs
-
-- ADR 0006 — single per-namespace opt-out. Superseded by ADR 0023
-  (decoupled `disabled` and `ingress-isolation`).
-- ADR 0020 — `--default-deny-everywhere`. Superseded by ADR 0024 (the
-  flag family) and ADR 0025 (the rename + ingress-only scope).
+- The release workflow publishes signed artifacts and SBOMs in addition to
+  the multi-arch container image and `release.yaml`.
 
 ## [0.0.0] — initial publication
 
-The first commit set, before tagging. Captured here as a placeholder; the
-first tagged release will be `v0.1.0` and roll the Unreleased entries above
-into a proper section.
-
-For the substance of what's in the project today (CRD, reconciler, baseline
-GC, drift correction, integration + e2e tests, etc.), see the ADRs under
+The pre-tag commit set: the `VirtualNetwork` CRD, the reconciler, the
+default-deny baseline, drift correction, cross-namespace cleanup,
+integration + e2e tests. For the substance, see the ADRs under
 [`docs/adr/`](docs/adr/README.md).
