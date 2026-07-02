@@ -112,9 +112,12 @@ Home namespace is always included. Foreign pods use the prefixed label form (`ku
 | `kube-vnet/external-allow: "false"` | Service or Namespace | Opt out of all auto-allow families |
 | `kube-vnet/apiserver-reachable: "true"` | Service | Opt IN to the apiserver auto-allow when no webhook/APIService declares it |
 
-### What the operator emits
+### The NetworkPolicies the operator creates
+
+Everything kube-vnet does materializes as `NetworkPolicy` objects with these names — this is what you'll see in `kubectl get networkpolicy`:
 
 ```
+NAME                                       WHAT IT IS
 kube-vnet.base                             deny-all ingress baseline (per managed NS)
 kube-vnet.mem.<homeNS>.<vnet>-<8hex>       membership policy per (vnet, member NS)
 kube-vnet.ext.svc.<service>-<8hex>         auto-allow: LoadBalancer/NodePort Service
@@ -122,7 +125,7 @@ kube-vnet.ext.host.<port>.<proto>-<8hex>   auto-allow: hostPort pod
 kube-vnet.ext.apiserver.<service>-<8hex>   auto-allow: Service the apiserver dials
 ```
 
-Hand-edits to any of these are reverted (drift correction); deleting a vnet removes everything it generated.
+Hand-edits to any of these are reverted (drift correction); deleting a vnet removes every policy it generated. The operator also stamps confirmed memberships onto pods as `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` labels — your `kube-vnet/…` label is the request, the operator-owned `kube-vnet.system/…` stamp is what the policies actually select on ([full label contract](docs/reference/labels-and-annotations.md)).
 
 ### Allowed automatically
 
