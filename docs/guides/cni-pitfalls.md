@@ -4,7 +4,7 @@ If pods that should be isolated can still reach each other, kube-vnet has likely
 
 This page catalogs the misconfigurations and known bugs that cause silent enforcement failures, with how to confirm each.
 
-For the symptom-first index, see [`../troubleshooting.md`](../troubleshooting.md). For policy semantics, see [`../concepts.md`](../concepts.md).
+For the symptom-first index, see [`../troubleshooting.md`](troubleshooting.md). For policy semantics, see [`../concepts.md`](../getting-started/concepts.md).
 
 ## Triage flow
 
@@ -14,9 +14,9 @@ For the symptom-first index, see [`../troubleshooting.md`](../troubleshooting.md
    kubectl get netpol -A -l kube-vnet.system/managed-by=kube-vnet
    ```
 
-   If the expected baseline + membership policies are missing, the issue is the operator (open the [troubleshooting index](../troubleshooting.md)). If they're present, continue.
+   If the expected baseline + membership policies are missing, the issue is the operator (open the [troubleshooting index](troubleshooting.md)). If they're present, continue.
 
-2. **Confirm your CNI claims to enforce NetworkPolicy.** See [`../install.md`](../install.md) for compatible CNIs. Quick check on a node:
+2. **Confirm your CNI claims to enforce NetworkPolicy.** See [`../install.md`](../getting-started/install.md) for compatible CNIs. Quick check on a node:
 
    ```bash
    crictl ps | grep -E 'calico-node|cilium|kube-router'

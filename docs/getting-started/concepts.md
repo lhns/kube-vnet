@@ -2,7 +2,7 @@
 
 This document explains the model. If you've already read the [project README](../README.md) and want the deeper "what" and "why" before touching YAML, this is the right page.
 
-For the "why each design choice was made" rationale, see the [ADRs](adr/README.md).
+For the "why each design choice was made" rationale, see the [ADRs](../adr/README.md).
 
 ---
 
@@ -20,7 +20,7 @@ Most teams reason about connectivity differently: *"the payments service joins t
 
 kube-vnet introduces that mental model on top of stock Kubernetes, without requiring CNI extensions. You declare a `VirtualNetwork`, services join it via labels (or via a `VirtualNetworkBinding`), and the operator emits the underlying `NetworkPolicy` set.
 
-For the longer "why a CRD at all" treatment, see [ADR 0001](adr/0001-virtualnetwork-as-named-network-abstraction.md).
+For the longer "why a CRD at all" treatment, see [ADR 0001](../adr/0001-virtualnetwork-as-named-network-abstraction.md).
 
 ---
 
@@ -32,7 +32,7 @@ The "virtual" qualifier is deliberate: there is no separate network plane, no ov
 
 A pod can be a member of zero, one, or many VirtualNetworks. Membership composes additively at the pod level: a pod on networks A *and* B can reach any pod in A *or* B.
 
-A `VirtualNetwork` is a Kubernetes resource. It lives in a "home" namespace. It can permit pods from other namespaces to join (see [`allowedNamespaces`](#cross-namespace-reach-allowednamespaces) below). It is **not** cluster-scoped; reach is a property of the network, not its identity. (See [ADR 0005](adr/0005-namespaced-crd-with-allowed-namespaces.md) for the rationale.)
+A `VirtualNetwork` is a Kubernetes resource. It lives in a "home" namespace. It can permit pods from other namespaces to join (see [`allowedNamespaces`](#cross-namespace-reach-allowednamespaces) below). It is **not** cluster-scoped; reach is a property of the network, not its identity. (See [ADR 0005](../adr/0005-namespaced-crd-with-allowed-namespaces.md) for the rationale.)
 
 ---
 
@@ -49,13 +49,13 @@ Two label-key forms are recognized:
 
 The dot separator distinguishes the two forms. A single dot after `net.` means "in this pod's namespace"; two dots means "namespace-prefixed reference."
 
-**Long-form in the home namespace.** A pod in the vnet's home namespace can use *either* the bare or the prefixed form (or both). This makes templated workloads — e.g., a Helm chart deployed into multiple namespaces — usable with a single label key. See [ADR 0022](adr/0022-long-form-join-label-in-home-namespace.md).
+**Long-form in the home namespace.** A pod in the vnet's home namespace can use *either* the bare or the prefixed form (or both). This makes templated workloads — e.g., a Helm chart deployed into multiple namespaces — usable with a single label key. See [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).
 
-VirtualNetwork names cannot contain dots. The CRD enforces this at admission via a CEL rule (see [ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md)). The encoding is therefore unambiguous.
+VirtualNetwork names cannot contain dots. The CRD enforces this at admission via a CEL rule (see [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md)). The encoding is therefore unambiguous.
 
-Why one label per network rather than a comma-separated list? See [ADR 0003](adr/0003-one-label-per-virtualnetwork.md) — three concrete reasons (selector simplicity; 63-character label-value limit; matches the "one label per category" Kubernetes convention).
+Why one label per network rather than a comma-separated list? See [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) — three concrete reasons (selector simplicity; 63-character label-value limit; matches the "one label per category" Kubernetes convention).
 
-The full label form for cross-namespace references is documented in [ADR 0004](adr/0004-bare-vs-namespace-prefixed-join-label.md).
+The full label form for cross-namespace references is documented in [ADR 0004](../adr/0004-bare-vs-namespace-prefixed-join-label.md).
 
 ---
 
@@ -70,7 +70,7 @@ The join label *value* declares which directions a pod participates in. Recogniz
 | `egress` | Initiate-only. Send egress to peers; do not accept from them. |
 | `none` | Not a member. Equivalent to label absent. |
 
-The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Use `both`/`ingress`/`egress`/`none` exclusively.
+The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). Use `both`/`ingress`/`egress`/`none` exclusively.
 
 Unknown values (typos like `"bothh"`) are rejected at admission by the chart's `ValidatingAdmissionPolicy`, and on older clusters surface on the vnet's `Degraded` condition with reason `UnknownDirection`, naming the offending pods. The pod is excluded from membership; nothing is silently allowed.
 
@@ -98,7 +98,7 @@ The operator emits **one ingress-only policy per (vnet, namespace) with at least
 
 `VirtualNetworkBinding`-driven members are not special-cased: the resolution controller stamps the same canonical FQ system label on selected pods (per ADR 0033), and they show up in the regular per-`(vnet, namespace)` membership policy. There is no per-binding policy.
 
-The pre-resolution per-direction split (separate `-ingress` / `-egress` suffixed policies) and the bare-vs-prefixed dual emission were consolidated in ADRs [0021](adr/0021-direction-modes-on-join-labels.md) (Addendum), [0022](adr/0022-long-form-join-label-in-home-namespace.md), [0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md), and [0033](adr/0033-canonical-fq-system-labels.md).
+The pre-resolution per-direction split (separate `-ingress` / `-egress` suffixed policies) and the bare-vs-prefixed dual emission were consolidated in ADRs [0021](../adr/0021-direction-modes-on-join-labels.md) (Addendum), [0022](../adr/0022-long-form-join-label-in-home-namespace.md), [0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md), and [0033](../adr/0033-canonical-fq-system-labels.md).
 
 ---
 
@@ -133,7 +133,7 @@ The operator enforces this on both sides:
 - **Discovery side**: the pod loop only considers a pod a member if it carries the appropriate join-label key (or matches a binding's selector). The `permits()` check on `allowedNamespaces` only runs for pods that already qualify.
 - **NetworkPolicy side**: the generated `from` and `to` peer rules use `podSelector: { matchExpressions: [{ key: <join-key>, operator: In, values: [...] }] }`. Even at the policy layer, the only pods granted access are those that match the per-direction selector.
 
-For the full treatment, see [ADR 0005 § Join eligibility, not blanket access](adr/0005-namespaced-crd-with-allowed-namespaces.md).
+For the full treatment, see [ADR 0005 § Join eligibility, not blanket access](../adr/0005-namespaced-crd-with-allowed-namespaces.md).
 
 ### Why no glob patterns in `Names`
 
@@ -172,9 +172,9 @@ Behavior:
 - The selector is **scoped to the binding's own namespace**. There are no cross-namespace bindings.
 - The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
 - A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert. The binding's status is `Ready=False, Reason=NamespaceExcluded`.
-- No per-binding policy is emitted. The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on selected pods, and they are covered by the regular per-`(vnet, namespace)` membership policy (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)).
+- No per-binding policy is emitted. The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on selected pods, and they are covered by the regular per-`(vnet, namespace)` membership policy (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
-Bindings are an escape hatch — the join label is the recommended primary mechanism. See [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
+Bindings are an escape hatch — the join label is the recommended primary mechanism. See [ADR 0026](../adr/0026-virtualnetworkbinding-crd.md).
 
 ---
 
@@ -182,11 +182,11 @@ Bindings are an escape hatch — the join label is the recommended primary mecha
 
 Without baseline isolation, `allowedNamespaces` and the membership rules above would be decorative. Kubernetes' default is allow-all: a pod with no `NetworkPolicy` selecting it can reach any other pod.
 
-Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md), kube-vnet installs a single uniform baseline in every managed namespace: deny-all ingress (`policyTypes: [Ingress]`, no allow rules) selecting every pod. Vnet members get additive allows from their membership policies; pods that aren't members of anything get nothing through.
+Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md), kube-vnet installs a single uniform baseline in every managed namespace: deny-all ingress (`policyTypes: [Ingress]`, no allow rules) selecting every pod. Vnet members get additive allows from their membership policies; pods that aren't members of anything get nothing through.
 
-**Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md).
+**Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](../guides/recipes.md).
 
-The baseline `NetworkPolicy` is named `kube-vnet.base` (per [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)) and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
+The baseline `NetworkPolicy` is named `kube-vnet.base` (per [ADR 0039](../adr/0039-uniform-kind-prefixed-policy-naming.md)) and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -203,7 +203,7 @@ spec:
   # no `ingress:` rules — deny-all
 ```
 
-See [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](adr/0035-removal-of-elide-baseline-for.md). The previous `--elide-baseline-for` flag (which added `NotIn` matchExpressions to skip the baseline for cluster-receiver pods) was removed: it had no observable effect on connectivity because NetworkPolicy union semantics already make the baseline's deny-all redundant for any pod selected by a membership policy.
+See [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md). The previous `--elide-baseline-for` flag (which added `NotIn` matchExpressions to skip the baseline for cluster-receiver pods) was removed: it had no observable effect on connectivity because NetworkPolicy union semantics already make the baseline's deny-all redundant for any pod selected by a membership policy.
 
 ### Operator default vnet memberships
 
@@ -217,7 +217,7 @@ The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches 
 
 The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline, no membership policies, no system vnet, no eligibility as a peer, no honoring bindings. The operator-level flag `--disabled-namespaces` (default: `kube-system`, `kube-public`, `kube-node-lease`, plus the operator's own namespace added implicitly) has the same effect at the cluster level.
 
-See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md) (superseded by ADR 0023 for the baseline-control half, then by ADR 0030 for the shape), [ADR 0007](adr/0007-operator-level-excluded-namespaces.md), and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md) (superseded by ADR 0023 for the baseline-control half, then by ADR 0030 for the shape), [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
 ---
 
@@ -228,7 +228,7 @@ The whole policy set is **two layers stacked**:
 1. **Baseline (deny-all floor)** — one `NetworkPolicy` named `kube-vnet.base` per managed namespace. `policyTypes: [Ingress]`, zero allow rules, `PodSelector: {}` (selects every pod). Egress is never restricted by the baseline.
 2. **Membership policies (additive allows)** — one per `(vnet, namespace)`. Select pods that carry `kube-vnet.system/net.<homeNS>.<vnet>` in `[both, ingress]` and add `from:` rules naming peers across all member-bearing namespaces. They only ever *add* to allowed traffic.
 
-For "always-open" patterns like the cluster system vnet (every pod is on `cluster=both`), there's no third layer needed: the cluster membership policy's `from:` rules name every cluster-vnet sender, which under `cluster=default-both` resolves to ≈ every pod. The baseline's deny-all is overridden by the membership's allows via NetworkPolicy union. (Earlier versions had a `--elide-baseline-for` flag here; removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md) — it had no observable effect.)
+For "always-open" patterns like the cluster system vnet (every pod is on `cluster=both`), there's no third layer needed: the cluster membership policy's `from:` rules name every cluster-vnet sender, which under `cluster=default-both` resolves to ≈ every pod. The baseline's deny-all is overridden by the membership's allows via NetworkPolicy union. (Earlier versions had a `--elide-baseline-for` flag here; removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md) — it had no observable effect.)
 
 ### The composition rule, in one sentence
 
@@ -271,15 +271,15 @@ Cross-namespace ingress always requires the receiving pod to be a vnet member wh
 
 ### Unresolved pods get the deny floor (fail-closed)
 
-A pod that hasn't yet been processed by `ResolutionReconciler` carries no `kube-vnet.system/*` labels. It doesn't match any membership policy's selector, so the baseline selects it (the baseline selects every pod) → deny-all. This is the safety net during the resolution race window. Once resolution stamps the system labels (typically within milliseconds of pod creation), the pod transitions to whatever its memberships dictate. See [`architecture.md`](architecture.md) for how the resolution controller decides what to stamp.
+A pod that hasn't yet been processed by `ResolutionReconciler` carries no `kube-vnet.system/*` labels. It doesn't match any membership policy's selector, so the baseline selects it (the baseline selects every pod) → deny-all. This is the safety net during the resolution race window. Once resolution stamps the system labels (typically within milliseconds of pod creation), the pod transitions to whatever its memberships dictate. See [`architecture.md`](../internals/architecture.md) for how the resolution controller decides what to stamp.
 
 ---
 
 ## The generated NetworkPolicy: per (vnet, namespace)
 
-For each VirtualNetwork with at least one receiver-capable member, the operator generates **one membership `NetworkPolicy` per (vnet, namespace)**. Bindings do not produce additional policies — binding-targeted pods are stamped with the same canonical FQ system label and are covered by the regular membership policy (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)).
+For each VirtualNetwork with at least one receiver-capable member, the operator generates **one membership `NetworkPolicy` per (vnet, namespace)**. Bindings do not produce additional policies — binding-targeted pods are stamped with the same canonical FQ system label and are covered by the regular membership policy (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
-Naming: `kube-vnet.<homeNS>.<vnet>-<8hex>` uniformly. The 8-hex suffix is a SHA-256-based identity hash that disambiguates against name collisions. The truncate-and-hash overflow handler still applies if the rendered name exceeds Kubernetes' 253-character resource-name limit. See [ADR 0011](adr/0011-policy-naming-and-truncation.md) (refined by [ADR 0033](adr/0033-canonical-fq-system-labels.md)) and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+Naming: `kube-vnet.<homeNS>.<vnet>-<8hex>` uniformly. The 8-hex suffix is a SHA-256-based identity hash that disambiguates against name collisions. The truncate-and-hash overflow handler still applies if the rendered name exceeds Kubernetes' 253-character resource-name limit. See [ADR 0011](../adr/0011-policy-naming-and-truncation.md) (refined by [ADR 0033](../adr/0033-canonical-fq-system-labels.md)) and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
 Labels on every operator-managed `NetworkPolicy`:
 
@@ -287,9 +287,9 @@ Labels on every operator-managed `NetworkPolicy`:
 - `kube-vnet.system/network=<homeNS>.<vnet>` — identifies which VirtualNetwork owns the policy. Used for cleanup, including cross-namespace.
 - `kube-vnet.system/role=membership` (membership policies) or `=baseline` (baseline policies).
 
-Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet.system/network` label — see [ADR 0010](adr/0010-cross-namespace-cleanup-via-network-label.md).
+Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet.system/network` label — see [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md).
 
-This is why the operator can't do its job from a single cluster-scoped policy: stock `NetworkPolicy` is namespace-local. Each side needs its own policy. (For the future where this changes, see [ADR 0019](adr/0019-baseline-durability.md) on `AdminNetworkPolicy`.)
+This is why the operator can't do its job from a single cluster-scoped policy: stock `NetworkPolicy` is namespace-local. Each side needs its own policy. (For the future where this changes, see [ADR 0019](../adr/0019-baseline-durability.md) on `AdminNetworkPolicy`.)
 
 ---
 
@@ -301,7 +301,7 @@ The operator watches every `NetworkPolicy` carrying `kube-vnet.system/managed-by
 - A delete event does the same: the reconciler re-creates the missing policy.
 - On re-creation specifically (i.e. the policy was absent immediately before the apply), a `Warning PolicyRestored` Event is emitted on the owning VirtualNetwork so the deletion-and-restore cycle is visible in `kubectl describe vnet`.
 
-Server-side apply is used with `client.ForceOwnership`, so the operator reliably reclaims field ownership on its own resources. See [ADR 0009](adr/0009-server-side-apply-with-field-manager.md) and [ADR 0019](adr/0019-baseline-durability.md).
+Server-side apply is used with `client.ForceOwnership`, so the operator reliably reclaims field ownership on its own resources. See [ADR 0009](../adr/0009-server-side-apply-with-field-manager.md) and [ADR 0019](../adr/0019-baseline-durability.md).
 
 **What drift correction does *not* do:** it can't prevent the deletion in the first place. There is a sub-second-to-a-few-seconds window where the policy is gone and traffic that the policy would have denied is allowed. Drift correction is a best-effort defense against accidental deletion, unaware tooling, and most non-malicious cases. For hard-guarantee namespace-RBAC-resistant deny rules, the proper Kubernetes tool is `AdminNetworkPolicy` — tracked in ADR 0019 as the future direction.
 
@@ -318,14 +318,14 @@ Each `VirtualNetworkBinding` similarly carries a `Ready` condition with reasons 
 
 Both conditions follow the standard `metav1.Condition` shape: `type`, `status`, `reason`, `message`, `lastTransitionTime`. Tools that consume this pattern (`kubectl wait --for=condition=Ready`, dashboards, event aggregators) work out of the box.
 
-Transitions also emit Kubernetes Events. See [ADR 0012](adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](adr/0016-emit-events-on-condition-transitions.md), and the full reason taxonomy in [`reference/api.md`](reference/api.md).
+Transitions also emit Kubernetes Events. See [ADR 0012](../adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](../adr/0016-emit-events-on-condition-transitions.md), and the full reason taxonomy in [`reference/api.md`](../reference/api.md).
 
 ---
 
 ## Where to go from here
 
-- **Try it**: [`install.md`](install.md) → [`recipes.md`](recipes.md).
-- **Look up a field or value**: [`reference/`](reference/).
-- **Run it in production**: [`operations.md`](operations.md), [`security.md`](security.md).
-- **Debug it**: [`troubleshooting.md`](troubleshooting.md).
-- **Read the design rationale**: [`adr/`](adr/README.md).
+- **Try it**: [`install.md`](install.md) → [`recipes.md`](../guides/recipes.md).
+- **Look up a field or value**: [`reference/`](../reference/).
+- **Run it in production**: [`operations.md`](../guides/operations.md), [`security.md`](../guides/security.md).
+- **Debug it**: [`troubleshooting.md`](../guides/troubleshooting.md).
+- **Read the design rationale**: [`adr/`](../adr/README.md).

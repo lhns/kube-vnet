@@ -74,7 +74,7 @@ When a join label is present but membership can't be honored, kube-vnet surfaces
 
 In addition, on Kubernetes ≥ 1.30 the chart installs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]`. On older clusters the same condition still surfaces at reconcile time as `Degraded`/`UnknownDirection` on the vnet.
 
-See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [`../troubleshooting.md`](../troubleshooting.md#pod-events-kube-vnet-emits).
+See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [`../troubleshooting.md`](../guides/troubleshooting.md#pod-events-kube-vnet-emits).
 
 ---
 

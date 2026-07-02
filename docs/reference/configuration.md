@@ -2,7 +2,7 @@
 
 Every operator flag, every Helm value, every environment variable.
 
-For installation, see [`../install.md`](../install.md). For the reasoning behind defaults, see the linked ADRs.
+For installation, see [`../install.md`](../getting-started/install.md). For the reasoning behind defaults, see the linked ADRs.
 
 ---
 
@@ -113,7 +113,7 @@ When `rbac.aggregate=true`, the chart emits eight ClusterRoles:
 | `<release>-clustervirtualnetworkbaselines-editor` | (none — unbound) | CRUD on `clustervirtualnetworkbaselines` (+ `/status`); cluster-admin binds explicitly to delegate |
 | `<release>-clustervirtualnetworkbaselines-viewer` | (none — unbound) | read on `clustervirtualnetworkbaselines`; cluster-admin binds explicitly |
 
-See [`security.md`](../security.md#who-can-write-what) for the trust-model rationale.
+See [`security.md`](../guides/security.md#who-can-write-what) for the trust-model rationale.
 
 ### Pod-level scheduling
 
@@ -135,7 +135,7 @@ See [`security.md`](../security.md#who-can-write-what) for the trust-model ratio
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`../operations.md`](../operations.md#resource-sizing) for sizing guidance. |
+| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`../operations.md`](../guides/operations.md#resource-sizing) for sizing guidance. |
 | `livenessProbe.initialDelaySeconds` | int | `15` | Standard. |
 | `livenessProbe.periodSeconds` | int | `20` | Standard. |
 | `readinessProbe.initialDelaySeconds` | int | `5` | Standard. |
@@ -171,7 +171,7 @@ A few of the defaults aren't obvious; here's why.
 
 ### Why `replicaCount: 1`?
 
-kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. See [`../operations.md`](../operations.md#deployment-topology).
+kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. See [`../operations.md`](../guides/operations.md#deployment-topology).
 
 ### Why `--leader-elect=true` in the chart but `false` in the binary?
 
@@ -185,4 +185,4 @@ The operator's own namespace is implicitly added to `disabledNamespaces` so that
 
 ### Why such small `resources.requests`?
 
-Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`../operations.md` § Resource sizing](../operations.md#resource-sizing) for when to bump.
+Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`../operations.md` § Resource sizing](../guides/operations.md#resource-sizing) for when to bump.

@@ -2,7 +2,7 @@
 
 Short answers to questions that come up before, during, or shortly after install.
 
-For deeper "how it works", see [`concepts.md`](concepts.md). For "how do I do X", see [`recipes.md`](recipes.md).
+For deeper "how it works", see [`concepts.md`](getting-started/concepts.md). For "how do I do X", see [`recipes.md`](guides/recipes.md).
 
 ---
 
@@ -15,8 +15,8 @@ The CRD is `v1alpha1`. Functionally, the operator handles the v1 design's accept
 If you're running it in production, do all of:
 
 - Pin a specific `image.tag` and Helm `--version`.
-- Verify cosign signatures (see [`install.md`](install.md#verifying-signatures)).
-- Watch the alerts in [`operations.md`](operations.md).
+- Verify cosign signatures (see [`install.md`](getting-started/install.md#verifying-signatures)).
+- Watch the alerts in [`operations.md`](guides/operations.md).
 
 ### What CNIs does it work with?
 
@@ -69,15 +69,15 @@ labels:
   kube-vnet/net.monitoring: egress
 ```
 
-See [the bridge-pod recipe](recipes.md#bridge-pod-joining-two-vnets-sidecar--proxy-pattern).
+See [the bridge-pod recipe](guides/recipes.md#bridge-pod-joining-two-vnets-sidecar--proxy-pattern).
 
 ### What are direction modes?
 
-The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). The legacy `"true"`/`"false"`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
+The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). The legacy `"true"`/`"false"`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](getting-started/concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
 
 ### Can I attach pods to a vnet without modifying their template?
 
-Yes — use a `VirtualNetworkBinding` (short names `vnb`, `vnbs`). It selects pods *in its own namespace* via a `podSelector` and attaches them to a target vnet. Useful for third-party Helm charts or pods owned by another operator. Bindings live next to the pods they select; there's no cross-namespace binding. See [the binding recipe](recipes.md#enrolling-third-party-pods-via-virtualnetworkbinding) and [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
+Yes — use a `VirtualNetworkBinding` (short names `vnb`, `vnbs`). It selects pods *in its own namespace* via a `podSelector` and attaches them to a target vnet. Useful for third-party Helm charts or pods owned by another operator. Bindings live next to the pods they select; there's no cross-namespace binding. See [the binding recipe](guides/recipes.md#enrolling-third-party-pods-via-virtualnetworkbinding) and [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
 
 ### Why one label per vnet, not a comma-separated list?
 
@@ -91,7 +91,7 @@ Three reasons (full discussion in [ADR 0003](adr/0003-one-label-per-virtualnetwo
 
 **No.** `allowedNamespaces` controls which namespaces' pods are allowed to **join** the network. A pod in an allowed namespace still has to add the join label to become a member. Pods in those namespaces that don't carry the label get nothing.
 
-This is the most common misconception about the API. See [`concepts.md` § Join eligibility, not blanket access](concepts.md#allowednamespaces-is-join-eligibility-not-blanket-access).
+This is the most common misconception about the API. See [`concepts.md` § Join eligibility, not blanket access](getting-started/concepts.md#allowednamespaces-is-join-eligibility-not-blanket-access).
 
 ### Why is the CRD group `kube-vnet.lhns.de` instead of just `kube-vnet`?
 
@@ -109,11 +109,11 @@ No. The CRD's CEL rule (introduced in Kubernetes 1.25) enforces name validation 
 
 Existing `NetworkPolicy` resources stay in place. The apiserver continues serving them; the CNI continues enforcing them. Your data plane is unaffected.
 
-What pauses: change propagation. New vnets aren't reconciled, label changes don't propagate, drift correction doesn't fire. Everything resumes when the operator comes back. See [`operations.md` § When the operator is down](operations.md#when-the-operator-is-down).
+What pauses: change propagation. New vnets aren't reconciled, label changes don't propagate, drift correction doesn't fire. Everything resumes when the operator comes back. See [`operations.md` § When the operator is down](guides/operations.md#when-the-operator-is-down).
 
 ### How do I run kube-vnet in HA?
 
-Set `replicaCount: 2` in the Helm values. Add anti-affinity so the replicas land on different nodes. Leader election is already on by default. See [`operations.md` § HA: two replicas across nodes](operations.md#ha-two-replicas-across-nodes).
+Set `replicaCount: 2` in the Helm values. Add anti-affinity so the replicas land on different nodes. Leader election is already on by default. See [`operations.md` § HA: two replicas across nodes](guides/operations.md#ha-two-replicas-across-nodes).
 
 ### Does it work on EKS / GKE / AKS?
 
@@ -127,7 +127,7 @@ If you can `kubectl apply` a `NetworkPolicy` and have it actually enforce, kube-
 
 ### Does kube-vnet need any special privileges I should be aware of?
 
-It needs cluster-wide read on Pods and Namespaces, cluster-wide CRUD on `NetworkPolicy`, and CRUD on its own CRD's status subresource. Full inventory in [`security.md`](security.md#rbac-inventory).
+It needs cluster-wide read on Pods and Namespaces, cluster-wide CRUD on `NetworkPolicy`, and CRUD on its own CRD's status subresource. Full inventory in [`security.md`](guides/security.md#rbac-inventory).
 
 ### Can I install one operator per namespace?
 
@@ -135,11 +135,11 @@ Not really. The operator is designed to act cluster-wide because cross-namespace
 
 ### Will the operator interfere with my existing NetworkPolicies?
 
-No. It only owns objects labeled `kube-vnet.system/managed-by=kube-vnet`. Your policies are left alone. NetworkPolicies are additive in Kubernetes — your allows compose with the operator's. See [the coexistence recipe](recipes.md#coexisting-with-user-managed-networkpolicy).
+No. It only owns objects labeled `kube-vnet.system/managed-by=kube-vnet`. Your policies are left alone. NetworkPolicies are additive in Kubernetes — your allows compose with the operator's. See [the coexistence recipe](guides/recipes.md#coexisting-with-user-managed-networkpolicy).
 
 ### What about egress to the public internet?
 
-kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](guides/security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
 ### Why did egress just start working after the upgrade?
 
@@ -165,7 +165,7 @@ At no point are two reconcilers writing simultaneously. SSA with the stable `Fie
 
 **Naming or labeling changes between versions**: harmless. NetworkPolicy semantics are union-of-allows — if the new operator emits a policy with a different name covering the same pods, the *combined* effect is the union of both policies' allows. The next reconcile cycle's owner-ref-based self-heal sweeps the old object (see [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)). No connectivity break at any point.
 
-See [`operations.md` § "I'm rolling out a new operator version"](operations.md#im-rolling-out-a-new-operator-version) for the playbook side.
+See [`operations.md` § "I'm rolling out a new operator version"](guides/operations.md#im-rolling-out-a-new-operator-version) for the playbook side.
 
 ### I tightened isolation but existing cross-namespace connections still work. Why?
 
@@ -187,7 +187,7 @@ kubectl rollout restart deploy/<source-workload> -n <source-ns>
 kubectl rollout restart daemonset/<source-daemon> -n <source-ns>
 ```
 
-Once every pod from the source side is replaced, its connections to the targets are gone — new connections attempt to open and the policy denies them. Verification: see [troubleshooting.md § "I expected NS isolation but traffic between NS A and NS B still flows"](troubleshooting.md#i-expected-ns-isolation-but-traffic-between-ns-a-and-ns-b-still-flows) for the full diagnostic playbook.
+Once every pod from the source side is replaced, its connections to the targets are gone — new connections attempt to open and the policy denies them. Verification: see [troubleshooting.md § "I expected NS isolation but traffic between NS A and NS B still flows"](guides/troubleshooting.md#i-expected-ns-isolation-but-traffic-between-ns-a-and-ns-b-still-flows) for the full diagnostic playbook.
 
 ---
 
@@ -201,15 +201,15 @@ For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` (cluste
 
 ### How do I verify the image / chart I downloaded is genuine?
 
-Cosign keyless. The signing identity is the release workflow itself. See [`install.md` § Verifying signatures](install.md#verifying-signatures).
+Cosign keyless. The signing identity is the release workflow itself. See [`install.md` § Verifying signatures](getting-started/install.md#verifying-signatures).
 
 ### Is there an SBOM?
 
-Yes. SPDX-JSON, attached as a Cosign attestation and as a plain release asset. See [`install.md` § Verifying SBOMs](install.md#verifying-sboms).
+Yes. SPDX-JSON, attached as a Cosign attestation and as a plain release asset. See [`install.md` § Verifying SBOMs](getting-started/install.md#verifying-sboms).
 
 ### How do you handle CVEs in dependencies?
 
-Trivy runs on every PR (filesystem + image scans, CRITICAL/HIGH gates the build). Dependabot opens weekly bump PRs for Go modules, GitHub Actions, and the Dockerfile base image. See [`security.md`](security.md).
+Trivy runs on every PR (filesystem + image scans, CRITICAL/HIGH gates the build). Dependabot opens weekly bump PRs for Go modules, GitHub Actions, and the Dockerfile base image. See [`security.md`](guides/security.md).
 
 ---
 
@@ -217,19 +217,19 @@ Trivy runs on every PR (filesystem + image scans, CRITICAL/HIGH gates the build)
 
 ### My pod has the join label but isn't a member — what gives?
 
-Most common cause: wrong label form (bare vs prefixed), or the pod's namespace is excluded. See [`troubleshooting.md`](troubleshooting.md#my-pod-has-the-join-label-but-isnt-a-member).
+Most common cause: wrong label form (bare vs prefixed), or the pod's namespace is excluded. See [`troubleshooting.md`](guides/troubleshooting.md#my-pod-has-the-join-label-but-isnt-a-member).
 
 ### Pods I expect to be isolated can talk to each other — what gives?
 
-Most common cause: your CNI doesn't enforce NetworkPolicy. See [`troubleshooting.md`](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other).
+Most common cause: your CNI doesn't enforce NetworkPolicy. See [`troubleshooting.md`](guides/troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other).
 
 ### Why am I seeing "object has been modified" errors in the logs?
 
-Benign. Optimistic-concurrency retries; the controller converges. See [`troubleshooting.md`](troubleshooting.md#operator-logs-are-noisy-with-conflict--object-has-been-modified-errors).
+Benign. Optimistic-concurrency retries; the controller converges. See [`troubleshooting.md`](guides/troubleshooting.md#operator-logs-are-noisy-with-conflict--object-has-been-modified-errors).
 
 ### Why am I seeing "PolicyRestored" warnings?
 
-Someone (or something) deleted an operator-managed policy and the operator restored it. Investigate the source. See [`troubleshooting.md`](troubleshooting.md#i-see-policyrestored-warning-events--is-something-wrong).
+Someone (or something) deleted an operator-managed policy and the operator restored it. Investigate the source. See [`troubleshooting.md`](guides/troubleshooting.md#i-see-policyrestored-warning-events--is-something-wrong).
 
 ### cert-manager (or kyverno / gatekeeper / metrics-server / istio sidecar injector) fails with `context deadline exceeded` — what gives?
 
@@ -251,7 +251,7 @@ If you don't see it, the most likely causes are:
 - The webhook config uses `clientConfig.url` (an out-of-cluster endpoint) — ADR 0041 doesn't emit for those.
 - The auto-allow CIDR is too narrow for your cluster. The default is `0.0.0.0/0`; if you've set `operator.apiserverSourceCIDR` to a narrower range and your apiserver's source IP isn't in it, the policy is too tight.
 
-See [troubleshooting.md → "Admission webhook fails with context deadline exceeded"](troubleshooting.md#admission-webhook-fails-with-context-deadline-exceeded) for the full diagnostic flow.
+See [troubleshooting.md → "Admission webhook fails with context deadline exceeded"](guides/troubleshooting.md#admission-webhook-fails-with-context-deadline-exceeded) for the full diagnostic flow.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > Snapshot of the operator's Go source layout — file-by-file responsibilities and the runtime flow between them.
 >
-> **As of commit** [`12d9f63`](../../../commit/12d9f63) — *remove --elide-baseline-for: baseline elide had no observable effect (ADR 0035)*.
+> **As of commit** [`12d9f63`](../../../../commit/12d9f63) — *remove --elide-baseline-for: baseline elide had no observable effect (ADR 0035)*.
 >
 > This document is descriptive, not authoritative. If it disagrees with the code, the code wins; update this doc in the same PR.
 

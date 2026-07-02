@@ -1,6 +1,6 @@
 # API reference: VirtualNetwork and VirtualNetworkBinding
 
-Full reference for the `VirtualNetwork` and `VirtualNetworkBinding` CRDs. For the conceptual model see [`../concepts.md`](../concepts.md); this document is for look-up.
+Full reference for the `VirtualNetwork` and `VirtualNetworkBinding` CRDs. For the conceptual model see [`../concepts.md`](../getting-started/concepts.md); this document is for look-up.
 
 ---
 
@@ -236,7 +236,7 @@ There is currently no admission webhook. The CEL rule covers the only known inva
 | Spec edit | Reconciler enqueues; new desired state computed; SSA reconciles; stale policies (e.g. for namespaces no longer in `allowedNamespaces`) deleted. |
 | Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all (including in foreign namespaces). Baseline GC'd in each touched namespace. |
 
-For the full reconciliation algorithm see [`../architecture.md`](../architecture.md).
+For the full reconciliation algorithm see [`../architecture.md`](../internals/architecture.md).
 
 ---
 

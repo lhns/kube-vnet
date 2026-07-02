@@ -2,7 +2,7 @@
 
 Every Prometheus metric the operator exposes, every Kubernetes Event reason it emits, and sample queries for each.
 
-For where to scrape and how to alert, see [`../operations.md`](../operations.md#observability).
+For where to scrape and how to alert, see [`../operations.md`](../guides/operations.md#observability).
 
 ---
 
@@ -168,7 +168,7 @@ The operator emits Events on every VirtualNetwork it reconciles. Events have a d
 | `Degraded` | Warning | `Degraded` condition transitions False → True. |
 | `Recovered` | Normal | `Degraded` condition transitions True → False. |
 | `ApplyFailed` | Warning | A `NetworkPolicy` apply call returned an error. Fires immediately at the failure site, regardless of subsequent condition state. The event message includes the policy ref and the apiserver error. |
-| `PolicyRestored` | Warning | The operator just re-created a `NetworkPolicy` that was absent immediately before its apply call. Indicates an out-of-band deletion was detected and reverted. The message includes the policy ref. See [ADR 0019](../adr/0019-baseline-durability.md) and [`../security.md`](../security.md). |
+| `PolicyRestored` | Warning | The operator just re-created a `NetworkPolicy` that was absent immediately before its apply call. Indicates an out-of-band deletion was detected and reverted. The message includes the policy ref. See [ADR 0019](../adr/0019-baseline-durability.md) and [`../security.md`](../guides/security.md). |
 
 The condition reasons that drive these events include `PoliciesGenerated`, `NoMembers`, `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NamespaceNotAllowed`, `NamespaceExcluded`, `ApplyFailed`, `NoIssues`. The Go-level constants are in `internal/controller/virtualnetwork_controller.go` (`Reason*`).
 

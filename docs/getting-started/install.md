@@ -10,7 +10,7 @@ Three install paths, in order of preference: **Helm** (recommended), **`kubectl 
 
 `>= 1.25`. The CRD uses an `x-kubernetes-validations` (CEL) rule for name validation; CEL became Generally Available in 1.25.
 
-On Kubernetes ≥ 1.30 the chart additionally installs a `ValidatingAdmissionPolicy` (and binding) that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]` — typos like `kube-vnet/net.X=bothh` are caught at `kubectl apply`. On clusters older than 1.30 the chart skips the VAP; the operator's runtime `Degraded`/`UnknownDirection` reason still catches the same typos at reconcile time, so isolation correctness is unchanged on older clusters — they just lose the admission-time fast feedback. See [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+On Kubernetes ≥ 1.30 the chart additionally installs a `ValidatingAdmissionPolicy` (and binding) that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none, true, false, ""]` — typos like `kube-vnet/net.X=bothh` are caught at `kubectl apply`. On clusters older than 1.30 the chart skips the VAP; the operator's runtime `Degraded`/`UnknownDirection` reason still catches the same typos at reconcile time, so isolation correctness is unchanged on older clusters — they just lose the admission-time fast feedback. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
 
 ### CNI that enforces NetworkPolicy
 
@@ -30,11 +30,11 @@ Hosted Kubernetes:
 - **EKS** — Calico, Cilium, or VPC CNI with `enableNetworkPolicy=true`.
 - **AKS** — Azure CNI Powered by Cilium, Calico, or Azure NPM.
 
-If you're not sure whether your cluster enforces NetworkPolicy, the [e2e tests](development.md) in this repo will tell you within minutes.
+If you're not sure whether your cluster enforces NetworkPolicy, the [e2e tests](../internals/development.md) in this repo will tell you within minutes.
 
 ### Permissions
 
-You need cluster-admin (or equivalent) for the install — the operator needs cluster-wide read on Pods and Namespaces and cluster-wide CRUD on `networkpolicies.networking.k8s.io`. See [`security.md`](security.md) for the full RBAC inventory and rationale.
+You need cluster-admin (or equivalent) for the install — the operator needs cluster-wide read on Pods and Namespaces and cluster-wide CRUD on `networkpolicies.networking.k8s.io`. See [`security.md`](../guides/security.md) for the full RBAC inventory and rationale.
 
 ---
 
@@ -50,7 +50,7 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
 
-Per [ADR 0031](adr/0031-baseline-tier-resolution.md), `operator.clusterBaseline.ingressIsolationLevel` is **required** at install time — pick `pod`, `namespace`, or `cluster` (see below). The chart fails fast if neither it nor `operator.clusterBaseline.memberships` is set when `create=true`. Every managed namespace gets a uniform deny-all baseline; vnet membership (driven by the seeded `ClusterVirtualNetworkBaseline`, plus per-NS `VirtualNetworkBaseline`s and per-pod bindings/labels) is the only thing that opens ingress.
+Per [ADR 0031](../adr/0031-baseline-tier-resolution.md), `operator.clusterBaseline.ingressIsolationLevel` is **required** at install time — pick `pod`, `namespace`, or `cluster` (see below). The chart fails fast if neither it nor `operator.clusterBaseline.memberships` is set when `create=true`. Every managed namespace gets a uniform deny-all baseline; vnet membership (driven by the seeded `ClusterVirtualNetworkBaseline`, plus per-NS `VirtualNetworkBaseline`s and per-pod bindings/labels) is the only thing that opens ingress.
 
 The chart's default `operator.disabledNamespaces` lists `[kube-system, kube-public, kube-node-lease]`, so the operator stays out of those control-plane namespaces entirely (no baseline, no system vnets, no resolution stamping).
 
@@ -93,7 +93,7 @@ helm install ... --set metricsService.enabled=true
 helm install ... --set podMonitor.enabled=true
 ```
 
-The full value reference is in [`reference/configuration.md`](reference/configuration.md). The chart's own README is [`charts/kube-vnet/README.md`](../charts/kube-vnet/README.md).
+The full value reference is in [`reference/configuration.md`](../reference/configuration.md). The chart's own README is [`charts/kube-vnet/README.md`](../../charts/kube-vnet/README.md).
 
 ### Upgrading
 
@@ -284,4 +284,4 @@ kubectl get vnet -A
 kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 ```
 
-If the operator isn't producing policies, see [`troubleshooting.md`](troubleshooting.md).
+If the operator isn't producing policies, see [`troubleshooting.md`](../guides/troubleshooting.md).

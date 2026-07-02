@@ -1,10 +1,10 @@
 # Recipes
 
-Worked end-to-end examples beyond the minimal samples in [`config/samples/`](../config/samples/). Each recipe is self-contained — `kubectl apply -f -` the inline YAML and you'll have a working setup.
+Worked end-to-end examples beyond the minimal samples in [`config/samples/`](../../config/samples/). Each recipe is self-contained — `kubectl apply -f -` the inline YAML and you'll have a working setup.
 
-For the conceptual model behind these patterns, see [`concepts.md`](concepts.md).
+For the conceptual model behind these patterns, see [`concepts.md`](../getting-started/concepts.md).
 
-> **Each recipe relies on the deny-all baseline + opt-in vnet membership model from [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md):** every managed namespace gets a deny-all baseline; pods that join a vnet (via the `kube-vnet/net.<vnet>` label) get additive ingress allows from vnet peers; everything else is denied. See the [deny-all baseline concept](concepts.md#the-deny-all-baseline) for details.
+> **Each recipe relies on the deny-all baseline + opt-in vnet membership model from [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md):** every managed namespace gets a deny-all baseline; pods that join a vnet (via the `kube-vnet/net.<vnet>` label) get additive ingress allows from vnet peers; everything else is denied. See the [deny-all baseline concept](../getting-started/concepts.md#the-deny-all-baseline) for details.
 
 ---
 
@@ -337,7 +337,7 @@ Effect (the X→Y algebra: traffic flows iff X is `both`/`egress` AND Y is `both
 
 Generated policies in `platform`: `kube-vnet-telemetry-platform` (bidi, selecting `both`), `kube-vnet-telemetry-platform-ingress` (selecting `ingress`), `kube-vnet-telemetry-platform-egress` (selecting `egress`). Direction classes with no members produce no policy.
 
-See [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
+See [ADR 0021](../adr/0021-direction-modes-on-join-labels.md).
 
 ---
 
@@ -383,7 +383,7 @@ Effect:
 
 - The binding selects pods in `webapp` whose labels match `app: thirdparty-billing-agent`. Those pods are members of `platform/payments` for the binding's `direction` (default `both`).
 - The binding's status reports `Ready=True, PodsAttached` (or `NoPodsMatch`/`VirtualNetworkNotFound`/`NamespaceNotAllowed`/etc; see [`troubleshooting.md`](troubleshooting.md#my-virtualnetworkbinding-doesnt-attach-any-pods)).
-- The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.platform.payments=both` on the selected pods. Those pods are then covered by the regular per-`(vnet, namespace)` membership policy in `webapp` named `kube-vnet.platform.payments-<8hex>` — no separate per-binding policy is emitted (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)).
+- The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.platform.payments=both` on the selected pods. Those pods are then covered by the regular per-`(vnet, namespace)` membership policy in `webapp` named `kube-vnet.platform.payments-<8hex>` — no separate per-binding policy is emitted (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
 ```bash
 # Inspect bindings cluster-wide.
@@ -402,7 +402,7 @@ Constraints worth knowing:
 - The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
 - Bindings in `kube-vnet/disabled` (or operator-excluded) namespaces are inert.
 
-Bindings are an escape hatch — the join label is the recommended primary mechanism. Use them when you genuinely can't modify the pod template. See [ADR 0026](adr/0026-virtualnetworkbinding-crd.md).
+Bindings are an escape hatch — the join label is the recommended primary mechanism. Use them when you genuinely can't modify the pod template. See [ADR 0026](../adr/0026-virtualnetworkbinding-crd.md).
 
 ---
 
@@ -605,4 +605,4 @@ spec:
 
 Once any policy selects a pod for `policyTypes: [Egress]`, that pod's egress goes default-deny — only allow rules across all selecting policies are permitted. The membership policy contributes its peer allow; your user policy contributes DNS and Stripe; everything else is blocked.
 
-For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](security.md) and [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.
+For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](security.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.

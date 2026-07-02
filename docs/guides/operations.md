@@ -2,7 +2,7 @@
 
 Running kube-vnet in production. Topology, sizing, monitoring, alerts.
 
-For the underlying mechanism (reconciler internals, baseline lifecycle), see [`architecture.md`](architecture.md). For the full metric/event surface, see [`reference/metrics-and-events.md`](reference/metrics-and-events.md).
+For the underlying mechanism (reconciler internals, baseline lifecycle), see [`architecture.md`](../internals/architecture.md). For the full metric/event surface, see [`reference/metrics-and-events.md`](../reference/metrics-and-events.md).
 
 ---
 
@@ -105,7 +105,7 @@ The `holderIdentity` field names the pod that currently holds the lock; `renewTi
 
 ### Metrics
 
-The operator exposes `:8080/metrics` (Prometheus text format). Six domain-specific metrics on top of the controller-runtime defaults — see [`reference/metrics-and-events.md`](reference/metrics-and-events.md) for every metric name, type, and label.
+The operator exposes `:8080/metrics` (Prometheus text format). Six domain-specific metrics on top of the controller-runtime defaults — see [`reference/metrics-and-events.md`](../reference/metrics-and-events.md) for every metric name, type, and label.
 
 By default the metrics endpoint is **not exposed via a Service**. Enable it (or use a `PodMonitor` if you have the Prometheus operator):
 
@@ -221,7 +221,7 @@ kubectl describe vnet -n <ns> <name>
 kubectl get events -n <ns> --field-selector involvedObject.kind=VirtualNetwork
 ```
 
-Full event list in [`reference/metrics-and-events.md`](reference/metrics-and-events.md).
+Full event list in [`reference/metrics-and-events.md`](../reference/metrics-and-events.md).
 
 Events have a default TTL of 1 hour (apiserver-managed) — they're a notification mechanism, not a durable audit log. Conditions on the VirtualNetwork status are the source of truth for current state.
 
@@ -314,15 +314,15 @@ helm upgrade kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and leader election, you'll see a brief gap (~10–20s) where neither replica is leader. Existing policies stay enforced throughout. With two replicas, failover is faster.
 
-CRD changes are not applied by `helm upgrade` — see [`install.md`](install.md) for how to apply CRD updates explicitly.
+CRD changes are not applied by `helm upgrade` — see [`install.md`](../getting-started/install.md) for how to apply CRD updates explicitly.
 
-Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; name renames are handled by owner-ref-based self-healing on the next reconcile; connectivity stays intact throughout.
+Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](../faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; name renames are handled by owner-ref-based self-healing on the next reconcile; connectivity stays intact throughout.
 
-After upgrade, if the new version tightens any baseline / membership shape (e.g. a switch from `cluster` to `namespace` isolation mode), existing long-lived connections from before the upgrade can survive due to Linux conntrack — see [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the explanation and [troubleshooting.md § "Pods I expect to be isolated can talk to each other"](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other) (step 6) for the recovery procedure.
+After upgrade, if the new version tightens any baseline / membership shape (e.g. a switch from `cluster` to `namespace` isolation mode), existing long-lived connections from before the upgrade can survive due to Linux conntrack — see [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the explanation and [troubleshooting.md § "Pods I expect to be isolated can talk to each other"](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other) (step 6) for the recovery procedure.
 
 ### "I want to roll out cluster-wide isolation"
 
-Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) the deny-all baseline applies to every managed namespace by default — if you've already installed kube-vnet, isolation is in place. Migration risk is real on existing clusters: workloads that previously relied on default-allow ingress will break the moment kube-vnet starts.
+Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) the deny-all baseline applies to every managed namespace by default — if you've already installed kube-vnet, isolation is in place. Migration risk is real on existing clusters: workloads that previously relied on default-allow ingress will break the moment kube-vnet starts.
 
 Recommended rollout:
 
@@ -340,9 +340,9 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 
 ### "I'm upgrading from a release with the old config-key names"
 
-[ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) removed the `--ingress-isolation*` flag family and the `kube-vnet/ingress-isolation` annotation. Read these before `helm upgrade`.
+[ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) removed the `--ingress-isolation*` flag family and the `kube-vnet/ingress-isolation` annotation. Read these before `helm upgrade`.
 
-**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all selecting every pod; there's no per-namespace mode and no elide-list (the `--elide-baseline-for` flag was removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md)). To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
+**`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all selecting every pod; there's no per-namespace mode and no elide-list (the `--elide-baseline-for` flag was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md)). To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](../adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
 
 **System namespaces are disabled by default again.** `operator.disabledNamespaces` defaults to `[kube-system, kube-public, kube-node-lease]`; the operator stays out of those entirely.
 
@@ -352,19 +352,19 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 |---|---|
 | `operator.excludedNamespaces` | `operator.disabledNamespaces` |
 | CLI `--excluded-namespaces` | CLI `--disabled-namespaces` |
-| `operator.ingressIsolation.mode` | `operator.clusterBaseline.ingressIsolationLevel` (different semantic; see [`concepts.md`](concepts.md) and [ADR 0031](adr/0031-baseline-tier-resolution.md)) |
+| `operator.ingressIsolation.mode` | `operator.clusterBaseline.ingressIsolationLevel` (different semantic; see [`concepts.md`](../getting-started/concepts.md) and [ADR 0031](../adr/0031-baseline-tier-resolution.md)) |
 | `operator.ingressIsolation.namespaceOverrides.{none,namespace,pod}` | (removed; use the per-namespace `kube-vnet/disabled` annotation, a per-NS `VirtualNetworkBaseline`, or per-pod vnet membership) |
 | `operator.ingressIsolation.force{None,Namespace,Pod}` | (removed; same migration as above) |
 | CLI `--ingress-isolation` and `--ingress-isolation-{none,namespace,pod}` | (removed) |
-| CLI `--default-memberships` / `operator.defaultMemberships` | (removed in the [ADR 0031](adr/0031-baseline-tier-resolution.md) cleanup; use `operator.clusterBaseline.{ingressIsolationLevel, memberships}` instead) |
-| `ClusterVirtualNetworkBinding` CRD | (removed in the [ADR 0031](adr/0031-baseline-tier-resolution.md) cleanup; broad-selector usage migrates to `ClusterVirtualNetworkBaseline`, narrow-selector to `VirtualNetworkBinding` in the target NS) |
+| CLI `--default-memberships` / `operator.defaultMemberships` | (removed in the [ADR 0031](../adr/0031-baseline-tier-resolution.md) cleanup; use `operator.clusterBaseline.{ingressIsolationLevel, memberships}` instead) |
+| `ClusterVirtualNetworkBinding` CRD | (removed in the [ADR 0031](../adr/0031-baseline-tier-resolution.md) cleanup; broad-selector usage migrates to `ClusterVirtualNetworkBaseline`, narrow-selector to `VirtualNetworkBinding` in the target NS) |
 | `VirtualNetworkBinding` with empty `podSelector` | (rejected at admission; namespace-wide defaults move to `VirtualNetworkBaseline`) |
 | CLI `--default-deny-everywhere` and `operator.defaultDenyEverywhere` | (removed) |
 | `kube-vnet/ingress-isolation` namespace annotation | (removed) |
 
 Two related behavior reminders:
 
-- **Egress is not restricted** by the baseline ([ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
+- **Egress is not restricted** by the baseline ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
 - **Vnet membership is the only ingress-allow mechanism**, including for "open up a namespace" cases. To allow same-NS ingress without joining a user vnet, set `operator.clusterBaseline.ingressIsolationLevel=namespace` (chart) or write an explicit `ClusterVirtualNetworkBaseline` with `namespace=default-both`.
 
 ### "Pods I expect to be isolated can talk to each other"

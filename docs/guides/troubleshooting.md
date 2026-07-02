@@ -2,7 +2,7 @@
 
 Symptom-first. Look up what you're seeing in the table of contents, follow the diagnostic steps.
 
-For the full list of status-condition reasons and what each one means, see [`reference/api.md`](reference/api.md). For metrics and events, [`reference/metrics-and-events.md`](reference/metrics-and-events.md).
+For the full list of status-condition reasons and what each one means, see [`reference/api.md`](../reference/api.md). For metrics and events, [`reference/metrics-and-events.md`](../reference/metrics-and-events.md).
 
 ---
 
@@ -14,7 +14,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [Admission webhook fails with `context deadline exceeded`](#admission-webhook-fails-with-context-deadline-exceeded)
-- [CNI pitfalls that silently break enforcement (separate page)](troubleshooting/cni-pitfalls.md)
+- [CNI pitfalls that silently break enforcement (separate page)](cni-pitfalls.md)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
@@ -34,7 +34,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Pod events kube-vnet emits
 
-Three Warning events fire on the Pod itself when a `kube-vnet/net.*` label is present but the membership can't be honored. They surface in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. See [ADR 0027](adr/0027-pod-scoped-join-label-events.md) for the design.
+Three Warning events fire on the Pod itself when a `kube-vnet/net.*` label is present but the membership can't be honored. They surface in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) for the design.
 
 > Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get these events. Disabled is an explicit opt-out — the operator stays silent there by design.
 
@@ -124,7 +124,7 @@ The pods "my-pod" is invalid: ValidatingAdmissionPolicy "kube-vnet-direction-val
 denied request: kube-vnet/net.* label value must be one of [both ingress egress none true false ""]
 ```
 
-**Cause.** Kubernetes ≥ 1.30 with the kube-vnet chart installed runs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has an unrecognized value (typo like `bothh`, or an arbitrary string). See [ADR 0027](adr/0027-pod-scoped-join-label-events.md).
+**Cause.** Kubernetes ≥ 1.30 with the kube-vnet chart installed runs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has an unrecognized value (typo like `bothh`, or an arbitrary string). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
 
 **Fix.** Set the value to one of the recognized direction strings:
 
@@ -134,7 +134,7 @@ labels:
   # or `ingress`, `egress`, `none`
 ```
 
-The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
+The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
 
 ---
 
@@ -142,7 +142,7 @@ The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped p
 
 **Symptom.** A pod manifest that used `kube-vnet/net.<vnet>: "true"` (or `""`, or `"false"`) is now rejected at admission, or excluded from membership on older clusters.
 
-**Cause.** Breaking change. The legacy aliases `true`, `false`, and the empty-string value were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). The valid direction values are now exactly `both`, `ingress`, `egress`, `none`.
+**Cause.** Breaking change. The legacy aliases `true`, `false`, and the empty-string value were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). The valid direction values are now exactly `both`, `ingress`, `egress`, `none`.
 
 **Fix.** Set an explicit value:
 
@@ -164,7 +164,7 @@ Most common case. Walk through these in order:
 
    The pod's namespace decides which forms are valid, not the vnet's.
 
-   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. The legacy `true`/`false`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
+   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. The legacy `true`/`false`/empty-string aliases were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
 
 2. **Is the pod's namespace operator-excluded?**
 
@@ -210,14 +210,14 @@ Most common case. Walk through these in order:
 
 ## I labeled my pod and the vnet is Ready, but external pods can still reach it
 
-The deny-all baseline selects every pod; there's no per-pod exemption (the `--elide-baseline-for` flag was removed in [ADR 0035](adr/0035-removal-of-elide-baseline-for.md)). What makes a pod "open" is membership in the cluster system vnet: if your pod is on `cluster=both`/`ingress` (e.g. because `operator.clusterBaseline.ingressIsolationLevel=cluster` seeds `cluster=default-both`), the cluster-vnet membership policy adds allow-from-cluster-peer rules that override the baseline's deny-all via NetworkPolicy union semantics. By convention every pod is on cluster, so cluster peers ≈ everyone.
+The deny-all baseline selects every pod; there's no per-pod exemption (the `--elide-baseline-for` flag was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md)). What makes a pod "open" is membership in the cluster system vnet: if your pod is on `cluster=both`/`ingress` (e.g. because `operator.clusterBaseline.ingressIsolationLevel=cluster` seeds `cluster=default-both`), the cluster-vnet membership policy adds allow-from-cluster-peer rules that override the baseline's deny-all via NetworkPolicy union semantics. By convention every pod is on cluster, so cluster peers ≈ everyone.
 
 To enforce stricter ingress on a specific pod:
 
 - Don't make the pod a `cluster=both` member. Either remove the operator default or set `kube-vnet/net.cluster=none` on the pod.
 - The deny-all baseline will then apply, and only the user-vnet membership policies grant ingress.
 
-For the full design, see the [deny-all baseline section in `concepts.md`](concepts.md#the-deny-all-baseline) and [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md).
+For the full design, see the [deny-all baseline section in `concepts.md`](../getting-started/concepts.md#the-deny-all-baseline) and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
 ## Pods I expect to be isolated can talk to each other
 
@@ -225,13 +225,13 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
 
    This is the #1 cause when "all the YAMLs look right but pods talk anyway." kube-vnet generates `NetworkPolicy`; your CNI is what drops packets. If the CNI doesn't enforce, the policies are decorative.
 
-   See [`install.md`](install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check: install Calico/Cilium/kube-router and re-test. If isolation now works, the previous CNI didn't enforce NetworkPolicy.
+   See [`install.md`](../getting-started/install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check: install Calico/Cilium/kube-router and re-test. If isolation now works, the previous CNI didn't enforce NetworkPolicy.
 
-   If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`troubleshooting/cni-pitfalls.md`](troubleshooting/cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
+   If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`troubleshooting/cni-pitfalls.md`](cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
 
 2. **Is the deny-all baseline present in the receiving namespace?**
 
-   Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a `kube-vnet`-named deny-all baseline. If it's missing, the namespace is `disabled` (operator stays out entirely).
+   Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) every managed namespace gets a `kube-vnet`-named deny-all baseline. If it's missing, the namespace is `disabled` (operator stays out entirely).
 
    ```bash
    kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.system/role=baseline
@@ -288,7 +288,7 @@ For the full design, see the [deny-all baseline section in `concepts.md`](concep
    kubectl rollout restart daemonset/<source-daemon> -n <source-ns>
    ```
 
-   After the rollout completes, every cached connection is gone. New connection attempts get evaluated by the now-tightened policy and are denied. See [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the background on why this is a Linux-conntrack reality, not a kube-vnet bug.
+   After the rollout completes, every cached connection is gone. New connection attempts get evaluated by the now-tightened policy and are denied. See [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the background on why this is a Linux-conntrack reality, not a kube-vnet bug.
 
 ---
 
@@ -305,7 +305,7 @@ Error from server (InternalError): error when creating "cert.yaml":
 
 Background: the kube-apiserver dials the webhook backend Service directly. The apiserver isn't a pod, so its source IP (control-plane node IP for kubeadm / k0s / k3s; managed-control-plane IP for GKE / EKS / AKS) doesn't match any `namespaceSelector` or `podSelector`. The webhook NS's baseline + membership policies reject the connection. Admission times out.
 
-As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. See [ADR 0041](adr/0041-auto-allow-apiserver-reachable-services.md).
+As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. See [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md).
 
 **Diagnostic steps in order**:
 
@@ -366,7 +366,7 @@ As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `Validat
 
 ## Egress to the public internet just started working after upgrade
 
-Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](security.md).
+Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](security.md).
 
 If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting your pods and listing the allowed destinations. NetworkPolicies compose additively. See the [per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
 
@@ -374,7 +374,7 @@ If you need per-workload egress restriction, write a user-managed `NetworkPolicy
 
 ## The deny-all baseline didn't appear
 
-Per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a deny-all baseline named `kube-vnet`. If it's missing, the namespace is excluded:
+Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), every managed namespace gets a deny-all baseline named `kube-vnet`. If it's missing, the namespace is excluded:
 
 1. Is the namespace excluded?
 
@@ -428,7 +428,7 @@ Check the `Ready` condition's reason:
 | `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
 | `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
 
-Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:
+Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:
 
 ```bash
 kubectl get networkpolicy -A -l kube-vnet.system/network=<homeNS>.<vnet>
@@ -467,7 +467,7 @@ kubectl describe vnet -n <ns> <name>   # the message names the offending pods
 
 `ResolutionConflict`: at least one pod has cross-source disagreement on this vnet's `Direction` value (e.g. a `VirtualNetworkBinding` says `both` while a pod label says `egress`, or two bindings disagree). The resolver intersects fail-closed and stamps the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` so the conflict is auditable.
 
-Pick a single source per pod (drop the conflicting binding or fix the pod label). Bare-vs-prefixed disagreement on the same pod is *not* a conflict anymore — both inputs canonicalize to the same key and intersect cleanly per [ADR 0033](adr/0033-canonical-fq-system-labels.md).
+Pick a single source per pod (drop the conflicting binding or fix the pod label). Bare-vs-prefixed disagreement on the same pod is *not* a conflict anymore — both inputs canonicalize to the same key and intersect cleanly per [ADR 0033](../adr/0033-canonical-fq-system-labels.md).
 
 ---
 
@@ -493,12 +493,12 @@ The reason explains what to fix.
 | `NoIssues` | (`Degraded=False`) — clean. | — |
 | `InvalidJoiners` | At least one pod carries the appropriate join label but is in a non-permitted or excluded namespace. The vnet's status message names the offending pods. | Either (a) extend `allowedNamespaces` to include the pod's namespace, (b) move the pod, or (c) remove the join label from the pod if it shouldn't be a member. The Degraded message also distinguishes whether the underlying reason was `NamespaceNotAllowed` (not in `allowedNamespaces`) or `NamespaceExcluded` (in `--disabled-namespaces` or annotated `kube-vnet/disabled=true`). |
 | `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none`. The pod is excluded from membership. (The legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.) | Fix the value on the offending pod (named in the Degraded message). |
-| `ResolutionConflict` | At least one pod has cross-source disagreement on this vnet's `Direction` (binding-vs-label or binding-vs-binding). The resolver intersects fail-closed; the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. | Drop the conflicting binding or fix the pod label so a single source determines the direction. See [ADR 0033](adr/0033-canonical-fq-system-labels.md). |
+| `ResolutionConflict` | At least one pod has cross-source disagreement on this vnet's `Direction` (binding-vs-label or binding-vs-binding). The resolver intersects fail-closed; the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. | Drop the conflicting binding or fix the pod label so a single source determines the direction. See [ADR 0033](../adr/0033-canonical-fq-system-labels.md). |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 | `NameCollision` | Same as Ready. | Same fix. |
 
-The full list of constants is in `internal/controller/virtualnetwork_controller.go`; the user-facing version is [`reference/api.md`](reference/api.md).
+The full list of constants is in `internal/controller/virtualnetwork_controller.go`; the user-facing version is [`reference/api.md`](../reference/api.md).
 
 ---
 

@@ -2,7 +2,7 @@
 
 Each ADR captures a single decision: the context, what was decided, and the consequences. ADRs are immutable once accepted — if a decision is reversed, a new ADR supersedes the old one.
 
-For long-form background on the project, see [`../kube-vnet-design.md`](../kube-vnet-design.md). The design doc explains the *what* and *why* at length; ADRs are the short, decision-scoped record that lives alongside the code.
+For long-form background on the project, see [`../internals/design.md`](../internals/design.md). The design doc explains the *what* and *why* at length; ADRs are the short, decision-scoped record that lives alongside the code.
 
 ## Index
 

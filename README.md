@@ -84,12 +84,12 @@ That's the whole core idea. Everything else in this README is variations on it (
 
 Full docs live under [`docs/`](docs/README.md):
 
-- **New here** → [`docs/concepts.md`](docs/concepts.md) (the model in depth) and [`docs/faq.md`](docs/faq.md).
-- **Installing** → [`docs/install.md`](docs/install.md) (Helm, kubectl, signature verification).
-- **Day-to-day usage** → [`docs/recipes.md`](docs/recipes.md) (worked examples) and [`docs/reference/`](docs/reference/) (look-up tables).
-- **Running it in production** → [`docs/operations.md`](docs/operations.md) and [`docs/security.md`](docs/security.md).
-- **Something is broken** → [`docs/troubleshooting.md`](docs/troubleshooting.md).
-- **Contributing** → [`docs/development.md`](docs/development.md), [`docs/architecture.md`](docs/architecture.md), and the [ADRs](docs/adr/README.md).
+- **New here** → [`docs/concepts.md`](docs/getting-started/concepts.md) (the model in depth) and [`docs/faq.md`](docs/faq.md).
+- **Installing** → [`docs/install.md`](docs/getting-started/install.md) (Helm, kubectl, signature verification).
+- **Day-to-day usage** → [`docs/recipes.md`](docs/guides/recipes.md) (worked examples) and [`docs/reference/`](docs/reference/) (look-up tables).
+- **Running it in production** → [`docs/operations.md`](docs/guides/operations.md) and [`docs/security.md`](docs/guides/security.md).
+- **Something is broken** → [`docs/troubleshooting.md`](docs/guides/troubleshooting.md).
+- **Contributing** → [`docs/development.md`](docs/internals/development.md), [`docs/architecture.md`](docs/internals/architecture.md), and the [ADRs](docs/adr/README.md).
 
 ## Prerequisites
 
@@ -109,7 +109,7 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster
 ```
 
-The chart has no default for `operator.clusterBaseline.ingressIsolationLevel`; pick one of `pod`, `namespace`, or `cluster` at install time (`cluster` is the existing-cluster-friendly choice — every pod auto-joins the cluster system vnet, so ingress posture barely changes). See [`docs/install.md`](docs/install.md) for the trade-offs.
+The chart has no default for `operator.clusterBaseline.ingressIsolationLevel`; pick one of `pod`, `namespace`, or `cluster` at install time (`cluster` is the existing-cluster-friendly choice — every pod auto-joins the cluster system vnet, so ingress posture barely changes). See [`docs/install.md`](docs/getting-started/install.md) for the trade-offs.
 
 > Picking `cluster` is the safe adoption default at the cluster level — every pod inherits a `cluster=default-both` membership, so existing traffic keeps flowing. Per-namespace `VirtualNetworkBaseline`s and per-pod labels can opt specific workloads into stricter postures as you migrate. Each example under [`config/samples/`](config/samples/) demonstrates a slice of the baseline-tier model — apply one and run a few `kubectl exec ... curl` probes to see kube-vnet in action.
 
@@ -253,7 +253,7 @@ The chart's `operator.clusterBaseline.ingressIsolationLevel` preset maps to:
 | `namespace` | `namespace=default-both, cluster=default-egress` — same-NS reachable, cross-NS egress only |
 | `cluster` | `namespace=default-both, cluster=default-both` — no isolation (allow-all) |
 
-For more, see [`docs/concepts.md`](docs/concepts.md), [`docs/install.md`](docs/install.md), and [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
+For more, see [`docs/concepts.md`](docs/getting-started/concepts.md), [`docs/install.md`](docs/getting-started/install.md), and [ADR 0031](docs/adr/0031-baseline-tier-resolution.md).
 
 ## Configuration
 
@@ -310,7 +310,7 @@ The three test rungs (unit, integration, e2e against kube-router and Calico) and
 
 ## Architecture decisions
 
-Significant design and implementation choices are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/kube-vnet-design.md`](docs/kube-vnet-design.md); where the design doc and the ADRs disagree (the doc was written first), the ADRs are the source of truth.
+Significant design and implementation choices are recorded as ADRs in [`docs/adr/`](docs/adr/README.md). The longer-form rationale lives in [`docs/kube-vnet-design.md`](docs/internals/design.md); where the design doc and the ADRs disagree (the doc was written first), the ADRs are the source of truth.
 
 ## Status
 

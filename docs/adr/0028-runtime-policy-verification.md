@@ -11,12 +11,12 @@ The operator's contract is "reconcile VirtualNetwork CRs to the desired set of N
 In practice, users hit the gap several ways:
 
 - kube-router with `ipMasq: true` masquerades intra-cluster traffic; podSelector matching breaks. Policies look right; enforcement is silently wrong.
-- k0s's install-cniconf init container has a `[ ! -f ]` guard that prevents on-disk CNI config from being updated after first bootstrap; ConfigMap changes don't propagate. See [`../troubleshooting/cni-pitfalls.md`](../troubleshooting/cni-pitfalls.md) pitfall 2.
+- k0s's install-cniconf init container has a `[ ! -f ]` guard that prevents on-disk CNI config from being updated after first bootstrap; ConfigMap changes don't propagate. See [`../troubleshooting/cni-pitfalls.md`](../guides/cni-pitfalls.md) pitfall 2.
 - kube-router service-proxy bootstrap deadlock after node reboot.
 - Calico's Felix daemon not running.
 - Cilium's identity-allocation lag in the first seconds after pod start.
 
-Common shape: kube-vnet did everything right, but the user reaches for `kubectl describe vnet` and `kubectl describe netpol` first, sees nothing wrong, and assumes the operator is broken. Documentation alone (see [`../troubleshooting/cni-pitfalls.md`](../troubleshooting/cni-pitfalls.md)) helps but doesn't give a positive in-cluster signal that "yes, isolation is actually being enforced for this vnet right now."
+Common shape: kube-vnet did everything right, but the user reaches for `kubectl describe vnet` and `kubectl describe netpol` first, sees nothing wrong, and assumes the operator is broken. Documentation alone (see [`../troubleshooting/cni-pitfalls.md`](../guides/cni-pitfalls.md)) helps but doesn't give a positive in-cluster signal that "yes, isolation is actually being enforced for this vnet right now."
 
 This ADR is intentionally a draft. It exists to record the design space and reasoning so future contributors don't reopen the question without context.
 
@@ -72,7 +72,7 @@ The pattern most mature operators follow is "manage the API state, expose metric
 
 ## Recommendation
 
-- **Now (this PR is documentation-only).** Ship the [`troubleshooting/cni-pitfalls.md`](../troubleshooting/cni-pitfalls.md) page and link it from the existing troubleshooting index. Documentation is the highest-leverage step and unblocks users who hit the known cases.
+- **Now (this PR is documentation-only).** Ship the [`troubleshooting/cni-pitfalls.md`](../guides/cni-pitfalls.md) page and link it from the existing troubleshooting index. Documentation is the highest-leverage step and unblocks users who hit the known cases.
 - **Later, small.** Implement Option A — startup pre-flight — as a separate PR. One log line per process boot, one event on the leader-election lease if no CNI is detected. Bounded cost.
 - **Later, real feature.** Implement Option B — `kube-vnet verify` subcommand — as a separate PR after a small design doc. Cobra subcommand on the operator binary; reuses the existing apiserver client; spawns and tears down probe pods.
 - **Never.** Option C. If a contributor proposes continuous in-operator probing, point them at this ADR.
@@ -94,6 +94,6 @@ The pattern most mature operators follow is "manage the API state, expose metric
 
 ## See also
 
-- [`../troubleshooting/cni-pitfalls.md`](../troubleshooting/cni-pitfalls.md) — the documentation deliverable that lands before any of the implementation options.
+- [`../troubleshooting/cni-pitfalls.md`](../guides/cni-pitfalls.md) — the documentation deliverable that lands before any of the implementation options.
 - [ADR 0018 — Test strategy](0018-test-strategy-envtest-and-kind-calico.md) — kind+Calico e2e is the current way we verify enforcement *in CI*. Option B would extend that pattern into a runtime tool.
 - [ADR 0019 — Baseline durability via drift correction](0019-baseline-durability.md) — example of a previous "should we add a runtime verifier?" decision that landed on "no, drift correction at the API layer is enough."

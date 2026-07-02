@@ -2,7 +2,7 @@
 
 Threat model, RBAC inventory, supply-chain practice, hardening notes, and an honest list of what kube-vnet does *not* defend against.
 
-For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](adr/0019-baseline-durability.md).
+For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](../adr/0019-baseline-durability.md).
 
 ---
 
@@ -10,7 +10,7 @@ For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](adr/001
 
 ### Scope: kube-vnet only restricts ingress
 
-The kube-vnet baseline carries `policyTypes: [Ingress]` only. Egress is unrestricted by kube-vnet (membership policies grant egress allows to vnet peers, but generic egress — DNS, the apiserver, the public internet, other namespaces — is not blocked by the operator). This is deliberate — see [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md) — but it means you must size the threat model accordingly.
+The kube-vnet baseline carries `policyTypes: [Ingress]` only. Egress is unrestricted by kube-vnet (membership policies grant egress allows to vnet peers, but generic egress — DNS, the apiserver, the public internet, other namespaces — is not blocked by the operator). This is deliberate — see [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) — but it means you must size the threat model accordingly.
 
 ### What kube-vnet defends against
 
@@ -23,9 +23,9 @@ The kube-vnet baseline carries `policyTypes: [Ingress]` only. Egress is unrestri
 
 Be clear-eyed about these. None of them are bugs in kube-vnet; they're either out of scope or limitations of stock `NetworkPolicy`.
 
-- **Egress exfiltration / lateral probing from a compromised pod.** kube-vnet's deny-all baseline restricts *ingress* only ([ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md)); pods can still initiate outbound traffic to anywhere they can route — other namespaces, the cluster control plane, the public internet. The vnet abstraction defends against unauthorized inbound; protecting against outbound exfiltration / lateral probing is a separate concern that needs separate tooling (a per-workload user-managed `NetworkPolicy` with `policyTypes: [Egress]`, a CNI egress firewall like Calico GlobalNetworkPolicy or Cilium FQDN policy, a NAT-gateway egress allowlist, or a service-mesh egress proxy).
+- **Egress exfiltration / lateral probing from a compromised pod.** kube-vnet's deny-all baseline restricts *ingress* only ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)); pods can still initiate outbound traffic to anywhere they can route — other namespaces, the cluster control plane, the public internet. The vnet abstraction defends against unauthorized inbound; protecting against outbound exfiltration / lateral probing is a separate concern that needs separate tooling (a per-workload user-managed `NetworkPolicy` with `policyTypes: [Egress]`, a CNI egress firewall like Calico GlobalNetworkPolicy or Cilium FQDN policy, a NAT-gateway egress allowlist, or a service-mesh egress proxy).
 - **Cluster admin compromise.** Anyone with cluster-admin (or with permissions to delete VirtualNetworks, edit the operator's RBAC, or stop the operator Deployment) can defeat kube-vnet entirely.
-- **Namespace owner deleting the deny baseline.** A user with `delete networkpolicy` RBAC in their namespace can `kubectl delete networkpolicy kube-vnet`. The operator restores it within seconds (drift correction; see [`architecture.md`](architecture.md#drift-correction-loop)) and emits a `PolicyRestored` Warning Event, but during the window between deletion and restore, traffic that the policy would have denied is allowed. For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` — see [ADR 0019](adr/0019-baseline-durability.md).
+- **Namespace owner deleting the deny baseline.** A user with `delete networkpolicy` RBAC in their namespace can `kubectl delete networkpolicy kube-vnet`. The operator restores it within seconds (drift correction; see [`architecture.md`](../internals/architecture.md#drift-correction-loop)) and emits a `PolicyRestored` Warning Event, but during the window between deletion and restore, traffic that the policy would have denied is allowed. For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` — see [ADR 0019](../adr/0019-baseline-durability.md).
 - **CNI bypass.** kube-vnet generates `NetworkPolicy` resources; the CNI is what enforces them. If your CNI doesn't enforce `NetworkPolicy` (or if a pod manages to bypass the CNI — e.g. host-network pods), kube-vnet's policies have no effect.
 - **Layer 7 / DNS / mTLS-identity policy.** kube-vnet emits L3/L4 `NetworkPolicy`. Anything HTTP-method-aware, hostname-aware, or identity-aware is out of scope; that's a service-mesh or CNI-extension responsibility.
 - **In-pod traffic.** Containers within a single pod share a network namespace and are not policy-able by Kubernetes.
@@ -131,7 +131,7 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 
 ### SBOMs
 
-Every release ships SPDX-JSON SBOMs for both the image and the chart. They're attached as Cosign attestations *and* as plain GitHub release assets. See [`install.md`](install.md#verifying-sboms).
+Every release ships SPDX-JSON SBOMs for both the image and the chart. They're attached as Cosign attestations *and* as plain GitHub release assets. See [`install.md`](../getting-started/install.md#verifying-sboms).
 
 You can also generate one yourself:
 
@@ -203,7 +203,7 @@ Not without losing functionality. Each line in the RBAC inventory above maps to 
 
 ### Can a namespace owner permanently disable kube-vnet for their namespace?
 
-Yes — by annotating the namespace `kube-vnet/disabled: "true"`. This removes the operator's baseline and any membership policies; pods in the namespace are not eligible joiners for any vnet. See [ADR 0006](adr/0006-baseline-default-deny-and-single-opt-out.md).
+Yes — by annotating the namespace `kube-vnet/disabled: "true"`. This removes the operator's baseline and any membership policies; pods in the namespace are not eligible joiners for any vnet. See [ADR 0006](../adr/0006-baseline-default-deny-and-single-opt-out.md).
 
 If you want to prevent namespace owners from doing this, withhold `update namespace` (or specifically `patch namespace`) RBAC from them. Standard Kubernetes RBAC; nothing kube-vnet-specific.
 
@@ -231,7 +231,7 @@ The proper Kubernetes-native answer is `policy.networking.k8s.io/v1 AdminNetwork
 
 Adoption is deferred for now (CNI support is still maturing across the ecosystem; the API itself is `v1alpha1`/`v1beta1` depending on version). The current drift-correction defense plus `PolicyRestored` events is sufficient for the dominant threat (accidental deletion or unaware tooling). When ANP support is broad enough, the deny baseline migrates to a single cluster-scoped ANP; per-vnet allow policies stay as `NetworkPolicy`.
 
-Full discussion: [ADR 0019](adr/0019-baseline-durability.md).
+Full discussion: [ADR 0019](../adr/0019-baseline-durability.md).
 
 ---
 

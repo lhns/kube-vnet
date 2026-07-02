@@ -2,7 +2,7 @@
 
 Working on the operator. Setup, the three test rungs, the release flow, code layout.
 
-For the *what* and *why* of design choices, see the [ADRs](adr/README.md) (especially [ADR 0018](adr/0018-test-strategy-envtest-and-kind-calico.md) for the test strategy).
+For the *what* and *why* of design choices, see the [ADRs](../adr/README.md) (especially [ADR 0018](../adr/0018-test-strategy-envtest-and-kind-calico.md) for the test strategy).
 
 ---
 
@@ -69,7 +69,7 @@ docs/                           # this documentation
 
 ## The three test rungs
 
-Three layers, each catching a different class of bug. Documented in detail in [ADR 0018](adr/0018-test-strategy-envtest-and-kind-calico.md).
+Three layers, each catching a different class of bug. Documented in detail in [ADR 0018](../adr/0018-test-strategy-envtest-and-kind-calico.md).
 
 ### 1. Unit tests (`go test ./...`)
 
@@ -194,7 +194,7 @@ For a v1alpha1 release, breaking changes between alpha versions are explicitly a
 
 ### Removing a CRD from the chart
 
-**Removing a CRD requires two releases.** Per [ADR 0032](adr/0032-chart-crd-removal-two-release-pattern.md): every chart-shipped CRD carries `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete user data. The annotation also blocks Helm from cleaning up the live CRD object when you remove the template, so single-release removal leaves an orphan on every user's cluster.
+**Removing a CRD requires two releases.** Per [ADR 0032](../adr/0032-chart-crd-removal-two-release-pattern.md): every chart-shipped CRD carries `helm.sh/resource-policy: keep` so `helm uninstall` doesn't cascade-delete user data. The annotation also blocks Helm from cleaning up the live CRD object when you remove the template, so single-release removal leaves an orphan on every user's cluster.
 
 The dance:
 
