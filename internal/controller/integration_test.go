@@ -1117,3 +1117,137 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 // ensure imports stay used when individual tests are commented out
 var _ = strings.HasPrefix
 var _ = corev1.Namespace{}
+
+// TestIntegration_MemberWithMalformedUserLabel_StaysMember pins the fix
+// for the diagnostic-scan-suppresses-membership bug found in the project
+// audit: a pod that is a valid member via a binding-driven system stamp,
+// but ALSO carries a malformed user-prefix label for the same vnet, was
+// dropped from members entirely (the diagnostic `continue` ran before
+// the membership check). If it was the sole member in its NS, no
+// membership policy was emitted and the stamped pod sat isolated under
+// the deny-all baseline. The diagnostic must be advisory: Degraded
+// reports the bad label AND the pod stays a member.
+func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "malformed")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	// Membership comes from the binding (→ resolution stamps the pod).
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "member-binding", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	// The pod ALSO carries a malformed user label for the SAME vnet.
+	// (No direction VAP in this suite, so the apiserver accepts it.)
+	mustCreate(t, makePod(ns, "p", map[string]string{
+		"app":             "p",
+		"kube-vnet/net.v": "bogus-direction",
+	}))
+
+	// Membership policy must appear — the stamp wins.
+	eventually(t, 10*time.Second, func() error {
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
+		return err
+	})
+
+	// AND the vnet reports the malformed label as an invalid joiner.
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+			return fmt.Errorf("Degraded != True (want InvalidJoiners for the bogus label)")
+		}
+		// Membership survived: the pod is listed in status.
+		for _, m := range v.Status.Members {
+			for _, p := range m.Pods {
+				if p == "p" {
+					return nil
+				}
+			}
+		}
+		return fmt.Errorf("pod p not in vnet members despite valid stamp")
+	})
+}
+
+// TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership
+// pins the fix for the missing Namespace watch on the resolution
+// controller: annotating a namespace `kube-vnet/disabled=true` AFTER
+// pods were stamped must strip the kube-vnet.system/net.* stamps (and
+// with them, membership) promptly — not only on the next unrelated pod
+// event or informer resync.
+func TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership(t *testing.T) {
+	ctx := context.Background()
+	ns := uniqueNS(t, "midflight")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.v": "both"}))
+
+	// Wait for the stamp + membership policy.
+	stampKey := "kube-vnet.system/net." + ns + ".v"
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if p.Labels[stampKey] != "both" {
+			return fmt.Errorf("stamp not applied yet")
+		}
+		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
+		return err
+	})
+
+	// Disable the namespace mid-flight.
+	eventually(t, 5*time.Second, func() error {
+		nsObj := &corev1.Namespace{}
+		if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
+			return err
+		}
+		if nsObj.Annotations == nil {
+			nsObj.Annotations = map[string]string{}
+		}
+		nsObj.Annotations[AnnotationDisabled] = "true"
+		return testClient.Update(ctx, nsObj)
+	})
+
+	// The stamp must be stripped promptly (Namespace watch fires →
+	// pods re-enqueue → stripStampedLabels path).
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if _, still := p.Labels[stampKey]; still {
+			return fmt.Errorf("stamp still present after NS disabled")
+		}
+		return nil
+	})
+
+	// And the vnet's membership must drop the pod (defense-in-depth
+	// IsManaged re-check in discoverMembers, plus the stripped stamp).
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		for _, m := range v.Status.Members {
+			for _, p := range m.Pods {
+				if p == "p" {
+					return fmt.Errorf("pod still a member after NS disabled")
+				}
+			}
+		}
+		return nil
+	})
+}

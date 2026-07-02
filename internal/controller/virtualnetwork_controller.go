@@ -287,11 +287,48 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	if err := r.List(ctx, &pods); err != nil {
 		return nil, nil, err
 	}
+
+	// Per-NS memo for the managed and permits decisions — namespaces
+	// repeat heavily across the pod list; one Get/selector-match per
+	// distinct NS instead of per pod.
+	nsManaged := map[string]bool{}
+	nsPermitted := map[string]bool{}
+	managedFor := func(nsName string) (bool, error) {
+		if v, seen := nsManaged[nsName]; seen {
+			return v, nil
+		}
+		ns, err := r.getNamespace(ctx, nsName)
+		if err != nil {
+			return false, err
+		}
+		v := ns != nil && r.NSFilter.IsManaged(ns)
+		nsManaged[nsName] = v
+		return v, nil
+	}
+	permittedFor := func(nsName string) (bool, error) {
+		if v, seen := nsPermitted[nsName]; seen {
+			return v, nil
+		}
+		v, err := r.permits(ctx, vnet, nsName)
+		if err != nil {
+			return false, err
+		}
+		nsPermitted[nsName] = v
+		return v, nil
+	}
+
 	for i := range pods.Items {
 		p := &pods.Items[i]
 
-		// Diagnostic scan on USER-prefix labels (separate from membership;
-		// surfaces InvalidJoiner reasons). Bare-form is only valid in the
+		// ---- Diagnostic scan on USER-prefix labels ----
+		// Purely advisory: surfaces InvalidJoiner reasons on the vnet's
+		// Degraded condition. It must NOT gate membership — a pod that is
+		// a valid member via a binding/baseline stamp keeps its membership
+		// even if it ALSO carries a malformed user label for this vnet.
+		// (Previously these paths `continue`d past the membership check,
+		// silently dropping a legitimately-stamped pod from the policy —
+		// if it was the sole member in its NS, the pod ended up isolated
+		// under the deny-all baseline.) Bare-form is only valid in the
 		// home NS for user vnets, or in any managed NS for system vnets.
 		userBareVal, hasUserBare := "", false
 		userPrefVal, hasUserPref := "", false
@@ -303,47 +340,44 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 				userPrefVal, hasUserPref = v, true
 			}
 		}
+		badDirection := false
 		if hasUserBare {
 			if _, ok := ParseBareDirection(userBareVal); !ok {
-				invalid = append(invalid, InvalidJoiner{
-					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
-				})
-				continue
+				badDirection = true
 			}
 		}
-		if hasUserPref {
+		if hasUserPref && !badDirection {
 			if _, ok := ParseBareDirection(userPrefVal); !ok {
-				invalid = append(invalid, InvalidJoiner{
-					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
-				})
-				continue
+				badDirection = true
 			}
 		}
-		if hasUserBare || hasUserPref {
-			ns, err := r.getNamespace(ctx, p.Namespace)
+		if badDirection {
+			invalid = append(invalid, InvalidJoiner{
+				PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
+			})
+		} else if hasUserBare || hasUserPref {
+			managed, err := managedFor(p.Namespace)
 			if err != nil {
 				return nil, nil, err
 			}
-			if ns == nil || !r.NSFilter.IsManaged(ns) {
+			if !managed {
 				invalid = append(invalid, InvalidJoiner{
 					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceExcluded,
 				})
-				continue
-			}
-			if p.Namespace != vnet.Namespace && !systemVnet {
-				ok, err := r.permits(ctx, vnet, p.Namespace)
+			} else if p.Namespace != vnet.Namespace && !systemVnet {
+				permitted, err := permittedFor(p.Namespace)
 				if err != nil {
 					return nil, nil, err
 				}
-				if !ok {
+				if !permitted {
 					invalid = append(invalid, InvalidJoiner{
 						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceNotAllowed,
 					})
-					continue
 				}
 			}
 		}
 
+		// ---- Membership ----
 		// Fail-closed during the resolution race window: a pod with no
 		// resolved-generation annotation hasn't been processed by the
 		// resolution controller yet. Exclude it from policy generation
@@ -361,6 +395,30 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if !ok || dir == DirectionNone {
 			continue
 		}
+
+		// Defense in depth against stale stamps. The resolution controller
+		// strips stamps when a namespace is disabled and never stamps a
+		// non-permitted vnet, but both signals lag the state change (its
+		// Namespace watch has to fire; a narrowed allowedNamespaces never
+		// re-triggers resolution at all). The membership policy must not
+		// trust a stamp the CURRENT cluster state wouldn't grant:
+		managed, err := managedFor(p.Namespace)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !managed {
+			continue
+		}
+		if p.Namespace != vnet.Namespace && !systemVnet {
+			permitted, err := permittedFor(p.Namespace)
+			if err != nil {
+				return nil, nil, err
+			}
+			if !permitted {
+				continue
+			}
+		}
+
 		if members[p.Namespace] == nil {
 			members[p.Namespace] = map[Direction][]string{}
 		}

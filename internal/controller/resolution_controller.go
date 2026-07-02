@@ -115,21 +115,42 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 
 	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
 	// `default`.
-	if rules := r.filterPermittedRules(ctx, r.clusterBaselineRules(ctx, pod), pod.Namespace); len(rules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: rules})
+	clusterRules, err := r.clusterBaselineRules(ctx, pod)
+	if err != nil {
+		return nil, err
+	}
+	clusterRules, err = r.filterPermittedRules(ctx, clusterRules, pod.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	if len(clusterRules) > 0 {
+		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: clusterRules})
 	}
 
 	// 2. Namespace baseline (ScopeNamespaceBaseline).
-	if nsBaselineRules := r.filterPermittedRules(ctx, r.namespaceBaselineRules(ctx, pod), pod.Namespace); len(nsBaselineRules) > 0 {
+	nsBaselineRules, err := r.namespaceBaselineRules(ctx, pod)
+	if err != nil {
+		return nil, err
+	}
+	nsBaselineRules, err = r.filterPermittedRules(ctx, nsBaselineRules, pod.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	if len(nsBaselineRules) > 0 {
 		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBaseline, Rules: nsBaselineRules})
 	}
 
 	// 3. Pod tier (ScopePod): VirtualNetworkBindings + pod labels merged into
 	// a single layer. Within-layer intersection applies on conflict.
-	var podRules []ResolutionRule
-	podRules = append(podRules, r.bindingRules(ctx, pod)...)
-	podRules = append(podRules, r.podLabelRules(pod)...)
-	podRules = r.filterPermittedRules(ctx, podRules, pod.Namespace)
+	bindRules, err := r.bindingRules(ctx, pod)
+	if err != nil {
+		return nil, err
+	}
+	podRules := append(bindRules, r.podLabelRules(pod)...)
+	podRules, err = r.filterPermittedRules(ctx, podRules, pod.Namespace)
+	if err != nil {
+		return nil, err
+	}
 	if len(podRules) > 0 {
 		layers = append(layers, ResolutionLayer{Scope: ScopePod, Rules: podRules})
 	}
@@ -139,34 +160,47 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 
 // filterPermittedRules drops rules that reference vnets the pod's NS
 // isn't permitted to join (per Permits, the single-source-of-truth
-// helper in permits.go). Transient apiserver errors result in the rule
-// being dropped — the next reconcile re-evaluates.
+// helper in permits.go). "Not permitted" — vnet doesn't exist, NS not
+// in allowedNamespaces — drops the rule silently. A transient apiserver
+// error is NOT the same thing: it propagates as an error so the caller
+// requeues instead of stripping a possibly-valid stamp. Collapsing
+// errors into "deny" caused stamp churn (momentary membership loss)
+// during apiserver blips, with no requeue to recover.
 //
 // This is the membership gate for the stamping pipeline. The
 // VirtualNetworkReconciler does the same check independently when
 // generating membership policies; this filter keeps the pod's stamped
 // labels honest by deciding the same thing here.
-func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) []ResolutionRule {
+func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) ([]ResolutionRule, error) {
 	if len(rules) == 0 {
-		return rules
+		return rules, nil
 	}
 	out := rules[:0]
 	for _, rule := range rules {
 		ok, err := Permits(ctx, r.Client, rule.Vnet, podNS)
-		if err != nil || !ok {
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
 			continue
 		}
 		out = append(out, rule)
 	}
-	return out
+	return out, nil
 }
 
 // clusterBaselineRules reads the singleton ClusterVirtualNetworkBaseline
-// named `default` (if it exists). Absent → no rules.
-func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
+// named `default` (if it exists). Absent → no rules, nil error. A
+// transient Get error propagates — treating it as "no baseline" would
+// strip baseline-driven stamps from every pod reconciled during an
+// apiserver blip.
+func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
 	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{}
 	if err := r.Get(ctx, client.ObjectKey{Name: "default"}, cb); err != nil {
-		return nil
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	out := make([]ResolutionRule, 0, len(cb.Spec.Memberships))
 	for _, m := range cb.Spec.Memberships {
@@ -180,15 +214,19 @@ func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *co
 			Source:    "ClusterVirtualNetworkBaseline/default",
 		})
 	}
-	return out
+	return out, nil
 }
 
 // namespaceBaselineRules reads the singleton VirtualNetworkBaseline named
-// `default` in the pod's namespace.
-func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
+// `default` in the pod's namespace. Same NotFound-vs-transient split as
+// clusterBaselineRules.
+func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
 	nb := &vnetv1alpha1.VirtualNetworkBaseline{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: "default"}, nb); err != nil {
-		return nil
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	out := make([]ResolutionRule, 0, len(nb.Spec.Memberships))
 	for _, m := range nb.Spec.Memberships {
@@ -202,21 +240,26 @@ func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *
 			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
 		})
 	}
-	return out
+	return out, nil
 }
 
 // bindingRules reads VirtualNetworkBindings in the pod's namespace that
-// match the pod's labels. Pod-tier source.
-func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod) []ResolutionRule {
+// match the pod's labels. Pod-tier source. A List error propagates —
+// reading it as "no bindings" would strip binding-driven stamps during
+// an apiserver blip.
+func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
 	var vnbs vnetv1alpha1.VirtualNetworkBindingList
 	if err := r.List(ctx, &vnbs, client.InNamespace(pod.Namespace)); err != nil {
-		return nil
+		return nil, err
 	}
 	var out []ResolutionRule
 	for i := range vnbs.Items {
 		b := &vnbs.Items[i]
 		podSel, err := selectorFromLabelSelector(&b.Spec.PodSelector)
 		if err != nil {
+			// Malformed selector on the binding itself: a per-object
+			// data problem, not a transient error. Skip the binding;
+			// its own reconciler surfaces the condition.
 			continue
 		}
 		if !podSel.Matches(labels.Set(pod.Labels)) {
@@ -236,7 +279,7 @@ func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod
 			Source:    "VirtualNetworkBinding/" + b.Name,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // podLabelRules reads the pod's own kube-vnet/net.<suffix>=<direction>
@@ -436,7 +479,35 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&vnetv1alpha1.VirtualNetworkBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
 		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToPods),
+			builder.WithPredicates(predicate.AnnotationChangedPredicate{}),
+		).
 		Complete(r)
+}
+
+// namespaceToPods fans a Namespace event to every pod in it. Catches
+// the `kube-vnet/disabled` annotation flip: on disable, each pod's
+// reconcile takes the stripStampedLabels path (the NS fails IsManaged);
+// on re-enable, pods get re-resolved and re-stamped. Without this
+// watch, a disabled namespace's pods kept their kube-vnet.system/net.*
+// stamps — and therefore their vnet memberships — until an unrelated
+// pod event or the informer resync. Filtered to annotation changes;
+// namespace create is uninteresting (no pods yet) and label-only
+// changes don't affect the managed/disabled decision.
+func (r *ResolutionReconciler) namespaceToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods, client.InNamespace(obj.GetName())); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0, len(pods.Items))
+	for i := range pods.Items {
+		out = append(out, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
+		})
+	}
+	return out
 }
 
 // clusterBaselineToPods fans a ClusterVirtualNetworkBaseline event to every
