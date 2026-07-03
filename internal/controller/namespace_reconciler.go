@@ -56,6 +56,15 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
+	// Terminating namespace: don't re-apply the baseline into it. The
+	// namespace controller is deleting the baseline (NetworkPolicy deletes
+	// are never VAP-blocked, so this was never a teardown blocker); re-
+	// applying would just fail via NamespaceLifecycle admission and log
+	// noise on every namespace deletion.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
 	// Disabled namespaces get no kube-vnet objects at all — bypass
 	// DesiredBaseline (which now always returns a non-nil policy) and sweep
 	// any leftovers.

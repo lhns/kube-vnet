@@ -367,3 +367,57 @@ func TestE2E_DNS_StillResolves(t *testing.T) {
 	}
 	t.Fatalf("DNS resolution failed inside a vnet pod within 30s")
 }
+
+// TestE2E_ManagedNamespace_TerminatesCleanly is the regression test for the
+// stuck-in-Terminating bug: the operator creates a `namespace` system
+// VirtualNetwork in every managed namespace, and the system-vnet VAP must
+// NOT block DELETE — otherwise the Kubernetes namespace controller can't
+// cascade-delete that vnet during teardown and the namespace hangs in
+// Terminating forever.
+//
+// Before the fix (VAP guarding DELETE) this test times out; after, the
+// namespace disappears within the deadline. The VAP ships in every e2e
+// lane (config/default includes ../admission, and the helm lanes install
+// the chart templates), so this runs everywhere.
+func TestE2E_ManagedNamespace_TerminatesCleanly(t *testing.T) {
+	ns := uniqueNS(t, "term")
+	ensureNamespace(t, ns, nil)
+	// No defer cleanupNamespace: this test deletes the namespace itself and
+	// asserts it completes. A trailing --ignore-not-found delete is harmless
+	// but unnecessary.
+
+	// Wait for the operator to create the per-namespace `namespace` system
+	// vnet — that's the object whose DELETE the VAP used to block.
+	sysVnetDeadline := time.Now().Add(60 * time.Second)
+	for {
+		_, code := kubectl(t, "get", "vnet", "-n", ns, "namespace")
+		if code == 0 {
+			break
+		}
+		if time.Now().After(sysVnetDeadline) {
+			t.Fatalf("operator did not create the `namespace` system vnet in %s within 60s", ns)
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	// Delete the namespace and require it to actually terminate. Use
+	// --wait=false then poll, so we control the timeout and get a clear
+	// failure rather than kubectl's own hang.
+	kubectlMust(t, "delete", "namespace", ns, "--wait=false")
+
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		_, code := kubectl(t, "get", "namespace", ns)
+		if code != 0 {
+			return // namespace gone — terminated cleanly
+		}
+		if time.Now().After(deadline) {
+			// Surface what's holding it, for debugging.
+			phase, _ := kubectl(t, "get", "namespace", ns, "-o", "jsonpath={.status.phase}")
+			vnets, _ := kubectl(t, "get", "vnet", "-n", ns, "-o", "name")
+			t.Fatalf("namespace %s did not terminate within 90s (phase=%q, remaining vnets=%q) — "+
+				"the system-vnet VAP is likely blocking the namespace controller's cascade DELETE", ns, phase, vnets)
+		}
+		time.Sleep(3 * time.Second)
+	}
+}

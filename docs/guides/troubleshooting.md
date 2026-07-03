@@ -18,6 +18,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
+- [A namespace is stuck in `Terminating`](#a-namespace-is-stuck-in-terminating)
 - [My VirtualNetworkBinding doesn't attach any pods](#my-virtualnetworkbinding-doesnt-attach-any-pods)
 - [Binding shows Ready=False, NamespaceNotAllowed](#binding-shows-readyfalse-namespacenotallowed)
 - [Degraded with UnknownDirection or ResolutionConflict](#degraded-with-unknowndirection-or-conflictingdirections)
@@ -408,6 +409,20 @@ No. The baseline is owned by the `NamespaceReconciler` independently of any spec
 
 ---
 
+## A namespace is stuck in `Terminating`
+
+**Symptom.** `kubectl delete namespace <ns>` never completes; `kubectl get ns <ns>` shows `Terminating` indefinitely. The namespace ran kube-vnet (it was managed).
+
+**Cause (fixed in the current release).** The operator creates a `namespace` system VirtualNetwork in every managed namespace. In affected versions, the `…-system-vnet-protected` ValidatingAdmissionPolicy guarded `DELETE` — so when Kubernetes' namespace controller tried to cascade-delete that vnet during teardown, admission denied it (the namespace controller isn't the operator's ServiceAccount), and the namespace could never finish terminating. Confirm the leftover vnet:
+
+```bash
+kubectl get vnet -n <ns> namespace   # still present on a Terminating namespace
+```
+
+**Fix.** Upgrade to a release where the VAP guards `CREATE`/`UPDATE` only — namespace teardown then completes normally, and user-initiated deletes of a system vnet are still recovered by drift-correction. (NetworkPolicies were never affected: no VAP guards their `DELETE`.)
+
+---
+
 ## My VirtualNetworkBinding doesn't attach any pods
 
 Inspect the binding's status:
@@ -527,7 +542,7 @@ Look like:
 unable to create new content in namespace Y because it is being terminated"
 ```
 
-Benign. The reconciler fired between `kubectl delete namespace Y` and the namespace finalizer completing. Kubernetes correctly refused the create. On the next reconcile, the namespace is gone and the operator does nothing in it.
+Benign. A reconcile fired between `kubectl delete namespace Y` and the namespace finalizer completing, and Kubernetes correctly refused the create. The reconcilers skip namespaces that carry a `DeletionTimestamp`, so this is rare, but a delete event already in flight when the namespace starts terminating can still produce one such line.
 
 If you see this *outside* of a namespace deletion (i.e. the namespace exists and is not being deleted), open an issue with the full log line.
 

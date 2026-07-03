@@ -10,6 +10,22 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Managed namespaces could get stuck in `Terminating` forever.** The
+  `…-system-vnet-protected` ValidatingAdmissionPolicy guarded `DELETE` on
+  `virtualnetworks`, so when Kubernetes' namespace controller tried to
+  cascade-delete the per-namespace `namespace` system vnet during teardown,
+  admission denied it (the namespace controller isn't the operator's
+  ServiceAccount) and the namespace never finished terminating. The VAP now
+  guards `CREATE`/`UPDATE` only — teardown completes, and user-initiated
+  deletes of a system vnet are still recovered by the SystemVnetReconciler's
+  drift-correction (the same protection every operator-managed NetworkPolicy
+  already relies on; those were never affected, since no VAP guards their
+  `DELETE`). The `SystemVnetReconciler` and `NamespaceReconciler` also now
+  skip namespaces carrying a `DeletionTimestamp`, so teardown no longer
+  produces spurious "namespace is being terminated" apply errors.
+
 ### Added
 
 - **Operator-emitted resources now also carry the Kubernetes recommended

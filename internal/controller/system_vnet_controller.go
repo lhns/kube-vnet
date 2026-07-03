@@ -63,6 +63,16 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// A terminating namespace is being torn down; the Kubernetes namespace
+	// controller deletes its resources, including the per-NS `namespace`
+	// system vnet (the VAP no longer blocks that DELETE). Don't re-ensure the
+	// vnet here — recreating it would fight the teardown and only fail via
+	// NamespaceLifecycle admission (can't create in a terminating namespace),
+	// logging spurious apply errors.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+
 	// Per-namespace `namespace` system vnet: present in managed namespaces,
 	// deleted in disabled ones (per ADR 0033's hard cleanup guarantee).
 	// Note this is the per-NS `namespace` vnet only — the `cluster` vnet

@@ -146,6 +146,42 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = opClient.Delete(context.Background(), v2) })
 	})
+
+	// DELETE is intentionally NOT guarded by this VAP — it must stay open so
+	// the Kubernetes namespace controller can cascade-delete the `namespace`
+	// system vnet during namespace teardown. Guarding DELETE left every
+	// managed namespace stuck in Terminating. A non-operator user deleting a
+	// system vnet is recovered by SystemVnetReconciler drift-correction, not
+	// by admission. These subtests pin that DELETE is allowed for a
+	// non-operator user on both a reserved name and a system-labeled vnet.
+	t.Run("user can DELETE a reserved-name system vnet (teardown path)", func(t *testing.T) {
+		// Operator creates the real system vnet; a non-operator user deletes
+		// it (standing in for the namespace-controller cascade, which envtest
+		// doesn't run).
+		v := &vnetv1alpha1.VirtualNetwork{}
+		v.Name = "namespace"
+		v.Namespace = ns
+		v.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
+		if err := opClient.Create(ctx, v); err != nil {
+			t.Fatalf("operator SA create: %v", err)
+		}
+		if err := userClient.Delete(ctx, v); err != nil {
+			t.Fatalf("expected DELETE to be allowed (VAP must not block teardown), got: %v", err)
+		}
+	})
+
+	t.Run("user can DELETE a system-labeled vnet with an ordinary name", func(t *testing.T) {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		v.Name = "labeled-ordinary"
+		v.Namespace = ns
+		v.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
+		if err := opClient.Create(ctx, v); err != nil {
+			t.Fatalf("operator SA create: %v", err)
+		}
+		if err := userClient.Delete(ctx, v); err != nil {
+			t.Fatalf("expected DELETE to be allowed, got: %v", err)
+		}
+	})
 }
 
 // mustLoadVAPFromKustomize decodes config/admission/system-vnet-vap.yaml as

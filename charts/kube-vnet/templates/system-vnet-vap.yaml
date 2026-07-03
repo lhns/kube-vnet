@@ -6,16 +6,30 @@ The two system vnets `namespace` (one per managed namespace) and `cluster`
 the SystemVnetReconciler, marked with `kube-vnet.system/managed-by=kube-vnet`. This VAP
 reserves both the names and the system label for the operator.
 
-Three CREATE/UPDATE/DELETE attempts get rejected unless the requester is
-the operator's ServiceAccount:
+Two CREATE/UPDATE attempts get rejected unless the requester is the
+operator's ServiceAccount:
 
-  1. CREATE/UPDATE/DELETE of any vnet whose name is `namespace` or `cluster`
+  1. CREATE/UPDATE of any vnet whose name is `namespace` or `cluster`
      (the reserved names — see SystemVnetNamespace/SystemVnetCluster in
      internal/controller/system_vnet_controller.go).
-  2. CREATE of a vnet carrying `kube-vnet.system/managed-by=kube-vnet` (label spoofing).
-  3. UPDATE/DELETE of a vnet that already carries `kube-vnet.system/managed-by=kube-vnet`.
+  2. CREATE/UPDATE of a vnet carrying `kube-vnet.system/managed-by=kube-vnet`
+     (label spoofing, or editing a system vnet).
 
 The operator's ServiceAccount is exempted via username equality.
+
+DELETE is deliberately NOT guarded. It must stay open so the Kubernetes
+namespace controller can cascade-delete the per-namespace `namespace`
+system vnet when a namespace is torn down — guarding DELETE here left
+every managed namespace stuck in `Terminating` forever, because that
+cascade delete is issued by the namespace-controller SA, not ours. A
+user who deletes a system vnet is recovered by SystemVnetReconciler's
+drift-correction (its watch on system-labeled VirtualNetwork deletes
+re-enqueues the namespace and recreates the vnet) — the same protection
+every other operator-managed resource relies on (baseline, membership,
+and ext.* NetworkPolicies are not DELETE-guarded either). A VAP CEL for
+a namespaced DELETE cannot see the parent namespace's phase, so
+"allow DELETE only during teardown" is not expressible; narrowing the
+guarded operations is the correct lever.
 
 The SystemVnetReconciler will also undo unauthorized edits within a
 reconcile cycle anyway — this VAP is defense-in-depth that surfaces the
@@ -45,23 +59,22 @@ spec:
     resourceRules:
       - apiGroups:   ["kube-vnet.lhns.de"]
         apiVersions: ["v1alpha1"]
-        operations:  ["CREATE", "UPDATE", "DELETE"]
+        operations:  ["CREATE", "UPDATE"]
         resources:   ["virtualnetworks"]
   variables:
     - name: operatorUser
       expression: {{ printf "\"system:serviceaccount:%s:%s\""
         (.Release.Namespace)
         (include "kube-vnet.serviceAccountName" .) | quote }}
-    # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet. On CREATE
-    # only `object` is populated, on DELETE only `oldObject`, on UPDATE both;
-    # we OR them so any of the three operations matches an attempt to either
-    # set or carry the system label.
+    # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet.
+    # On CREATE only `object` is populated; on UPDATE both `object` (new) and
+    # `oldObject` (old) are — we OR them so the guard catches a vnet that
+    # carries the system label either before or after the update.
     - name: isSystemVnet
       expression: |
         (object != null && object.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet") ||
         (oldObject != null && oldObject.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet")
-    # The two reserved names. `request.name` is uniform across CREATE/UPDATE/
-    # DELETE (object.metadata.name is empty on DELETE).
+    # The two reserved names. `request.name` is uniform across CREATE and UPDATE.
     - name: isReservedName
       expression: 'request.name == "namespace" || request.name == "cluster"'
   validations:

@@ -17,21 +17,20 @@ spec:
     resourceRules:
       - apiGroups:   ["kube-vnet.lhns.de"]
         apiVersions: ["v1alpha1"]
-        operations:  ["CREATE", "UPDATE", "DELETE"]
+        operations:  ["CREATE", "UPDATE"]
         resources:   ["virtualnetworks"]
   variables:
     - name: operatorUser
       expression: "\"system:serviceaccount:kube-vnet-system:kube-vnet-controller\""
-    # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet. On CREATE
-    # only `object` is populated, on DELETE only `oldObject`, on UPDATE both;
-    # we OR them so any of the three operations matches an attempt to either
-    # set or carry the system label.
+    # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet.
+    # On CREATE only `object` is populated; on UPDATE both `object` (new) and
+    # `oldObject` (old) are — we OR them so the guard catches a vnet that
+    # carries the system label either before or after the update.
     - name: isSystemVnet
       expression: |
         (object != null && object.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet") ||
         (oldObject != null && oldObject.metadata.?labels["kube-vnet.system/managed-by"].orValue("") == "kube-vnet")
-    # The two reserved names. `request.name` is uniform across CREATE/UPDATE/
-    # DELETE (object.metadata.name is empty on DELETE).
+    # The two reserved names. `request.name` is uniform across CREATE and UPDATE.
     - name: isReservedName
       expression: 'request.name == "namespace" || request.name == "cluster"'
   validations:
