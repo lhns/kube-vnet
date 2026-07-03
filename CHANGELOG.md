@@ -10,7 +10,18 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **Operator-emitted resources now also carry the Kubernetes recommended
+  `app.kubernetes.io/managed-by: kube-vnet` label** (all NetworkPolicy
+  families and the system VirtualNetworks), so dashboards and
+  `kubectl get -l app.kubernetes.io/managed-by=kube-vnet` work by
+  convention. Informational only: every sweep, cleanup, and trust decision
+  continues to key exclusively on the admission-protected
+  `kube-vnet.system/managed-by` label — the standard key is user-writable
+  and can't be protected, so it is never treated as an ownership signal
+  (pinned by a regression test). Existing objects pick the label up on
+  their next reconcile; no migration needed.
 
 ## [0.4.0] — 2026-07-02
 

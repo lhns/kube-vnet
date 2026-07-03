@@ -18,6 +18,20 @@ import (
 // (`kube-vnet.system/net.*`). The user-surface prefix `kube-vnet/` is reserved
 // for user inputs (join labels, the `kube-vnet/disabled` annotation).
 const (
+	// LabelK8sManagedBy is the Kubernetes recommended managed-by label,
+	// stamped (with LabelManagedByValue) on every operator-emitted resource
+	// purely for ecosystem convention — dashboards and `kubectl get -l
+	// app.kubernetes.io/managed-by=kube-vnet` work as users expect.
+	//
+	// INFORMATIONAL ONLY. Never select, sweep, or gate any operation on
+	// this key: it is user-writable by design and cannot be VAP-protected
+	// (Helm stamps it on every chart-managed object cluster-wide), so a
+	// user could add it to a third-party policy and our sweeps would
+	// delete an object we don't own. LabelManagedBy (kube-vnet.system/
+	// prefix, admission-protected per ADR 0037) is the sole authoritative
+	// ownership signal.
+	LabelK8sManagedBy = "app.kubernetes.io/managed-by"
+
 	// LabelManagedBy marks operator-owned NetworkPolicy resources AND
 	// operator-created VirtualNetwork CRs (the system `namespace` and
 	// `cluster` vnets). Same key, same value, across both resource types —
@@ -287,7 +301,6 @@ func PolicyName(vnet, homeNS string) string {
 		PolicyKindMembership, homeNS, vnet, policyHash("membership", homeNS, vnet)))
 }
 
-
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.
 // Inputs are joined with `\x00` — forbidden in DNS-1123 labels and Kubernetes
 // resource names — so distinct (parts...) tuples always produce distinct
@@ -439,9 +452,10 @@ func Generate(in GenerateInput) GenerateOutput {
 				Namespace: ns,
 				Name:      PolicyName(vnet.Name, homeNS),
 				Labels: map[string]string{
-					LabelManagedBy: LabelManagedByValue,
-					LabelNetwork:   netID,
-					LabelRole:      LabelRoleMembership,
+					LabelManagedBy:    LabelManagedByValue,
+					LabelK8sManagedBy: LabelManagedByValue,
+					LabelNetwork:      netID,
+					LabelRole:         LabelRoleMembership,
 				},
 			},
 			Spec: networkingv1.NetworkPolicySpec{

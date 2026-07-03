@@ -415,10 +415,11 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 			Name:      apiserverReachablePolicyName(svc),
 			Namespace: svc.Namespace,
 			Labels: map[string]string{
-				LabelManagedBy:  LabelManagedByValue,
-				LabelRole:       LabelRoleExternalAllow,
-				LabelSourceKind: LabelSourceKindApiserver,
-				LabelSource:     "apiserver-" + svc.Name,
+				LabelManagedBy:    LabelManagedByValue,
+				LabelK8sManagedBy: LabelManagedByValue,
+				LabelRole:         LabelRoleExternalAllow,
+				LabelSourceKind:   LabelSourceKindApiserver,
+				LabelSource:       "apiserver-" + svc.Name,
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{

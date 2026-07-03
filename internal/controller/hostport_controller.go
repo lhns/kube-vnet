@@ -178,10 +178,11 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 			Name:      hostPortPolicyName(ns, key),
 			Namespace: ns,
 			Labels: map[string]string{
-				LabelManagedBy:  LabelManagedByValue,
-				LabelRole:       LabelRoleExternalAllow,
-				LabelSourceKind: LabelSourceKindHost,
-				LabelSource:     "host-" + fmt.Sprintf("%d-%s", key.port, protoLower),
+				LabelManagedBy:    LabelManagedByValue,
+				LabelK8sManagedBy: LabelManagedByValue,
+				LabelRole:         LabelRoleExternalAllow,
+				LabelSourceKind:   LabelSourceKindHost,
+				LabelSource:       "host-" + fmt.Sprintf("%d-%s", key.port, protoLower),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -270,4 +271,3 @@ func podToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
 func networkPolicyToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }
-

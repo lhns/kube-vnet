@@ -167,8 +167,18 @@ These are how the operator identifies what it owns. Don't put them on your own r
 | **On** | Every operator-managed `NetworkPolicy` (membership policies AND the baseline). |
 | **Value** | Always `kube-vnet`. |
 | **Set by** | The operator. |
-| **Meaning** | "This NetworkPolicy is managed by kube-vnet. Drift correction applies." |
+| **Meaning** | "This NetworkPolicy is managed by kube-vnet. Drift correction applies." **The authoritative ownership signal** — sweeps, the uninstall cleanup hook, and the system-vnet trust checks all key on this label, which is safe only because the `kube-vnet.system/*` prefix is admission-protected (users can't set or strip it). |
 | **Used by** | The operator's NetworkPolicy watch predicates (in both reconcilers); `cleanupForDeleted`; `deleteStale`; the `MetricsCollector`. Also referenced by the user-facing `kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet`. |
+
+### `app.kubernetes.io/managed-by=kube-vnet`
+
+| | |
+|---|---|
+| **On** | Every operator-emitted resource (all NetworkPolicy families and the system VirtualNetworks), alongside the system label above. |
+| **Value** | `kube-vnet`. |
+| **Set by** | The operator. (Chart-templated resources — the Deployment, RBAC, VAPs, CRDs — carry `app.kubernetes.io/managed-by: Helm` instead, because Helm manages those.) |
+| **Meaning** | The [Kubernetes recommended label](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/), stamped purely for ecosystem convention: dashboards and `kubectl get -l app.kubernetes.io/managed-by=kube-vnet` work as users expect. |
+| **Used by** | Nothing in the operator. **Informational only** — this key is user-writable by design and cannot be admission-protected (Helm stamps it cluster-wide), so no sweep, cleanup, or trust decision ever keys on it; a policy carrying only this label is never touched by kube-vnet. The system label above is the sole authoritative signal. |
 
 ### `kube-vnet.system/network=<homeNS>.<vnet-name>`
 

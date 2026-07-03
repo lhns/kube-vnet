@@ -35,8 +35,9 @@ func DesiredBaseline(ns string) *networkingv1.NetworkPolicy {
 			Namespace: ns,
 			Name:      BaselinePolicyName,
 			Labels: map[string]string{
-				LabelManagedBy: LabelManagedByValue,
-				LabelRole:      LabelRoleBaseline,
+				LabelManagedBy:    LabelManagedByValue,
+				LabelK8sManagedBy: LabelManagedByValue,
+				LabelRole:         LabelRoleBaseline,
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{

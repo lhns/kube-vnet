@@ -339,3 +339,58 @@ func TestSweepStalePoliciesByOwner_SkipsPoliciesWithoutOwner(t *testing.T) {
 		t.Errorf("no-owner policy was deleted: %v", err)
 	}
 }
+
+// TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative pins the
+// contract on LabelK8sManagedBy (app.kubernetes.io/managed-by): it is
+// INFORMATIONAL ONLY. It is user-writable and not VAP-protectable, so a
+// user could stamp it on a third-party policy; if any sweep treated it
+// as an ownership signal, kube-vnet would delete objects it doesn't own.
+// Both sweep entry points must ignore a policy that carries ONLY the
+// standard label (plus a matching owner-ref, to make the owner-based
+// sweep's ignore-decision maximally adversarial).
+func TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = networkingv1.AddToScheme(scheme)
+
+	truePtr := true
+	svcRef := &metav1.OwnerReference{
+		APIVersion: "v1", Kind: "Service",
+		Name: "web", UID: types.UID("svc-web-uid"),
+		Controller: &truePtr,
+	}
+	// Adversarial object: standard managed-by label (user-settable) +
+	// role label + owner-ref, but NO kube-vnet.system/managed-by.
+	impostor := mkPolicy("user-policy-with-standard-label", "ns1", map[string]string{
+		LabelK8sManagedBy: LabelManagedByValue,
+		LabelRole:         LabelRoleExternalAllow,
+	}, svcRef)
+
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(impostor).Build()
+
+	// Label-based sweep: inNamespacePolicyLabels always requires the
+	// system managed-by label, so the impostor must not match the List.
+	if err := sweepStalePolicies(context.Background(), c,
+		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
+		nil,
+	); err != nil {
+		t.Fatalf("label sweep: %v", err)
+	}
+	var got networkingv1.NetworkPolicy
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "user-policy-with-standard-label"}, &got); err != nil {
+		t.Errorf("label-based sweep deleted a policy that carries only the standard managed-by label: %v", err)
+	}
+
+	// Owner-ref-based sweep with an empty keep set: same requirement.
+	if err := sweepStalePoliciesByOwner(context.Background(), c,
+		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
+		"Service", "web", types.UID("svc-web-uid"),
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("owner sweep: %v", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "user-policy-with-standard-label"}, &got); err != nil {
+		t.Errorf("owner-based sweep deleted a policy that carries only the standard managed-by label: %v", err)
+	}
+}

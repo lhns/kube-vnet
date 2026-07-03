@@ -155,7 +155,8 @@ func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.Virtua
 			Namespace: namespace,
 			Name:      name,
 			Labels: map[string]string{
-				LabelManagedBy: LabelManagedByValue,
+				LabelManagedBy:    LabelManagedByValue,
+				LabelK8sManagedBy: LabelManagedByValue,
 			},
 		},
 		Spec: vnetv1alpha1.VirtualNetworkSpec{

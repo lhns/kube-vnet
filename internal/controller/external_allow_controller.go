@@ -44,12 +44,12 @@ import (
 // Watches:
 //   - corev1.Service                  primary trigger; ports/selector/type/annotations
 //   - corev1.Namespace                catches mid-flight kube-vnet/disabled or
-//                                     kube-vnet/external-allow flips
+//     kube-vnet/external-allow flips
 //   - networkingv1.NetworkPolicy      drift correction (filtered by role label)
 //   - corev1.Pod (Create only)        unblocks named-targetPort resolution when a
-//                                     backing pod with the matching container-port
-//                                     name appears (closes the up-to-30s requeue
-//                                     latency for Service-before-Pod ordering)
+//     backing pod with the matching container-port
+//     name appears (closes the up-to-30s requeue
+//     latency for Service-before-Pod ordering)
 //
 // Note: hostPort container detection and hostNetwork pod warnings are
 // deliberately scoped out of v1; NetworkPolicy enforcement on host-network
@@ -278,9 +278,10 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 			Name:      externalAllowPolicyName(svc),
 			Namespace: svc.Namespace,
 			Labels: map[string]string{
-				LabelManagedBy:  LabelManagedByValue,
-				LabelRole:       LabelRoleExternalAllow,
-				LabelSourceKind: LabelSourceKindService,
+				LabelManagedBy:    LabelManagedByValue,
+				LabelK8sManagedBy: LabelManagedByValue,
+				LabelRole:         LabelRoleExternalAllow,
+				LabelSourceKind:   LabelSourceKindService,
 				// Symmetric with host-source's `host-<port>-<proto>`:
 				// `svc-<name>`. Kind is also carried explicitly in
 				// LabelSourceKind above; the prefix here is for readability
@@ -412,7 +413,6 @@ func externalAllowPolicyName(svc *corev1.Service) string {
 	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 
-
 func cloneStringMap(m map[string]string) map[string]string {
 	if m == nil {
 		return nil
@@ -543,4 +543,3 @@ func hasNamedTargetPort(svc *corev1.Service) bool {
 	}
 	return false
 }
-
