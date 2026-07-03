@@ -147,30 +147,21 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		t.Cleanup(func() { _ = opClient.Delete(context.Background(), v2) })
 	})
 
-	// DELETE is intentionally NOT guarded by this VAP — it must stay open so
-	// the Kubernetes namespace controller can cascade-delete the `namespace`
-	// system vnet during namespace teardown. Guarding DELETE left every
-	// managed namespace stuck in Terminating. A non-operator user deleting a
-	// system vnet is recovered by SystemVnetReconciler drift-correction, not
-	// by admission. These subtests pin that DELETE is allowed for a
-	// non-operator user on both a reserved name and a system-labeled vnet.
-	t.Run("user can DELETE a reserved-name system vnet (teardown path)", func(t *testing.T) {
-		// Operator creates the real system vnet; a non-operator user deletes
-		// it (standing in for the namespace-controller cascade, which envtest
-		// doesn't run).
-		v := &vnetv1alpha1.VirtualNetwork{}
-		v.Name = "namespace"
-		v.Namespace = ns
-		v.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
-		if err := opClient.Create(ctx, v); err != nil {
-			t.Fatalf("operator SA create: %v", err)
-		}
-		if err := userClient.Delete(ctx, v); err != nil {
-			t.Fatalf("expected DELETE to be allowed (VAP must not block teardown), got: %v", err)
-		}
-	})
-
-	t.Run("user can DELETE a system-labeled vnet with an ordinary name", func(t *testing.T) {
+	// DELETE is intentionally NOT in this VAP's matchConstraints — it must
+	// stay open so the Kubernetes namespace controller can cascade-delete the
+	// `namespace` system vnet during namespace teardown (guarding DELETE left
+	// every managed namespace stuck in Terminating). A non-operator user
+	// deleting a system vnet is recovered by SystemVnetReconciler
+	// drift-correction, not by admission.
+	//
+	// The check uses a system-LABELED vnet with an ORDINARY name: it carries
+	// the protected `kube-vnet.system/managed-by` label (so if DELETE were
+	// still guarded the VAP would deny it), but its name isn't a reserved
+	// system-vnet name, so the SystemVnetReconciler's disabled-namespace
+	// cleanup (which only deletes the vnet named exactly `namespace`) never
+	// races us. A reserved-name delete would exercise the same now-unmatched
+	// operation but race that cleanup, adding no coverage.
+	t.Run("user DELETE of a system-labeled vnet is not blocked", func(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		v.Name = "labeled-ordinary"
 		v.Namespace = ns
@@ -178,8 +169,11 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		if err := opClient.Create(ctx, v); err != nil {
 			t.Fatalf("operator SA create: %v", err)
 		}
-		if err := userClient.Delete(ctx, v); err != nil {
-			t.Fatalf("expected DELETE to be allowed, got: %v", err)
+		// A VAP denial would be Invalid/Forbidden; NotFound would mean
+		// something already deleted it (also "not blocked"). Only an
+		// admission denial is a failure.
+		if err := userClient.Delete(ctx, v); err != nil && !apierrors.IsNotFound(err) {
+			t.Fatalf("expected DELETE to be allowed (VAP must not guard DELETE), got: %v", err)
 		}
 	})
 }
