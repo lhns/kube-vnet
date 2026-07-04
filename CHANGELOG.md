@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-07-04
+
 ### Fixed
 
 - **Managed namespaces could get stuck in `Terminating` forever.** The
