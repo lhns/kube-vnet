@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-09
+
 ### Changed
 
 - **BREAKING: `virtualNetworkRef.namespace` is now honored instead of silently
@@ -53,6 +55,15 @@ release. Pinning to an exact version is recommended.
 - Corrected documentation that claimed the per-namespace `namespace` system
   vnet lives in the operator's release namespace. It exists in every *managed*
   namespace; the release namespace is unmanaged and has none.
+- **The chart's CRD templates are now generated from `config/crd/bases/`**
+  instead of being a hand-maintained second copy that could silently drift.
+  A stale copy is not cosmetic: it breaks `helm install` outright, because the
+  chart's own seeded `ClusterVirtualNetworkBaseline` is validated against the
+  chart's CRD. `make manifests` renders them, and CI regenerates and diffs them
+  alongside the kustomize VAPs and the published JSON schemas, so a stale copy
+  can no longer reach a release.
+- Corrected the shipped sample `config/samples/09_clustervirtualnetworkbaseline.yaml`,
+  which carried a system-vnet ref with an explicit namespace.
 
 ## [0.5.1] — 2026-07-09
 
