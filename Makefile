@@ -76,10 +76,15 @@ controller-gen:
 		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRD + RBAC manifests and the downstream CRD JSON schemas.
+manifests: controller-gen ## Generate CRD + RBAC manifests, the chart's CRD templates, and the downstream CRD JSON schemas.
 	$(CONTROLLER_GEN) crd paths="./api/v1alpha1/..." output:crd:dir=config/crd/bases
 	$(CONTROLLER_GEN) rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
+	@bash scripts/gen-chart-crds.sh
 	@bash scripts/gen-schemas.sh
+
+.PHONY: chart-crds
+chart-crds: ## Render the chart's CRD templates from config/crd/bases (also run by `make manifests`).
+	@bash scripts/gen-chart-crds.sh
 
 .PHONY: generate
 generate: controller-gen ## Generate deepcopy methods

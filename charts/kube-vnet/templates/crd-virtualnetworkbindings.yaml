@@ -5,14 +5,18 @@ install-once-only and does not propagate updates -- see
 https://helm.sh/docs/chart_best_practices/custom_resource_definitions/.
 The `helm.sh/resource-policy: keep` annotation prevents `helm uninstall`
 from cascading-deleting every existing CR alongside the CRD. ADR 0030.
+
+Generated from config/crd/bases/ by `make manifests`
+(scripts/gen-chart-crds.sh). Do not edit by hand -- edit the API types under
+api/v1alpha1/ and regenerate. A stale copy breaks `helm install`.
 */ -}}
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    helm.sh/resource-policy: keep
     controller-gen.kubebuilder.io/version: v0.16.5
+    helm.sh/resource-policy: keep
   name: virtualnetworkbindings.kube-vnet.lhns.de
 spec:
   group: kube-vnet.lhns.de
@@ -146,11 +150,30 @@ spec:
                     description: Name of the target VirtualNetwork.
                     type: string
                   namespace:
-                    description: Namespace is the home namespace of the target VirtualNetwork.
+                    description: |-
+                      Namespace is the home namespace of the target VirtualNetwork.
+
+                      Optional, and omitting it is the recommended form for the reserved
+                      system vnets. When omitted it is inferred:
+
+                        cluster  -> the cluster-wide singleton (lives in the operator's namespace)
+                        namespace -> the referencing pod's own namespace
+                        <user vnet> -> the referencing pod's own namespace
+
+                      When set, it is honored verbatim — never rewritten. A namespace that
+                      does not hold the named VirtualNetwork, or one whose vnet does not
+                      permit the pod's namespace via spec.allowedNamespaces, simply means
+                      the pod cannot join: the membership is dropped and a
+                      VirtualNetworkNotJoinable Warning Event is emitted. This applies
+                      uniformly to system and user vnets alike.
+
+                      Note the per-namespace `namespace` system vnet exists in every managed
+                      namespace — NOT in the operator's release namespace, which is
+                      unmanaged. Pointing at the release namespace names a vnet that does
+                      not exist. See ADR 0043.
                     type: string
                 required:
                 - name
-                - namespace
                 type: object
             required:
             - podSelector

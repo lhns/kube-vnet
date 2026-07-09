@@ -32,8 +32,12 @@ jobs:
           $(go env GOPATH)/bin/controller-gen rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
           # Re-render the chart-derived kustomize VAPs (Stage D / ADR 0030).
           make render-kustomize-vaps
-          # Re-generate the downstream CRD JSON schemas (ADR: kubeconform).
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          # Re-render the chart's CRD templates. They are a second copy of the
+          # CRDs; a stale copy breaks `helm install` (the seeded CVNB fails
+          # validation against an outdated schema) and only e2e would catch it.
+          make chart-crds
+          # Re-generate the downstream CRD JSON schemas (kubeconform, ADR 0043).
           make schemas
           git diff --exit-code
 
