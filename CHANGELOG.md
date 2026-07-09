@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-09
+
 ### Added
 
 - **`kube-system` can now be safely enrolled into kube-vnet.** Removing it from
