@@ -301,7 +301,7 @@ status:
 | Field | Type | Description |
 |---|---|---|
 | `virtualNetworkRef.name` | string | Name of the target `VirtualNetwork`. Required. |
-| `virtualNetworkRef.namespace` | string | Home namespace of the target `VirtualNetwork`. Required. |
+| `virtualNetworkRef.namespace` | string | Home namespace of the target `VirtualNetwork`. **Optional** — see [Referencing a VirtualNetwork](#referencing-a-virtualnetwork). |
 | `direction` | string enum | `both` (default) \| `ingress` \| `egress` \| `none`. Same enum as the join label value. |
 | `podSelector` | `metav1.LabelSelector` | Required. **Scoped to the binding's own namespace** — there are no cross-namespace bindings. |
 
@@ -390,6 +390,7 @@ spec:
 |---|---|---|---|
 | `memberships` | `[]BaselineMembership` | no (empty = no NS-tier defaults) | Memberships every pod in this namespace inherits. Atomic list; order not significant. |
 | `memberships[].virtualNetworkRef.name` | string | yes | Target vnet's name. |
+| `memberships[].virtualNetworkRef.namespace` | string | no | Optional; inferred when omitted. See [Referencing a VirtualNetwork](#referencing-a-virtualnetwork). |
 | `memberships[].virtualNetworkRef.namespace` | string | yes | Target vnet's home namespace. |
 | `memberships[].direction` | string | yes | One of the eight direction values: `both`, `ingress`, `egress`, `none`, `default-both`, `default-ingress`, `default-egress`, `default-none` (enum-enforced). Bare values are **enforced** — bindings and pod labels in this namespace cannot override them. `default-*` values are **advisory** — lower tiers may override per vnet. |
 
@@ -502,3 +503,39 @@ kubeconform -strict -summary \
 - The schemas are faithful to the CRDs: they enforce field types, `enum`s (e.g. `direction: both|ingress|egress|none`), `required` fields, and — because kube-vnet's CRDs are closed structural schemas — they reject **misspelled/unknown fields** (`additionalProperties: false`), so a typo like `podSelctor` fails validation. (The CEL-based cross-field rules such as "`podSelector` must be non-empty" are enforced by the apiserver, not expressible in JSON Schema, so kubeconform won't catch those.)
 
 Maintainers: the schemas are generated from `config/crd/bases/*.yaml` by `scripts/gen-schemas.sh` and kept in sync by a CI drift-gate. `make manifests` regenerates them alongside the CRDs (or run `make schemas` on its own), so any API change picks them up automatically.
+
+---
+
+# Referencing a VirtualNetwork
+
+Every `virtualNetworkRef` takes `{name, namespace}`. **`namespace` is optional, and omitting it is the recommended form** — especially for the two reserved system vnets, where writing it is a common source of confusion ([ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md)).
+
+| `name` | omitted `namespace` infers | explicit `namespace` |
+|---|---|---|
+| `cluster` | the cluster-wide singleton | honored; must be the namespace that actually holds it (the operator's) |
+| `namespace` | the referencing pod's **own** namespace | honored |
+| a user vnet | the referencing pod's **own** namespace | honored (this is how cross-namespace joins are declared) |
+
+When set, `namespace` is **honored verbatim — never rewritten**. A namespace that does not hold the named `VirtualNetwork`, or whose vnet does not permit the pod's namespace via `spec.allowedNamespaces`, simply means the pod cannot join: the membership is dropped and a `VirtualNetworkNotJoinable` Warning Event is emitted on the Baseline, Binding, or Pod that declared it.
+
+This is uniform — system and user vnets follow identical rules. `{name: namespace, namespace: other-ns}` is a coherent attempt to join `other-ns`'s namespace vnet; it fails only because system namespace-vnets set no `allowedNamespaces`, exactly as a user vnet that doesn't allow you would.
+
+> **The one trap.** The per-namespace `namespace` system vnet exists in every *managed* namespace — and **not** in the operator's release namespace, which is unmanaged and therefore has none. Pointing a `namespace` ref at the release namespace names a vnet that does not exist:
+>
+> ```yaml
+> virtualNetworkRef:
+>   name: namespace
+>   namespace: kube-vnet-system   # ✗ no such vnet — membership dropped
+> ```
+> ```yaml
+> virtualNetworkRef:
+>   name: namespace               # ✓ resolves to the pod's own namespace
+> ```
+>
+> (Before ADR 0043 the field was silently discarded here, so the wrong form appeared to work.)
+
+Diagnose a dropped membership with:
+
+```bash
+kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A
+```

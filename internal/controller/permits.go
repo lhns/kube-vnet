@@ -29,16 +29,26 @@ import (
 // pod NS not in allowedNamespaces, malformed key. Returns (false, err)
 // only for transient apiserver/client errors that the caller should retry.
 //
-// Special case: the cluster vnet is always permitted by design. Its
-// allowedNamespaces is `{All: true}` at construction
-// (system_vnet_controller.go `ensureClusterSystemVnet`), but Permits
-// short-circuits before fetching the CR for the same outcome.
+// The cluster vnet is a singleton whose canonical key is bare `cluster`
+// (ADR 0033 Amendment) — that form carries no home namespace, so there is
+// nothing to fetch and it is permitted directly. Its allowedNamespaces is
+// `{All: true}` at construction (system_vnet_controller.go
+// `ensureClusterSystemVnet`), so the outcome matches.
+//
+// A *qualified* `<ns>.cluster` key must NOT short-circuit: it names a
+// concrete vnet in a concrete namespace, and a wrong namespace has to be
+// denied like any other non-existent vnet. Short-circuiting on the vnet
+// name alone made `bogus.cluster` permitted, which is why an incorrect
+// `virtualNetworkRef.namespace` on the cluster vnet could never be caught
+// (ADR 0043). The Get below resolves it: the CR exists only in the
+// operator's namespace, so the singleton's home is discovered, not
+// hardcoded.
 func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string) (bool, error) {
 	homeNS, vnetName, ok := splitVnetKey(vnetKey)
 	if !ok {
 		return false, nil
 	}
-	if vnetName == SystemVnetCluster {
+	if vnetName == SystemVnetCluster && homeNS == "" {
 		return true, nil
 	}
 

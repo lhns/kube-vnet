@@ -172,6 +172,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: nsFilter,
+		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")

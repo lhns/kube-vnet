@@ -248,7 +248,7 @@ func TestIntegration_RBAC_Viewer_ReadsButCannotWrite(t *testing.T) {
 	mut := got.DeepCopy()
 	mut.Spec.Memberships = []vnetv1alpha1.BaselineMembership{
 		{
-			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "namespace", Namespace: "kube-vnet-system-test"},
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "namespace"},
 			Direction:         "default-both",
 		},
 	}

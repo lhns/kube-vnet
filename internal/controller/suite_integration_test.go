@@ -124,9 +124,10 @@ func TestMain(m *testing.M) {
 	}
 
 	resReconciler := &ResolutionReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		NSFilter:    NewNamespaceFilter(nil),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: NewNamespaceFilter(nil),
+		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup resolution reconciler: %v\n", err)

@@ -76,8 +76,11 @@ operator:
 
     # memberships — explicit override for users whose desired baseline
     # doesn't match any preset. Map of <vnet-key> → <direction>:
-    #   bare name (e.g. `namespace`, `cluster`) → system vnet, lives in the
-    #     operator's release namespace.
+    #   bare name (e.g. `namespace`, `cluster`) → system vnet. Rendered with
+    #     NO `namespace:` attribute: `cluster` is the cluster-wide singleton,
+    #     and `namespace` resolves to each pod's OWN namespace (the operator
+    #     creates one in every managed namespace — never in the release
+    #     namespace, which is unmanaged). See ADR 0043.
     #   <namespace>.<name>                       → user vnet in that NS.
     # Direction is the eight-value enum (bare or default-*).
     # Bare directions are enforced; default-* are override-able by lower tiers.

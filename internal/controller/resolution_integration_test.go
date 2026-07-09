@@ -40,11 +40,17 @@ func setClusterBaseline(t *testing.T, memberships []vnetv1alpha1.BaselineMembers
 	t.Cleanup(func() { _ = testClient.Delete(context.Background(), cb) })
 }
 
-// sysVnetRef builds a BaselineMembership entry for a system vnet (lives in
-// the test operator namespace). Convenience wrapper for the common case.
+// sysVnetRef builds a baseline membership for a reserved system vnet.
+//
+// `namespace` is deliberately OMITTED — the recommended form per ADR 0043.
+// `cluster` then resolves to the cluster-wide singleton, and `namespace`
+// resolves to each pod's own namespace. Naming the operator's namespace here
+// (as this helper and the chart both used to) points at a vnet that does not
+// exist: the operator's namespace is unmanaged, so it holds no `namespace`
+// vnet, and this test suite never seeds a `cluster` vnet there either.
 func sysVnetRef(name, dir string) vnetv1alpha1.BaselineMembership {
 	return vnetv1alpha1.BaselineMembership{
-		VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: name, Namespace: "kube-vnet-system-test"},
+		VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: name},
 		Direction:         dir,
 	}
 }
@@ -279,7 +285,8 @@ func TestIntegration_Resolution_NamespaceBaselineOverridesCluster(t *testing.T) 
 		Spec: vnetv1alpha1.VirtualNetworkBaselineSpec{
 			Memberships: []vnetv1alpha1.BaselineMembership{
 				{
-					VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "cluster", Namespace: "kube-vnet-system-test"},
+					// namespace omitted: the cluster singleton (ADR 0043).
+					VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "cluster"},
 					Direction:         "default-both",
 				},
 			},
@@ -455,4 +462,109 @@ func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
 	if got, ok := p.Labels["kube-vnet.system/net."+ns+".ghost-vnet"]; ok {
 		t.Errorf("missing-vnet should NOT be stamped, got %q; labels=%v", got, p.Labels)
 	}
+}
+
+// TestIntegration_Baseline_SystemVnetRef_ForeignNamespace_NoStamp is the
+// end-to-end regression lock for ADR 0043.
+//
+// A VirtualNetworkBaseline pointing the `namespace` system vnet at the
+// operator's namespace names a vnet that does not exist (the operator's
+// namespace is unmanaged, so SystemVnetReconciler seeds no `namespace` vnet
+// there). Before ADR 0043 resolution silently discarded ref.Namespace and
+// substituted the pod's own namespace, so this stamped `net.<ns>.namespace`
+// and generated a membership policy — a wrong ref that appeared to work.
+//
+// It must now be honored, found missing, and dropped: no stamp.
+func TestIntegration_Baseline_SystemVnetRef_ForeignNamespace_NoStamp(t *testing.T) {
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("cluster", "default-egress"),
+	})
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-foreignref")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	nsBaseline := &vnetv1alpha1.VirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBaselineSpec{
+			Memberships: []vnetv1alpha1.BaselineMembership{
+				{
+					// The exact shape the chart and our docs used to produce.
+					VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{
+						Name:      "namespace",
+						Namespace: "kube-vnet-system-test",
+					},
+					Direction: "both",
+				},
+			},
+		},
+	}
+	mustCreate(t, nsBaseline)
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), nsBaseline) })
+
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "x"}))
+
+	// Wait for the pod to be resolved at all (the annotation is written on
+	// every successful resolution), then assert the stamp is absent.
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if _, ok := p.Annotations[AnnotationResolvedGeneration]; !ok {
+			return fmt.Errorf("pod not resolved yet; labels=%v", p.Labels)
+		}
+		return nil
+	})
+
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net."+ns+".namespace"]; ok {
+		t.Fatalf("ref.Namespace was silently rewritten to the pod's namespace: "+
+			"stamped net.%s.namespace=%q from a ref naming kube-vnet-system-test; labels=%v",
+			ns, got, p.Labels)
+	}
+	if got, ok := p.Labels["kube-vnet.system/net.kube-vnet-system-test.namespace"]; ok {
+		t.Fatalf("stamped a membership for a vnet that does not exist: %q; labels=%v", got, p.Labels)
+	}
+}
+
+// The recommended form (namespace omitted) must still stamp and generate,
+// proving the fix doesn't regress the normal path.
+func TestIntegration_Baseline_OmittedNamespace_StampsLocalNamespaceVnet(t *testing.T) {
+	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
+		sysVnetRef("cluster", "default-egress"),
+	})
+
+	ctx := context.Background()
+	ns := uniqueNS(t, "res-omittedref")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	nsBaseline := &vnetv1alpha1.VirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBaselineSpec{
+			Memberships: []vnetv1alpha1.BaselineMembership{
+				{
+					VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "namespace"},
+					Direction:         "both",
+				},
+			},
+		},
+	}
+	mustCreate(t, nsBaseline)
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), nsBaseline) })
+
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "x"}))
+	eventually(t, 10*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels["kube-vnet.system/net."+ns+".namespace"]; got != "both" {
+			return fmt.Errorf("net.%s.namespace = %q, want both; labels=%v", ns, got, p.Labels)
+		}
+		return nil
+	})
 }

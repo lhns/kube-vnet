@@ -1,5 +1,7 @@
 # 0031 — Baseline-tier resolution: replace bindings/CVNB with explicit defaults vs bindings
 
+> **Amendment (ADR 0043, 2026-07-09)**: `virtualNetworkRef.namespace` is now optional and, when set, honored rather than ignored. Omitting it is the recommended form for the system vnets. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
+
 Status: Accepted
 
 Date: 2026-05-05
@@ -194,7 +196,7 @@ Baseline `memberships` reference vnets by `(name, namespace)`. The chart's `oper
 
 - **Pod labels** admit both forms: bare = "this vnet in my own namespace"; prefixed = explicit cross-NS reference. The form is fully resolved at the time the label is read.
 - **Baselines** also admit both forms, but a bare key is only meaningful for the system vnets (`namespace`, `cluster`). The reserved-name VAP from the ADR-0030 follow-up guarantees no user vnet can collide with those names, so the dispatch is unambiguous in practice. A bare-keyed entry in a baseline names a *scope-relative* vnet — it expands to the matching bare pod label at resolution time, which means a single baseline entry produces a per-pod-namespace effect for the per-NS `namespace` system vnet. Conceptually a partially-applied function: the baseline carries the unparameterized membership, the pod-resolution step parameterizes it.
-- Specifying the `cluster` system vnet with a `kube-vnet-system.cluster` (release-namespace-prefixed) form technically works but is discouraged because it couples user-facing config to the operator's release namespace.
+- Specifying the `cluster` system vnet with a `kube-vnet-system.cluster` (release-namespace-prefixed) form works and is now *verified* against the real CR, but remains discouraged because it couples user-facing config to the operator's release namespace. **Omit `namespace` instead** (ADR 0043). Naming any other namespace resolves to a vnet that does not exist and the membership is dropped with a `VirtualNetworkNotJoinable` Event — the `namespace` system vnet in particular lives in every *managed* namespace, never in the release namespace.
 
 ### Validation limits on baseline references
 

@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +49,10 @@ type ResolutionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
+	// Recorder surfaces VirtualNetworkNotJoinable Warning Events on the
+	// object that declared an unjoinable rule. Optional; nil disables the
+	// diagnostic (unit tests construct the reconciler without one).
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -111,7 +116,8 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 	// Without this gate, a pod-label or baseline entry pointing at a
 	// non-permitting vnet would still stamp `kube-vnet.system/net.*` on
 	// the pod — a lying stamp that doesn't match the membership policy
-	// the VirtualNetworkReconciler later generates. See ADR (TODO).
+	// the VirtualNetworkReconciler later generates. Dropped rules emit a
+	// VirtualNetworkNotJoinable Warning Event. See ADR 0043.
 
 	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
 	// `default`.
@@ -158,10 +164,58 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 	return layers, nil
 }
 
+// ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
+// baseline/binding/label rule names a vnet the pod's namespace cannot join.
+// It is deliberately uniform across system and user vnets (ADR 0043): the
+// reason is the machine contract that alerts and field-selectors key on, so
+// it must never branch on vnet kind. Only the human-readable note is
+// enriched, by notJoinableHint.
+const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
+
+// notJoinableHint returns a targeted suggestion when a ref names one of the
+// reserved system vnets, whose namespace semantics trip people up. It is
+// PURE FORMATTING — it must never influence control flow, or the per-kind
+// special-casing ADR 0043 removed would creep back in.
+func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
+	switch ref.Name {
+	case SystemVnetCluster:
+		return " hint: `cluster` is a cluster-wide singleton living in the operator's namespace; " +
+			"omit `namespace` (recommended) or set it to the operator's namespace."
+	case SystemVnetNamespace:
+		return " hint: the `namespace` system vnet exists in every managed namespace — not in the " +
+			"operator's (unmanaged) namespace; omit `namespace` to mean the pod's own namespace."
+	default:
+		return ""
+	}
+}
+
+// notJoinableNote explains WHY the pod cannot join, distinguishing "no such
+// vnet" from "exists but doesn't allow you" — different problems with
+// different fixes. Only called on the failure path, so the extra Get is free
+// in the happy case.
+func (r *ResolutionReconciler) notJoinableNote(ctx context.Context, key VnetKey, podNS string) string {
+	homeNS, name, ok := splitVnetKey(key)
+	if !ok {
+		return fmt.Sprintf("malformed virtual network key %q", key)
+	}
+	var v vnetv1alpha1.VirtualNetwork
+	if err := r.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: name}, &v); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Sprintf("VirtualNetwork %q does not exist in namespace %q", name, homeNS)
+		}
+		return fmt.Sprintf("could not read VirtualNetwork %s/%s: %v", homeNS, name, err)
+	}
+	return fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q (spec.allowedNamespaces)",
+		homeNS, name, podNS)
+}
+
 // filterPermittedRules drops rules that reference vnets the pod's NS
 // isn't permitted to join (per Permits, the single-source-of-truth
 // helper in permits.go). "Not permitted" — vnet doesn't exist, NS not
-// in allowedNamespaces — drops the rule silently. A transient apiserver
+// in allowedNamespaces — drops the rule and emits a
+// VirtualNetworkNotJoinable Warning Event on the object that declared it,
+// so a wrong `virtualNetworkRef.namespace` is visible instead of silent
+// (ADR 0043). A transient apiserver
 // error is NOT the same thing: it propagates as an error so the caller
 // requeues instead of stripping a possibly-valid stamp. Collapsing
 // errors into "deny" caused stamp churn (momentary membership loss)
@@ -182,8 +236,20 @@ func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules [
 			return nil, err
 		}
 		if !ok {
+			if r.Recorder != nil && rule.Owner != nil {
+				r.Recorder.Eventf(rule.Owner, nil, corev1.EventTypeWarning,
+					ReasonVirtualNetworkNotJoinable, "Resolve",
+					"pod namespace %q cannot join %q (from %s): %s%s",
+					podNS, rule.Vnet, rule.Source,
+					r.notJoinableNote(ctx, rule.Vnet, podNS), notJoinableHint(rule.Ref))
+			}
 			continue
 		}
+		// Permission is decided on the fully-qualified key so a wrong
+		// `<ns>.cluster` can be denied; identity is stamped in ADR 0033's
+		// canonical form, which collapses `<anything>.cluster` to bare
+		// `cluster`. Only survivors reach here, so the collapse is safe.
+		rule.Vnet = VnetKey(CanonicalSuffix(string(rule.Vnet), podNS))
 		out = append(out, rule)
 	}
 	return out, nil
@@ -212,6 +278,8 @@ func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *co
 			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "ClusterVirtualNetworkBaseline/default",
+			Ref:       m.VirtualNetworkRef,
+			Owner:     cb,
 		})
 	}
 	return out, nil
@@ -238,6 +306,8 @@ func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *
 			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
+			Ref:       m.VirtualNetworkRef,
+			Owner:     nb,
 		})
 	}
 	return out, nil
@@ -277,6 +347,8 @@ func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod
 			Vnet:      r.canonicalVnetKey(b.Spec.VirtualNetworkRef, pod.Namespace),
 			Direction: dir,
 			Source:    "VirtualNetworkBinding/" + b.Name,
+			Ref:       b.Spec.VirtualNetworkRef,
+			Owner:     b,
 		})
 	}
 	return out, nil
@@ -304,6 +376,10 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			Vnet:      key,
 			Direction: dir,
 			Source:    "<pod-label>",
+			// No Ref: a join label carries no namespace field to be wrong
+			// about, so there is nothing to hint at. The Event still lands
+			// on the pod that asked for the unjoinable vnet.
+			Owner: pod,
 		})
 	}
 	return out
@@ -343,19 +419,31 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 	return scopeNS + "." + suffix
 }
 
-// canonicalVnetKey computes the canonical FQ VnetKey for any vnet
-// reference, given the pod's namespace as the resolution context. Per
-// ADR 0033, the output is always `<homeNS>.<name>` — system vnets included
-// — where `homeNS` is the namespace the vnet lives in (the pod's NS for
-// the per-NS `namespace` system vnet; the operator's release NS for
-// `cluster`; the ref's own namespace for user vnets).
+// canonicalVnetKey turns a vnet reference into the VnetKey to check
+// permission against, using the pod's namespace as the resolution context.
+//
+// It is pure inference — it never validates and never special-cases a vnet
+// kind (ADR 0043). `ref.Namespace` is *honored* whenever it is set; it is
+// only inferred when omitted:
+//
+//   - omitted + `cluster` → bare `cluster`, the singleton's canonical key
+//     (ADR 0033 Amendment).
+//   - omitted + anything else (the per-NS `namespace` system vnet and user
+//     vnets alike) → the pod's own namespace.
+//   - set → used verbatim.
+//
+// A wrong namespace therefore names a vnet the pod cannot join, and is
+// denied by the ordinary permission path in filterPermittedRules — exactly
+// as a user vnet that doesn't allow the pod would be. It is never rewritten
+// to something that happens to work. A *qualified* `<ns>.cluster` key is
+// deliberately left qualified so Permits can verify it against the real CR;
+// it collapses to the bare canonical form after permission passes.
 func (r *ResolutionReconciler) canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
-	if ref.Name == SystemVnetCluster {
-		// Cluster is the cluster-wide singleton; bare per ADR 0033 amendment.
-		return VnetKey(SystemVnetCluster)
-	}
-	if ref.Name == SystemVnetNamespace {
-		return VnetKey(podNS + "." + SystemVnetNamespace)
+	if ref.Namespace == "" {
+		if ref.Name == SystemVnetCluster {
+			return VnetKey(SystemVnetCluster)
+		}
+		return VnetKey(podNS + "." + ref.Name)
 	}
 	return VnetKey(ref.Namespace + "." + ref.Name)
 }

@@ -47,13 +47,12 @@
                     "type": "string"
                   },
                   "namespace": {
-                    "description": "Namespace is the home namespace of the target VirtualNetwork.",
+                    "description": "Namespace is the home namespace of the target VirtualNetwork.\n\nOptional, and omitting it is the recommended form for the reserved\nsystem vnets. When omitted it is inferred:\n\n  cluster  -> the cluster-wide singleton (lives in the operator's namespace)\n  namespace -> the referencing pod's own namespace\n  <user vnet> -> the referencing pod's own namespace\n\nWhen set, it is honored verbatim \u2014 never rewritten. A namespace that\ndoes not hold the named VirtualNetwork, or one whose vnet does not\npermit the pod's namespace via spec.allowedNamespaces, simply means\nthe pod cannot join: the membership is dropped and a\nVirtualNetworkNotJoinable Warning Event is emitted. This applies\nuniformly to system and user vnets alike.\n\nNote the per-namespace `namespace` system vnet exists in every managed\nnamespace \u2014 NOT in the operator's release namespace, which is\nunmanaged. Pointing at the release namespace names a vnet that does\nnot exist. See ADR 0043.",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "name",
-                  "namespace"
+                  "name"
                 ],
                 "type": "object"
               }

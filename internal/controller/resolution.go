@@ -3,6 +3,10 @@ package controller
 import (
 	"fmt"
 	"sort"
+
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
 // VnetKey is the label suffix that goes after `kube-vnet/net.` (user input)
@@ -23,6 +27,17 @@ type ResolutionRule struct {
 	Vnet      VnetKey
 	Direction Direction
 	Source    string
+
+	// Ref is the VirtualNetworkRef this rule was built from, retained only so
+	// a not-joinable diagnostic can quote what the user actually wrote and
+	// hint at the fix (ADR 0043). Zero for rules derived from pod join labels.
+	Ref vnetv1alpha1.VirtualNetworkRef
+
+	// Owner is the object that declared this rule — the Baseline, Binding, or
+	// the Pod itself for join labels. A VirtualNetworkNotJoinable Warning
+	// Event is emitted on it when the rule is dropped. Never used for
+	// resolution logic.
+	Owner client.Object
 }
 
 // ResolutionScope identifies the tier a rule comes from. Tiers cascade in

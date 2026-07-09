@@ -10,6 +10,50 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING: `virtualNetworkRef.namespace` is now honored instead of silently
+  ignored.** For the reserved system vnets (`namespace`, `cluster`) the field
+  used to be discarded — `{name: namespace, namespace: kube-vnet-system}` was
+  rewritten to the pod's *own* namespace vnet, so a reference to a vnet that
+  doesn't exist appeared to work. The field is now **optional** (omitting it is
+  the recommended form) and, when set, honored verbatim. A namespace that
+  doesn't hold the named vnet — or whose vnet doesn't permit the pod's
+  namespace — means the pod cannot join: the membership is dropped and a
+  `VirtualNetworkNotJoinable` Warning Event is emitted.
+
+  No vnet kind is special-cased: a wrong namespace is denied by the ordinary
+  join-permission path, exactly as a user vnet that doesn't allow you would be.
+
+  **Action required** only if you hand-wrote a system-vnet ref with a
+  namespace (our own docs previously told you to). The fix is one line —
+  delete `namespace:`:
+
+  ```yaml
+  virtualNetworkRef:
+    name: namespace        # ✓ resolves to the pod's own namespace
+  # namespace: kube-vnet-system   ✗ no such vnet — membership dropped
+  ```
+
+  Helm installs **self-heal**: the chart's seeded `ClusterVirtualNetworkBaseline`
+  is re-rendered without the attribute on `helm upgrade`. See ADR 0043.
+
+### Fixed
+
+- **`Permits` wrongly allowed any `<namespace>.cluster` reference.** It
+  short-circuited on the vnet *name* alone, never inspecting the home
+  namespace, so a `cluster` ref pointing at a namespace that holds no cluster
+  vnet was permitted. Only the bare canonical `cluster` key short-circuits now.
+- **Memberships dropped because a vnet was missing or didn't permit the pod's
+  namespace were dropped silently.** They now emit a `VirtualNetworkNotJoinable`
+  Warning Event on the Baseline, Binding, or Pod that declared them, naming the
+  vnet and distinguishing "does not exist" from "does not permit this
+  namespace". Find them with
+  `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`.
+- Corrected documentation that claimed the per-namespace `namespace` system
+  vnet lives in the operator's release namespace. It exists in every *managed*
+  namespace; the release namespace is unmanaged and has none.
+
 ## [0.5.1] — 2026-07-09
 
 ### Added

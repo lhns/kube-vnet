@@ -12,9 +12,17 @@ from deleting the CR. Subsequent `helm upgrade` re-renders this template;
 hand-edits via kubectl are overwritten unless you also update the chart
 values to match.
 
-System-vnet keys (`namespace`, `cluster`) live in the operator's release
-namespace by convention. The SystemVnetReconciler creates the
-corresponding VirtualNetwork CRs there.
+System-vnet keys (`namespace`, `cluster`) are rendered WITHOUT a
+`namespace:` attribute — it is optional and inferred per ADR 0043:
+`cluster` resolves to the cluster-wide singleton, and `namespace`
+resolves to each pod's OWN namespace.
+
+Do not "helpfully" add the release namespace back. The `cluster` vnet
+does live there, but the per-namespace `namespace` vnet does NOT: the
+SystemVnetReconciler creates one in every *managed* namespace, and the
+release namespace is unmanaged, so it has none. Writing it would name a
+vnet that doesn't exist, and the ref is now honored rather than silently
+rewritten — every pod's membership would be dropped.
 */ -}}
 {{- $cb := .Values.operator.clusterBaseline -}}
 {{- if $cb.create -}}
@@ -50,9 +58,9 @@ spec:
   {{- range $key, $direction := $cb.memberships }}
     {{- $parts := splitList "." $key }}
     {{- if eq (len $parts) 1 }}
+    {{- /* Bare key = system vnet. `namespace` is omitted deliberately (ADR 0043). */}}
     - virtualNetworkRef:
         name: {{ $key }}
-        namespace: {{ $.Release.Namespace }}
       direction: {{ $direction }}
     {{- else }}
     - virtualNetworkRef:
@@ -64,29 +72,23 @@ spec:
 {{- else if eq $cb.ingressIsolationLevel "pod" }}
     - virtualNetworkRef:
         name: namespace
-        namespace: {{ .Release.Namespace }}
       direction: default-egress
     - virtualNetworkRef:
         name: cluster
-        namespace: {{ .Release.Namespace }}
       direction: default-egress
 {{- else if eq $cb.ingressIsolationLevel "namespace" }}
     - virtualNetworkRef:
         name: namespace
-        namespace: {{ .Release.Namespace }}
       direction: default-both
     - virtualNetworkRef:
         name: cluster
-        namespace: {{ .Release.Namespace }}
       direction: default-egress
 {{- else if eq $cb.ingressIsolationLevel "cluster" }}
     - virtualNetworkRef:
         name: namespace
-        namespace: {{ .Release.Namespace }}
       direction: default-both
     - virtualNetworkRef:
         name: cluster
-        namespace: {{ .Release.Namespace }}
       direction: default-both
 {{- else }}
     {{- fail (printf "operator.clusterBaseline.ingressIsolationLevel must be one of: pod, namespace, cluster (got %q)" $cb.ingressIsolationLevel) }}

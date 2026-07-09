@@ -18,11 +18,14 @@ metadata:
   name: default
 spec:
   memberships:
+    # `namespace` is omitted for the reserved system vnets (ADR 0043):
+    # `namespace` resolves to each pod's OWN namespace, and `cluster` to the
+    # cluster-wide singleton. Naming the operator's namespace here would point
+    # at a vnet that does not exist — the operator's namespace is unmanaged and
+    # holds no `namespace` vnet — and the membership would be dropped.
     - virtualNetworkRef:
         name: namespace
-        namespace: kube-vnet-system
       direction: default-both
     - virtualNetworkRef:
         name: cluster
-        namespace: kube-vnet-system
       direction: default-egress

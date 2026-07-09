@@ -1,5 +1,7 @@
 # 0033 — Canonical fully-qualified system labels; per-binding policies removed
 
+> **Amendment (ADR 0043, 2026-07-09)**: `CanonicalSuffix`'s collapse of `<anything>.cluster` → bare `cluster` still governs join *labels* and the stamped identity. For `virtualNetworkRef`s, permission is now decided on the **fully-qualified** key first (so a wrong `<ns>.cluster` is denied as not-found) and only surviving rules are collapsed to the bare canonical form. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
+
 > **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.<homeNS>.<vnet>-<8hex>` referenced throughout this ADR is now `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`. The cluster singleton bare-name treatment is preserved inside the new `mem.` prefix: `kube-vnet.cluster-<hash>` → `kube-vnet.mem.cluster-<hash>`. The label keys themselves (`kube-vnet.system/net.*`) are unchanged. See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md).
 
 Status: Accepted
