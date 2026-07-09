@@ -39,8 +39,12 @@ spec:
             {{- end }}
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.operator.healthProbeBindAddress }}
-            {{- with .Values.operator.disabledNamespaces }}
-            - --disabled-namespaces={{ join "," . }}
+            {{- /* Emit the flag whenever the key is present (a list), even
+                   when empty — an empty list must mean "disable nothing",
+                   not "fall back to the binary default". Only absent/null
+                   (kindIs "invalid") lets the operator's own default apply. */}}
+            {{- if not (kindIs "invalid" .Values.operator.disabledNamespaces) }}
+            - --disabled-namespaces={{ join "," .Values.operator.disabledNamespaces }}
             {{- end }}
             {{- with .Values.operator.apiserverSourceCIDR }}
             - --apiserver-source-cidr={{ . }}

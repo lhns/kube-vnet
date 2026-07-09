@@ -1,5 +1,7 @@
 # 0029 — Allow-all baseline in mode=none, and system namespaces disabled by default
 
+> **Amendment (2026-07-09)**: the default disabled set is narrowed from `[kube-system, kube-public, kube-node-lease]` to `[kube-system]` by [ADR 0042](0042-coredns-ingress-carveout-and-kube-system-enrollment.md). `kube-public` and `kube-node-lease` hold no pods, so disabling them bought nothing; only `kube-system` (cluster-critical pods) stays disabled by default, and enrolling it is made DNS-safe by the chart's CoreDNS carve-out.
+
 Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The "baseline always emitted for visibility" rule is replaced by "deny-all baseline + `--elide-baseline-for`" — visibility now comes from the system vnet membership labels rather than from a baseline placeholder. The "system namespaces disabled by default" decision is preserved unchanged in the new model.
 
 Date: 2026-05-04

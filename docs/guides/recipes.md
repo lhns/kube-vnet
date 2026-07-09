@@ -18,6 +18,7 @@ For the conceptual model behind these patterns, see [`concepts.md`](../getting-s
 6. [Migrating an existing namespace to kube-vnet](#migrating-an-existing-namespace-to-kube-vnet)
 7. [Coexisting with user-managed `NetworkPolicy`](#coexisting-with-user-managed-networkpolicy)
 8. [Per-workload egress allowlist via user-managed NetworkPolicy](#per-workload-egress-allowlist-via-user-managed-networkpolicy)
+9. [Managing kube-system (and keeping DNS alive)](#managing-kube-system-and-keeping-dns-alive)
 
 ---
 
@@ -623,3 +624,37 @@ spec:
 Once any policy selects a pod for `policyTypes: [Egress]`, that pod's egress goes default-deny — only allow rules across all selecting policies are permitted. The membership policy contributes its peer allow; your user policy contributes DNS and Stripe; everything else is blocked.
 
 For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](security.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.
+
+---
+
+## Managing kube-system (and keeping DNS alive)
+
+By default `kube-system` is in `operator.disabledNamespaces`, so kube-vnet stays out of it entirely. To bring its pods under management — segment them into vnets, or just stop carving a hole in an otherwise-managed cluster — remove it from the list:
+
+```yaml
+# values.yaml
+operator:
+  disabledNamespaces: []   # manage everything, including kube-system
+```
+
+The catch: CoreDNS's inbound `:53` is a plain ClusterIP, matched by none of the [auto-allow families](auto-allow.md). Under the deny-all baseline it would go dark and **cluster DNS would break everywhere**. The chart prevents this automatically — the moment `kube-system` is no longer disabled, it renders a `NetworkPolicy` that re-opens `:53`:
+
+```bash
+kubectl get netpol -n kube-system kube-vnet-coredns-allow -o yaml
+```
+
+```yaml
+spec:
+  podSelector:
+    matchLabels: { k8s-app: kube-dns }
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+```
+
+`0.0.0.0/0` is deliberate: every pod queries DNS regardless of vnet membership, and hostNetwork clients query it from the *node* IP — universal reachability a vnet binding can't express (see [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md) for why a binding is the wrong tool here). Tune the selector, namespace, or ports (e.g. add `9153` for metrics) via the `dnsCarveout.*` [values](../reference/configuration.md#dnscarveout-coredns-ingress-carve-out--adr-0042); set `dnsCarveout.enabled: false` to opt out.
+
+What about the rest of `kube-system`? hostNetwork pods (kube-proxy, CNI agents, konnectivity) are skipped by kube-vnet, and metrics-server is reached by the apiserver via the [`ext.apiserver`](auto-allow.md#apiserver-reachable-services-extapiserver) family. On distributions with additional ClusterIP services in `kube-system` that other pods consume, verify reachability after enrolling — those may need a vnet or a user-managed `NetworkPolicy` of their own.

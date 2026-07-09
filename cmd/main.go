@@ -58,13 +58,15 @@ func main() {
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
 	flag.StringVar(&disabledNamespaces, "disabled-namespaces",
-		"kube-system,kube-public,kube-node-lease",
+		"kube-system",
 		"comma-separated namespaces the operator never touches (no baseline, no "+
 			"membership policies, pods not eligible peers, bindings ignored). "+
 			"Mirrors the per-namespace kube-vnet/disabled=true annotation. "+
-			"Default protects the system namespaces from kube-vnet objects "+
-			"entirely; remove a namespace from this list to enroll its pods in "+
-			"a vnet.",
+			"Default protects kube-system (its cluster-critical pods) from "+
+			"kube-vnet objects entirely; kube-public/kube-node-lease are podless "+
+			"so they are not disabled. Remove a namespace from this list to "+
+			"enroll its pods in a vnet (when enrolling kube-system, keep CoreDNS "+
+			"reachable — see the chart's dnsCarveout / ADR 0042).",
 	)
 	flag.StringVar(&apiserverSourceCIDR, "apiserver-source-cidr", "0.0.0.0/0",
 		"CIDR allowed as source for auto-allow NetworkPolicies targeting "+

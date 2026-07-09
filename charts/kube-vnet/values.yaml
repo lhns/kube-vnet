@@ -19,14 +19,19 @@ operator:
   # the per-namespace `kube-vnet/disabled=true` annotation. The Helm release
   # namespace is always added implicitly via POD_NAMESPACE.
   #
-  # Default lists the system namespaces (kube-system, kube-public,
-  # kube-node-lease). The operator stays out entirely there — no policies,
-  # no system vnets, no resolution stamping. To enroll a system-namespace
-  # pod in a vnet, remove the namespace from this list.
+  # Default lists only kube-system — the one system namespace with
+  # cluster-critical pods (CoreDNS, metrics-server) where a deny-all baseline
+  # bites. kube-public and kube-node-lease hold no pods, so managing them is
+  # inert; they are not disabled by default. The operator stays out of a
+  # disabled namespace entirely — no policies, no system vnets, no resolution
+  # stamping.
+  #
+  # To enroll kube-system (e.g. to segment DNS or bring its pods into vnets),
+  # remove it from this list. When you do, the chart automatically renders a
+  # NetworkPolicy that keeps CoreDNS reachable on :53 (see dnsCarveout below
+  # and ADR 0042) — otherwise the deny-all baseline would kill cluster DNS.
   disabledNamespaces:
     - kube-system
-    - kube-public
-    - kube-node-lease
 
   # CIDR allowed as source for auto-allow NetworkPolicies targeting Services
   # the apiserver reaches in-cluster — admission webhooks (cert-manager,
@@ -87,6 +92,34 @@ operator:
   leaderElect: true
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
+
+# Cluster DNS ingress carve-out (ADR 0042). A chart-shipped NetworkPolicy that
+# keeps CoreDNS reachable on :53 when its namespace is managed by kube-vnet.
+#
+# DNS must be reachable from every pod (and from hostNetwork clients on the
+# node IP) regardless of vnet membership — universal reachability the vnet
+# model can't express — so this is a raw NetworkPolicy with ipBlock 0.0.0.0/0,
+# the same shape the auto-allow families use. It carries only chart labels, so
+# the operator never touches it.
+dnsCarveout:
+  # Rendered automatically when `namespace` below is NOT in
+  # operator.disabledNamespaces (i.e. cluster DNS is being managed).
+  #   null  → auto (render iff the DNS namespace is managed)  [default]
+  #   false → never render
+  #   true  → always render, even while the namespace is disabled
+  enabled: null
+  # Namespace CoreDNS runs in. Also the namespace whose managed/disabled state
+  # gates auto-rendering.
+  namespace: kube-system
+  # Pod label selector for the DNS pods. `k8s-app: kube-dns` is the canonical
+  # label set by both kube-dns and CoreDNS.
+  selector:
+    k8s-app: kube-dns
+  # Ingress ports to open from 0.0.0.0/0. Add `{ protocol: TCP, port: 9153 }`
+  # to also expose CoreDNS metrics.
+  ports:
+    - { protocol: UDP, port: 53 }
+    - { protocol: TCP, port: 53 }
 
 # End-user RBAC for the kube-vnet CRDs (ADR 0031). When `aggregate: true`
 # (default), the chart ships ClusterRoles labeled with the standard

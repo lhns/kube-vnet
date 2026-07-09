@@ -101,6 +101,12 @@ kubectl annotate svc <name> -n <ns> kube-vnet/apiserver-reachable=true
 
 **Opt out** — same annotation as the other families: `kube-vnet/external-allow=false` on the Service or namespace.
 
+## Cluster DNS when kube-system is managed
+
+Not an operator family — a sibling worth knowing about. CoreDNS's `:53` is a plain ClusterIP, matched by none of the families above. So if you enroll `kube-system` (remove it from `operator.disabledNamespaces`), the deny-all baseline would black-hole cluster DNS.
+
+The **chart** handles this, not the operator: it ships a `NetworkPolicy` (`kube-vnet-coredns-allow`) that re-opens `:53` from `0.0.0.0/0`, rendered automatically whenever the DNS namespace is managed. DNS needs *universal* reachability — every pod, plus hostNetwork clients querying from the node IP — which a vnet binding can't express (membership only reaches co-members), so it's a raw `ipBlock` policy like the families above. Configure via the `dnsCarveout.*` [chart values](../reference/configuration.md#dnscarveout-coredns-ingress-carve-out--adr-0042); details in [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
+
 ## Composition and coexistence
 
 - A Service can trigger **more than one family** — a LoadBalancer Service that's also a webhook backend gets both `ext.svc.*` and `ext.apiserver.*` policies. They coexist; union semantics make the result exactly what each declares.

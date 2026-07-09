@@ -319,6 +319,67 @@ jobs:
           fi
           echo "OK (negative): opt-out blocks external traffic (saw $http_code)."
 
+      - name: DNS survives kube-system enrollment (ADR 0042)
+        run: |
+          set -euxo pipefail
+
+          # ADR 0042: enrolling kube-system (removing it from
+          # disabledNamespaces) applies the deny-all baseline to CoreDNS,
+          # whose :53 ClusterIP is matched by no auto-allow family. The
+          # chart's dnsCarveout NetworkPolicy must keep :53 open so cluster
+          # DNS survives. On this cluster kube-system holds only CoreDNS +
+          # hostNetwork kube-proxy (Calico lives in calico-system), so
+          # enrolling it is safe to exercise.
+          #
+          # Upgrade the release to manage kube-system (empty disabledNamespaces,
+          # so only the implicit operator NS stays disabled), then assert the
+          # carve-out renders, the baseline applies, and DNS still resolves.
+          helm upgrade kube-vnet charts/kube-vnet \
+            --namespace kube-vnet-system \
+            --set fullnameOverride=kube-vnet-controller \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set image.repository=kube-vnet \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --set-json 'operator.disabledNamespaces=[]' \
+            --wait --timeout 180s
+
+          # The chart-shipped carve-out NP must be present in kube-system.
+          kubectl get netpol -n kube-system kube-vnet-coredns-allow
+
+          # The operator now manages kube-system → its deny-all baseline must
+          # appear (this is what would black-hole CoreDNS without the carve-out).
+          for i in {1..30}; do
+            if kubectl get netpol -n kube-system \
+              -l kube-vnet.system/role=baseline --no-headers 2>/dev/null | grep -q .; then
+              break
+            fi
+            sleep 2
+          done
+          kubectl get netpol -n kube-system \
+            -l kube-vnet.system/role=baseline --no-headers | grep -q . || {
+              echo "FAIL: operator baseline never appeared in kube-system"
+              kubectl get netpol -n kube-system -o wide
+              exit 1
+            }
+
+          # DNS must still resolve from a fresh pod. The probe only does egress
+          # (a lookup); the reply rides the established conntrack flow, and
+          # CoreDNS accepts the query via the carve-out.
+          kubectl run dnsprobe --image=busybox:1.36 --restart=Never -n default \
+            --command -- sh -c \
+            'for i in $(seq 1 30); do nslookup kubernetes.default.svc.cluster.local && exit 0; sleep 2; done; exit 1'
+          if ! kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+            pod/dnsprobe -n default --timeout=90s; then
+            echo "FAIL: cluster DNS did not resolve after enrolling kube-system"
+            kubectl logs dnsprobe -n default || true
+            kubectl get netpol -n kube-system -o wide
+            kubectl describe netpol -n kube-system kube-vnet-coredns-allow || true
+            exit 1
+          fi
+          kubectl delete pod dnsprobe -n default --ignore-not-found
+          echo "OK: cluster DNS survives kube-system enrollment (carve-out working)."
+
       - name: helm uninstall + assert cleanup
         run: |
           set -euxo pipefail

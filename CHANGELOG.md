@@ -10,6 +10,33 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **`kube-system` can now be safely enrolled into kube-vnet.** Removing it from
+  `operator.disabledNamespaces` used to break cluster DNS (CoreDNS's `:53`
+  ClusterIP is matched by no auto-allow family, so the deny-all baseline
+  black-holed it). The chart now ships a `NetworkPolicy` (`kube-vnet-coredns-allow`)
+  that re-opens `:53` from `0.0.0.0/0`, rendered automatically whenever the DNS
+  namespace is managed — configurable via the new `dnsCarveout.*` values
+  (`enabled`/`namespace`/`selector`/`ports`). It's chart-shipped (chart labels
+  only), so the operator's sweeps never touch it. See ADR 0042.
+
+### Changed
+
+- **Default `disabledNamespaces` narrowed from `[kube-system, kube-public,
+  kube-node-lease]` to `[kube-system]`.** `kube-public` and `kube-node-lease`
+  hold no pods, so disabling them bought nothing; only `kube-system` (with its
+  cluster-critical pods) stays disabled by default. Enrolling it is now DNS-safe
+  via the carve-out above (ADR 0042).
+
+### Fixed
+
+- **Helm: `operator.disabledNamespaces: []` now means "disable nothing"** instead
+  of silently falling back to the binary default. The chart used `{{ with }}`,
+  which treats an empty list as absent and dropped the `--disabled-namespaces`
+  flag entirely. An empty list now emits an empty flag value; only `null` or an
+  omitted key falls back to the default.
+
 ## [0.4.1] — 2026-07-04
 
 ### Fixed

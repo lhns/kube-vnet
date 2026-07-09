@@ -55,7 +55,7 @@ No Helm: `kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v
 | Helm value | Default | Purpose |
 |---|---|---|
 | `operator.clusterBaseline.ingressIsolationLevel` | *(none; required)* | The isolation choice above |
-| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches |
+| `operator.disabledNamespaces` | `[kube-system]` | Namespaces the operator never touches (`[]` disables none; remove `kube-system` to enroll it — DNS stays up via `dnsCarveout`) |
 | `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Narrow the webhook auto-allow to your control-plane subnet |
 | `replicaCount` | `1` | `2` for HA (leader election already on) |
 
@@ -134,6 +134,7 @@ So the deny-all baseline doesn't break traffic whose source no pod selector can 
 - **Externally-exposed Services** (LoadBalancer / NodePort / externalIPs): your ingress controller keeps working.
 - **hostPort pods**: node-bound daemons stay reachable.
 - **Services the apiserver dials**: admission webhooks (cert-manager, kyverno, …) and metrics-server keep answering.
+- **Cluster DNS**, if you enroll `kube-system`: a chart-shipped `NetworkPolicy` (`kube-vnet-coredns-allow`, distinct from the operator's own policies above) keeps CoreDNS reachable on `:53`. Configured via `dnsCarveout.*`; see [ADR 0042](docs/adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
 
 ### Inspect
 

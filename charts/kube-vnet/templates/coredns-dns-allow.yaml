@@ -1,0 +1,55 @@
+{{- /*
+CoreDNS ingress carve-out (ADR 0042).
+
+When a system namespace holding cluster DNS is enrolled (removed from
+operator.disabledNamespaces), the operator's deny-all baseline applies to
+CoreDNS and its :53 ClusterIP — matched by none of the auto-allow families —
+goes deny-all, killing cluster DNS. This NetworkPolicy is additive to that
+baseline (NetworkPolicies OR) and re-opens :53 from everywhere.
+
+It is a CHART-shipped policy, not operator-managed: it carries only the
+standard chart labels (app.kubernetes.io/*), NOT kube-vnet.system/*, so the
+operator's baseline/membership/external sweeps never see or delete it.
+
+DNS is universal reachability, not vnet segmentation — every pod (and
+hostNetwork clients querying from the node IP) must reach :53 regardless of
+vnet membership. The vnet/binding model can only express co-member or
+in-cluster-pod peers, never 0.0.0.0/0, so a raw NetworkPolicy is the correct
+primitive — the same ipBlock: 0.0.0.0/0 shape the ext.svc/host/apiserver
+families already emit.
+
+Rendered automatically when dnsCarveout.namespace is managed (i.e. not in
+operator.disabledNamespaces). dnsCarveout.enabled overrides: false suppresses
+it, true forces it on regardless. namespace/selector/ports all come from the
+dnsCarveout values block.
+*/}}
+{{- $dc := .Values.dnsCarveout -}}
+{{- $nsManaged := not (has $dc.namespace .Values.operator.disabledNamespaces) -}}
+{{- $render := $nsManaged -}}
+{{- if kindIs "bool" $dc.enabled -}}
+{{-   $render = $dc.enabled -}}
+{{- end -}}
+{{- if $render }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-vnet-coredns-allow
+  namespace: {{ $dc.namespace }}
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- toYaml $dc.selector | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        {{- range $dc.ports }}
+        - protocol: {{ .protocol }}
+          port: {{ .port }}
+        {{- end }}
+{{- end }}

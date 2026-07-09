@@ -47,6 +47,7 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 39. [0039 — Uniform kind-prefixed naming for operator-emitted NetworkPolicies](0039-uniform-kind-prefixed-policy-naming.md)
 40. [0040 — Auto-allow for hostPort pods via per-port stamping](0040-auto-allow-hostport-pods.md)
 41. [0041 — Auto-allow Services reached by the apiserver](0041-auto-allow-apiserver-reachable-services.md)
+42. [0042 — CoreDNS ingress carve-out and kube-system enrollment](0042-coredns-ingress-carveout-and-kube-system-enrollment.md)
 
 ## Format
 

@@ -87,7 +87,7 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `operator.disabledNamespaces` | `[]string` | `[kube-system, kube-public, kube-node-lease]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. |
+| `operator.disabledNamespaces` | `[]string` | `[kube-system]` | → `--disabled-namespaces`. The operator's own namespace is added implicitly via `POD_NAMESPACE`. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. **Empty vs absent**: an empty list `[]` disables *nothing* (manage every namespace); `null` or omitting the key falls back to the binary default (`kube-system`). Removing `kube-system` here enrolls it — the chart then auto-renders the CoreDNS carve-out (see `dnsCarveout` and ADR 0042). |
 | `operator.apiserverSourceCIDR` | string | `"0.0.0.0/0"` | → `--apiserver-source-cidr`. Source CIDR for the `kube-vnet.ext.apiserver.*` auto-allow policies (webhook / APIService backends the apiserver dials). See [auto-allow](../guides/auto-allow.md#apiserver-reachable-services-extapiserver). |
 | `operator.clusterBaseline.create` | bool | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default`. Set to `false` to manage that CR outside Helm. ADR 0031. |
 | `operator.clusterBaseline.ingressIsolationLevel` | string (`pod` / `namespace` / `cluster`) | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset that maps to a system-vnet membership pair. Mutually exclusive with `memberships`. |
@@ -95,6 +95,19 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 | `operator.leaderElect` | bool | `true` | → `--leader-elect`. Recommended on; harmless with one replica and required for safe multi-replica HA. |
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |
+
+### `dnsCarveout.*` (CoreDNS ingress carve-out — ADR 0042)
+
+A chart-shipped `NetworkPolicy` (not operator-managed) that keeps CoreDNS reachable on `:53` when its namespace is managed by kube-vnet. Without it, removing `kube-system` from `disabledNamespaces` would apply the deny-all baseline to CoreDNS and break cluster DNS. DNS needs *universal* reachability (every pod, plus hostNetwork clients on the node IP), so it's a raw `ipBlock: 0.0.0.0/0` policy — the same shape the auto-allow families use — not a vnet binding.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `dnsCarveout.enabled` | bool / null | `null` | `null` = auto (render iff `dnsCarveout.namespace` is *not* in `operator.disabledNamespaces`). `false` = never render. `true` = always render, even while the namespace is disabled. |
+| `dnsCarveout.namespace` | string | `kube-system` | Namespace CoreDNS runs in; also the namespace whose managed/disabled state gates auto-rendering. |
+| `dnsCarveout.selector` | map | `{k8s-app: kube-dns}` | Pod label selector for the DNS pods (the canonical label set by both kube-dns and CoreDNS). |
+| `dnsCarveout.ports` | list | `[{UDP,53},{TCP,53}]` | Ingress ports opened from `0.0.0.0/0`. Add `{protocol: TCP, port: 9153}` to also expose CoreDNS metrics. |
+
+The rendered policy carries only chart labels (`app.kubernetes.io/*`), never `kube-vnet.system/*`, so the operator's sweeps never touch it.
 
 ### `rbac.*` (end-user RBAC)
 
@@ -190,9 +203,11 @@ kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPo
 
 The chart matches "what cert-manager / Cilium operator / Flux do" — leader election on by default so scaling is one line. The binary defaults to off so local `make run` doesn't need leader-election RBAC.
 
-### Why does `disabledNamespaces` default to the control-plane namespaces?
+### Why does `disabledNamespaces` default to `kube-system`?
 
-`kube-system`, `kube-public`, `kube-node-lease` — Kubernetes control-plane namespaces. The operator stays out of those entirely (no baseline, no system vnets, no resolution stamping) so it can't accidentally break CoreDNS, the metrics server, or the apiserver aggregator. To enroll a system-namespace pod in a vnet, remove the namespace from this list explicitly. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
+`kube-system` holds cluster-critical pods (CoreDNS, the metrics server, the apiserver aggregator) where a deny-all baseline actually bites, so the operator stays out of it entirely by default (no baseline, no system vnets, no resolution stamping). `kube-public` and `kube-node-lease` hold no pods, so managing them is inert — they are *not* disabled by default (ADR 0042 narrowed the set from all three to just `kube-system`).
+
+To enroll `kube-system` (e.g. to segment DNS or bring its pods into vnets), remove it from this list. When you do, the chart automatically renders the CoreDNS carve-out (`dnsCarveout`, above) so cluster DNS keeps working — otherwise the deny-all baseline would break it. Everything else in `kube-system` is already covered: hostNetwork pods are skipped, and metrics-server is reached via the `ext.apiserver` family. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
 
 The operator's own namespace is implicitly added to `disabledNamespaces` so that a misconfigured `allowedNamespaces.all: true` vnet can't accidentally lock the operator out of itself.
 
