@@ -493,12 +493,12 @@ The schemas live in this repo under `schemas/<group>/<kind>_<version>.json` (the
 ```bash
 kubeconform -strict -summary \
   -schema-location default \
-  -schema-location 'https://raw.githubusercontent.com/lhns/kube-vnet/main/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+  -schema-location 'https://raw.githubusercontent.com/lhns/kube-vnet/v0.5.1/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
   my-virtualnetwork.yaml
 ```
 
 - The first `-schema-location default` resolves core kinds (Deployment, Namespace, …); the second resolves the kube-vnet kinds. Keep both.
-- The example tracks `main` (always the latest CRDs). **For reproducible validation, pin the ref to a release tag** — replace `main` with any tag whose commit contains `schemas/` (published from the first release that ships them onward) so validation matches the exact CRD version your cluster runs, and bump it when you upgrade kube-vnet.
+- The example pins the ref to a release tag (`v0.5.1`, the first release to ship `schemas/`) so validation is reproducible and matches the CRD version your cluster runs — bump it when you upgrade kube-vnet. Use `main` instead to always track the latest CRDs.
 - The schemas are faithful to the CRDs: they enforce field types, `enum`s (e.g. `direction: both|ingress|egress|none`), `required` fields, and — because kube-vnet's CRDs are closed structural schemas — they reject **misspelled/unknown fields** (`additionalProperties: false`), so a typo like `podSelctor` fails validation. (The CEL-based cross-field rules such as "`podSelector` must be non-empty" are enforced by the apiserver, not expressible in JSON Schema, so kubeconform won't catch those.)
 
 Maintainers: the schemas are generated from `config/crd/bases/*.yaml` by `scripts/gen-schemas.sh` and kept in sync by a CI drift-gate. `make manifests` regenerates them alongside the CRDs (or run `make schemas` on its own), so any API change picks them up automatically.
