@@ -32,6 +32,9 @@ jobs:
           $(go env GOPATH)/bin/controller-gen rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
           # Re-render the chart-derived kustomize VAPs (Stage D / ADR 0030).
           make render-kustomize-vaps
+          # Re-generate the downstream CRD JSON schemas (ADR: kubeconform).
+          python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
+          make schemas
           git diff --exit-code
 
   integration:

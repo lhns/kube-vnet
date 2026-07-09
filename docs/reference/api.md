@@ -481,3 +481,24 @@ Identical shape to `VirtualNetworkBaseline.spec` — `memberships[]` with `virtu
 ## Compatibility
 
 Both baseline CRDs ship in the same chart and version as `VirtualNetwork`. They replaced the removed `ClusterVirtualNetworkBinding` CRD and `--default-memberships` flag ([ADR 0031](../adr/0031-baseline-tier-resolution.md)).
+
+---
+
+# Validating manifests with kubeconform
+
+kube-vnet publishes JSON Schemas for its four CRDs so you can validate kube-vnet custom resources with [kubeconform](https://github.com/yannh/kubeconform) in your own repos and CI — the same way you validate core Kubernetes objects. Without them, kubeconform has no schema for `kube-vnet.lhns.de` kinds and can only `-skip` them (no validation).
+
+The schemas live in this repo under `schemas/<group>/<kind>_<version>.json` (the [datreeio/CRDs-catalog](https://github.com/datreeio/CRDs-catalog) layout) and are served directly over `raw.githubusercontent.com`. Point kubeconform at them with a templated `-schema-location`:
+
+```bash
+kubeconform -strict -summary \
+  -schema-location default \
+  -schema-location 'https://raw.githubusercontent.com/lhns/kube-vnet/main/schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+  my-virtualnetwork.yaml
+```
+
+- The first `-schema-location default` resolves core kinds (Deployment, Namespace, …); the second resolves the kube-vnet kinds. Keep both.
+- The example tracks `main` (always the latest CRDs). **For reproducible validation, pin the ref to a release tag** — replace `main` with any tag whose commit contains `schemas/` (published from the first release that ships them onward) so validation matches the exact CRD version your cluster runs, and bump it when you upgrade kube-vnet.
+- The schemas are faithful to the CRDs: they enforce field types, `enum`s (e.g. `direction: both|ingress|egress|none`), `required` fields, and — because kube-vnet's CRDs are closed structural schemas — they reject **misspelled/unknown fields** (`additionalProperties: false`), so a typo like `podSelctor` fails validation. (The CEL-based cross-field rules such as "`podSelector` must be non-empty" are enforced by the apiserver, not expressible in JSON Schema, so kubeconform won't catch those.)
+
+Maintainers: the schemas are generated from `config/crd/bases/*.yaml` by `scripts/gen-schemas.sh` and kept in sync by a CI drift-gate. `make manifests` regenerates them alongside the CRDs (or run `make schemas` on its own), so any API change picks them up automatically.

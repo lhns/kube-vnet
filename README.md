@@ -70,7 +70,7 @@ Everything else: [`docs/reference/configuration.md`](docs/reference/configuratio
 | `VirtualNetworkBaseline` | `vnbl` | namespaced, singleton `default` | Namespace-wide default memberships |
 | `ClusterVirtualNetworkBaseline` | `cvnbl` | cluster, singleton `default` | Cluster-wide defaults (what the chart seeds) |
 
-Two system vnets exist automatically: `namespace` (per-NS, = "reachable by my namespace") and `cluster` (= "reachable cluster-wide"). Field-level reference: [`docs/reference/api.md`](docs/reference/api.md).
+Two system vnets exist automatically: `namespace` (per-NS, = "reachable by my namespace") and `cluster` (= "reachable cluster-wide"). Field-level reference: [`docs/reference/api.md`](docs/reference/api.md). JSON Schemas for validating these CRs with [kubeconform](https://github.com/yannh/kubeconform) are published under [`schemas/`](schemas/) — see [Validating manifests with kubeconform](docs/reference/api.md#validating-manifests-with-kubeconform).
 
 ### Three ways to join a network
 

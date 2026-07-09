@@ -76,9 +76,10 @@ controller-gen:
 		go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION)
 
 .PHONY: manifests
-manifests: controller-gen ## Generate CRD and RBAC manifests
+manifests: controller-gen ## Generate CRD + RBAC manifests and the downstream CRD JSON schemas.
 	$(CONTROLLER_GEN) crd paths="./api/v1alpha1/..." output:crd:dir=config/crd/bases
 	$(CONTROLLER_GEN) rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
+	@bash scripts/gen-schemas.sh
 
 .PHONY: generate
 generate: controller-gen ## Generate deepcopy methods
@@ -101,6 +102,10 @@ render-kustomize-vaps: ## Render the chart's VAPs into config/admission/. Run af
 	  } > "$$out"; \
 	  echo "wrote $$out"; \
 	done
+
+.PHONY: schemas
+schemas: ## Generate CRD JSON schemas under schemas/ for downstream kubeconform users (also run by `make manifests`).
+	@bash scripts/gen-schemas.sh
 
 ##@ Docker
 
