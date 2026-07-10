@@ -52,7 +52,7 @@ What happens to your cluster while no replica is running:
 - **Existing `NetworkPolicy` resources stay enforced.** The apiserver continues serving them; the CNI continues dropping packets. Pods that *were* isolated remain isolated; pods that *were* allowed remain allowed.
 - **Membership changes don't propagate.** A new pod with a join label won't show up in the corresponding vnet's `status.members` until the operator returns. Its connectivity, however, is governed by whatever NetworkPolicy is already in the namespace.
 - **VirtualNetwork resources can still be created/edited/deleted.** The apiserver accepts them; the operator just won't act on them until it's back.
-- **Drift correction pauses.** A user deleting an operator-managed `NetworkPolicy` while the operator is down won't trigger an immediate restore. The policy returns on the next reconcile after the operator comes back. See [`security.md`](security.md) for what this means for the threat model.
+- **Drift correction pauses.** A user deleting an operator-managed `NetworkPolicy` while the operator is down won't trigger an immediate restore. The policy returns on the next reconcile after the operator comes back. See [`security.md`](../security/security.md) for what this means for the threat model.
 
 ---
 
@@ -288,7 +288,7 @@ Recommended rollout:
 
 ### "An auditor is asking what kube-vnet does in `kube-system`"
 
-Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's default `operator.disabledNamespaces`, so the operator stays out of them entirely: no baseline, no system vnets, no resolution stamping, no eligibility as a peer for foreign-NS vnets. To enroll a system-namespace pod in a vnet, remove the namespace from `disabledNamespaces` explicitly. See [`security.md`](security.md) for the full RBAC inventory.
+Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's default `operator.disabledNamespaces`, so the operator stays out of them entirely: no baseline, no system vnets, no resolution stamping, no eligibility as a peer for foreign-NS vnets. To enroll a system-namespace pod in a vnet, remove the namespace from `disabledNamespaces` explicitly. See [`security.md`](../security/security.md) for the full RBAC inventory.
 
 ### "I'm upgrading from a release with the old config-key names"
 
@@ -316,7 +316,7 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 
 Two related behavior reminders:
 
-- **Egress is not restricted** by the baseline ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](security.md).
+- **Egress is not restricted** by the baseline ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)). If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](recipes.md) and [`security.md`](../security/security.md).
 - **Vnet membership is the only ingress-allow mechanism**, including for "open up a namespace" cases. To allow same-NS ingress without joining a user vnet, set `operator.clusterBaseline.ingressIsolationLevel=namespace` (chart) or write an explicit `ClusterVirtualNetworkBaseline` with `namespace=default-both`.
 
 ### "Pods I expect to be isolated can talk to each other"

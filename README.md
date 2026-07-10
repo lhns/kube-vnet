@@ -154,7 +154,8 @@ Six Prometheus metrics on `:8080/metrics` + Events on every condition transition
 Full docs live under [`docs/`](docs/README.md), organized as a tree:
 
 - **New here?** Follow the numbered path: [concepts](docs/getting-started/concepts.md) → [install](docs/getting-started/install.md) → [your first VirtualNetwork](docs/getting-started/first-vnet.md) (hands-on, with a live isolation probe).
-- [`docs/guides/`](docs/README.md#guides): [recipes](docs/guides/recipes.md), [auto-allow](docs/guides/auto-allow.md), [operations](docs/guides/operations.md), [security](docs/guides/security.md), [troubleshooting](docs/guides/troubleshooting.md).
+- [`docs/guides/`](docs/README.md#guides): [recipes](docs/guides/recipes.md), [auto-allow](docs/guides/auto-allow.md), [operations](docs/guides/operations.md), [troubleshooting](docs/guides/troubleshooting.md).
+- [`docs/security/`](docs/security/threat-model.md): [threat model (STRIDE)](docs/security/threat-model.md), [security guide](docs/security/security.md).
 - [`docs/reference/`](docs/README.md#reference): look-up tables — [CRDs](docs/reference/api.md), [flags & values](docs/reference/configuration.md), [labels & annotations](docs/reference/labels-and-annotations.md), [metrics & events](docs/reference/metrics-and-events.md), [glossary](docs/reference/glossary.md).
 - [`docs/internals/`](docs/README.md#internals): for contributors — [architecture](docs/internals/architecture.md), [source map](docs/internals/code-structure.md), [development](docs/internals/development.md).
 - [`docs/faq.md`](docs/faq.md): cross-cutting Q&A. [`docs/adr/`](docs/adr/README.md): every accepted decision.

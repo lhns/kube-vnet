@@ -368,7 +368,7 @@ As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `Validat
 
 ## Egress to the public internet just started working after upgrade
 
-Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](security.md).
+Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](../security/security.md).
 
 If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting your pods and listing the allowed destinations. NetworkPolicies compose additively. See the [per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
 
@@ -562,7 +562,7 @@ Possible causes:
 
 - A user manually deleted an operator-managed policy. One-off; nothing to do.
 - A misbehaving controller is repeatedly deleting them. Find it and stop it.
-- An attempted bypass — see [`security.md`](security.md).
+- An attempted bypass — see [`security.md`](../security/security.md).
 
 If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple times per minute), there's an active loop somewhere. The Prometheus alert `KubeVnetPolicyRestoredRepeatedly` (in [`operations.md`](operations.md)) catches this.
 

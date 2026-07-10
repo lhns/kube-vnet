@@ -64,7 +64,7 @@ The honest position:
 - **Con**: **Behavior change** vs the previous baseline. Today's restricted egress (deny except DNS + vnet members) was a defense-in-depth measure that's now gone. Users who relied on it for egress isolation against compromised pods (exfiltration, lateral probing, misconfiguration containment) need to add a user-managed `NetworkPolicy` or use a cluster-level egress firewall.
 - **Con**: The `policy_generator` and the integration tests need updating; the membership policies' DNS allow rule is gone.
 
-### The false-security trap (documented in `docs/security.md`)
+### The false-security trap (documented in `docs/security/security.md`)
 
 Configuring `ingress-isolation: pod` does NOT prevent a compromised pod from initiating outbound traffic. The vnet abstraction defends against unauthorized inbound; protecting against outbound exfiltration / lateral probing is a separate concern that needs separate tooling. Documentation makes this loud and explicit.
 

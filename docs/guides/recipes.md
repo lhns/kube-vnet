@@ -623,7 +623,7 @@ spec:
 
 Once any policy selects a pod for `policyTypes: [Egress]`, that pod's egress goes default-deny — only allow rules across all selecting policies are permitted. The membership policy contributes its peer allow; your user policy contributes DNS and Stripe; everything else is blocked.
 
-For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](security.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.
+For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](../security/security.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.
 
 ---
 

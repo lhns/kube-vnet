@@ -34,7 +34,7 @@ If you're not sure whether your cluster enforces NetworkPolicy, the [e2e tests](
 
 ### Permissions
 
-You need cluster-admin (or equivalent) for the install — the operator needs cluster-wide read on Pods and Namespaces and cluster-wide CRUD on `networkpolicies.networking.k8s.io`. See [`security.md`](../guides/security.md) for the full RBAC inventory and rationale.
+You need cluster-admin (or equivalent) for the install — the operator needs cluster-wide read on Pods and Namespaces and cluster-wide CRUD on `networkpolicies.networking.k8s.io`. See [`security.md`](../security/security.md) for the full RBAC inventory and rationale.
 
 ---
 

@@ -62,7 +62,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **Reconciler** — a controller-runtime component that drives a resource toward its desired state on every event. kube-vnet has five: `VirtualNetworkReconciler` (per-vnet membership policies), `NamespaceReconciler` (per-namespace baseline lifecycle), `VirtualNetworkBindingReconciler` (per-binding status), `SystemVnetReconciler` (operator-managed `namespace`/`cluster` system vnets — [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md)), and `ResolutionReconciler` (computes effective vnet membership per pod and stamps canonical FQ `kube-vnet.system/net.<homeNS>.<vnet>` labels — [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
-**SBOM** — Software Bill of Materials. SPDX-JSON formatted list of every dependency in a built artifact. kube-vnet ships SBOMs for both the image and the Helm chart, attached as Cosign attestations and as plain release assets. See [`security.md`](../guides/security.md#sboms).
+**SBOM** — Software Bill of Materials. SPDX-JSON formatted list of every dependency in a built artifact. kube-vnet ships SBOMs for both the image and the Helm chart, attached as Cosign attestations and as plain release assets. See [`security.md`](../security/security.md#sboms).
 
 **Server-side apply (SSA)** — a Kubernetes apiserver feature where the client sends a partial object and the server reconciles per-field ownership. kube-vnet uses SSA with `FieldOwner("kube-vnet")` and `client.ForceOwnership` for all generated `NetworkPolicy` writes. See [ADR 0009](../adr/0009-server-side-apply-with-field-manager.md).
 

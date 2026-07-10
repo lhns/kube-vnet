@@ -1,5 +1,26 @@
 kube-vnet is installed.
 
+{{- $kubeMajor := int .Capabilities.KubeVersion.Major }}
+{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") }}
+{{- if not (or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30))) }}
+
+WARNING: this cluster is Kubernetes {{ $kubeMajor }}.{{ $kubeMinor }}, older than 1.30, so the three
+ValidatingAdmissionPolicies kube-vnet ships were NOT installed. They are the
+admission-time boundary that protects:
+
+  * operator-owned `kube-vnet.system/*` labels from user tampering
+  * the reserved VirtualNetwork names `namespace` and `cluster`
+  * `kube-vnet/net.*` join-label values (bad values are admitted instead)
+
+Without them, a user with edit rights can forge those labels. The operator's
+drift correction still reverts the change within a reconcile cycle, but that is
+a race, not a boundary — see docs/security/threat-model.md (assumption A-2,
+finding F-02).
+
+Upgrade to Kubernetes >= 1.30 to close this gap.
+
+{{- end }}
+
 The VirtualNetwork CRD is registered. Define a network and label pods to join it:
 
   kubectl get vnet -A
@@ -31,8 +52,9 @@ baseline, and pods receive ingress ONLY via explicit vnet membership
 relied on Kubernetes default-allow will lose ingress connectivity until
 they are joined to a vnet.
 
-Namespaces in operator.disabledNamespaces (default: kube-system,
-kube-public, kube-node-lease) are exempt — keep the system namespaces
-there unless you have a deliberate reason to isolate the control plane.
+Namespaces in operator.disabledNamespaces (default: kube-system) are exempt —
+keep kube-system there unless you have a deliberate reason to isolate the
+control plane. Enrolling it is supported: the chart then renders the CoreDNS
+carve-out so cluster DNS keeps working (see ADR 0042).
 
 {{- end }}

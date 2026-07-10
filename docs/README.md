@@ -30,7 +30,8 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 - [`recipes.md`](guides/recipes.md) — worked examples: three-tier app, observability network, bridge pods, direction patterns, enrolling third-party pods, migrating an existing namespace, coexisting with user-managed NetworkPolicy, egress allowlists.
 - [`auto-allow.md`](guides/auto-allow.md) — the traffic the operator admits without being asked: externally-exposed Services, hostPort pods, and Services the apiserver dials (webhooks, metrics-server). Triggers, opt-outs, the `ext.*` policy naming.
 - [`operations.md`](guides/operations.md) — running it in production: topology, HA, leader election, sizing, monitoring, the operational playbooks.
-- [`security.md`](guides/security.md) — threat model (including what kube-vnet does *not* defend), RBAC inventory, supply chain, hardening.
+- [`security/security.md`](security/security.md) — the security guide: what kube-vnet does *not* defend, RBAC inventory, supply chain, hardening.
+- [`security/threat-model.md`](security/threat-model.md) — the formal STRIDE threat model: assets, actors, trust boundaries, DFD + sequence diagrams, findings register.
 - [`troubleshooting.md`](guides/troubleshooting.md) — symptom → diagnosis → fix, from "my pod isn't a member" to admission-webhook timeouts.
 - [`cni-pitfalls.md`](guides/cni-pitfalls.md) — CNI-layer enforcement failures (kube-router, k0s, Calico, Cilium) with per-node verification commands and a manual isolation probe.
 
@@ -58,7 +59,8 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 | build my first network | [first-vnet](getting-started/first-vnet.md) |
 | solve a concrete task | [recipes](guides/recipes.md) |
 | understand a policy the operator created on its own | [auto-allow](guides/auto-allow.md) |
-| run it in production | [operations](guides/operations.md), [security](guides/security.md), [metrics & events](reference/metrics-and-events.md) |
+| run it in production | [operations](guides/operations.md), [security](security/security.md), [metrics & events](reference/metrics-and-events.md) |
+| assess the security posture | [threat model](security/threat-model.md), [security guide](security/security.md), [cni-pitfalls](guides/cni-pitfalls.md) |
 | fix something broken | [troubleshooting](guides/troubleshooting.md), then [cni-pitfalls](guides/cni-pitfalls.md) if policies exist but don't enforce |
 | look up a field / flag / label | [reference/](reference/api.md) |
 | contribute | [development](internals/development.md), [architecture](internals/architecture.md), [ADRs](adr/README.md) |

@@ -2,6 +2,8 @@
 
 Threat model, RBAC inventory, supply-chain practice, hardening notes, and an honest list of what kube-vnet does *not* defend against.
 
+> For the **formal STRIDE threat model** — assets, actors, trust boundaries, data-flow diagrams, and the findings register — see [`threat-model.md`](threat-model.md). This page is the operator-facing guide; that one is the model.
+
 For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](../adr/0019-baseline-durability.md).
 
 ---
@@ -33,7 +35,7 @@ Be clear-eyed about these. None of them are bugs in kube-vnet; they're either ou
 
 ### Recommended companion: per-workload egress allowlists
 
-For workloads where outbound restriction matters, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting the workload's pods and listing the destinations they're permitted to reach. NetworkPolicies compose additively; nothing in kube-vnet conflicts with this. See the [per-workload egress allowlist recipe](recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
+For workloads where outbound restriction matters, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` selecting the workload's pods and listing the destinations they're permitted to reach. NetworkPolicies compose additively; nothing in kube-vnet conflicts with this. See the [per-workload egress allowlist recipe](../guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy).
 
 ---
 

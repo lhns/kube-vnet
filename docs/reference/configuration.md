@@ -128,7 +128,7 @@ When `rbac.aggregate=true`, the chart emits eight ClusterRoles:
 | `<release>-clustervirtualnetworkbaselines-editor` | (none — unbound) | CRUD on `clustervirtualnetworkbaselines` (+ `/status`); cluster-admin binds explicitly to delegate |
 | `<release>-clustervirtualnetworkbaselines-viewer` | (none — unbound) | read on `clustervirtualnetworkbaselines`; cluster-admin binds explicitly |
 
-See [`security.md`](../guides/security.md#who-can-write-what) for the trust-model rationale.
+See [`security.md`](../security/security.md#who-can-write-what) for the trust-model rationale.
 
 ### Pod-level scheduling
 

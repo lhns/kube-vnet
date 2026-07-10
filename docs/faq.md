@@ -127,7 +127,7 @@ If you can `kubectl apply` a `NetworkPolicy` and have it actually enforce, kube-
 
 ### Does kube-vnet need any special privileges I should be aware of?
 
-It needs cluster-wide read on Pods and Namespaces, cluster-wide CRUD on `NetworkPolicy`, and CRUD on its own CRD's status subresource. Full inventory in [`security.md`](guides/security.md#rbac-inventory).
+It needs cluster-wide read on Pods and Namespaces, cluster-wide CRUD on `NetworkPolicy`, and CRUD on its own CRD's status subresource. Full inventory in [`security.md`](security/security.md#rbac-inventory).
 
 ### Can I install one operator per namespace?
 
@@ -139,7 +139,7 @@ No. It only owns objects labeled `kube-vnet.system/managed-by=kube-vnet`. Your p
 
 ### What about egress to the public internet?
 
-kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](guides/security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](security/security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
 ### Why did egress just start working after the upgrade?
 
@@ -209,7 +209,7 @@ Yes. SPDX-JSON, attached as a Cosign attestation and as a plain release asset. S
 
 ### How do you handle CVEs in dependencies?
 
-Trivy runs on every PR (filesystem + image scans, CRITICAL/HIGH gates the build). Dependabot opens weekly bump PRs for Go modules, GitHub Actions, and the Dockerfile base image. See [`security.md`](guides/security.md).
+Trivy runs on every PR (filesystem + image scans, CRITICAL/HIGH gates the build). Dependabot opens weekly bump PRs for Go modules, GitHub Actions, and the Dockerfile base image. See [`security.md`](security/security.md).
 
 ---
 
