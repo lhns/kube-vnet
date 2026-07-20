@@ -950,9 +950,13 @@ func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing
 }
 
 // TestIntegration_EmptyDirection_NoMember: a pod with `kube-vnet/net.X: ""`
-// is NOT a member (empty parses as none, ADR 0027). The vnet membership
-// policy's podSelector matches `In [true, both, ingress]` — empty isn't in
-// the list — so no policy adds back ingress for this pod.
+// is NOT a member — the empty string is a removed legacy alias, not a valid
+// direction (ADR 0030; the supported opt-out is `none`). The vnet membership
+// policy's podSelector matches `In [both, ingress]` — empty isn't in the
+// list — so no policy adds back ingress for this pod. At reconcile time the
+// resolution controller additionally surfaces the bad value as an
+// InvalidJoinLabelDirection Warning on the pod (not asserted here; Event
+// delivery is best-effort and covered by unit tests).
 func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "pe-empty")
