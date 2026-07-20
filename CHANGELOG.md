@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-20
+
 ### Added
 
 - **Bare-form hint on `VirtualNetworkNotJoinable`.** When a bare
