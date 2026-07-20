@@ -8,11 +8,15 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
@@ -182,10 +186,77 @@ func (r *JoinLabelDiagnosticReconciler) permits(ctx context.Context, v *vnetv1al
 	return ok
 }
 
-
 func (r *JoinLabelDiagnosticReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// The Pod watch is change-based, not membership-based. Previously any
+	// mutation of a join-labelled pod re-ran the diagnostics, so a restart
+	// storm re-emitted the same Warning on every status heartbeat (there is
+	// no dedupe on the Eventf calls below). Only label/spec changes can
+	// change a diagnosis.
+	podPredicate := predicate.Or(
+		predicate.LabelChangedPredicate{},
+		predicate.GenerationChangedPredicate{},
+	)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("joinlabel-diagnostic").
-		For(&corev1.Pod{}, builder.WithPredicates(JoinLabelPodPredicate(DefaultLabelPrefix))).
+		For(&corev1.Pod{}, builder.WithPredicates(
+			predicate.And(JoinLabelPodPredicate(DefaultLabelPrefix), podPredicate),
+		)).
+		// A diagnosis depends on VirtualNetwork state, not only on the pod:
+		// "no such vnet" becomes stale the moment the vnet is created. The
+		// old membership predicate re-checked that *accidentally*, by firing
+		// on unrelated pod heartbeats. With the pod watch tightened, make the
+		// re-check explicit — otherwise a Warning would persist until the pod
+		// next changed. See ADR 0027 (amended).
+		Watches(&vnetv1alpha1.VirtualNetwork{},
+			handler.EnqueueRequestsFromMapFunc(r.vnetToLabelledPods)).
 		Complete(r)
+}
+
+// vnetToLabelledPods maps a VirtualNetwork event to the pods whose join labels
+// reference it, so a diagnosis is re-evaluated when the vnet appears, changes
+// its allowedNamespaces, or is deleted.
+//
+// Two label forms reference a vnet `<ns>/<name>` (ADR 0022):
+//
+//	bare      kube-vnet/net.<name>          — only honored inside <ns>
+//	prefixed  kube-vnet/net.<ns>.<name>     — usable from any namespace
+//
+// Both keys are known exactly, so this is two label-selected Lists rather than
+// a cluster-wide pod scan: the bare form is scoped to the vnet's own namespace
+// (where it is the only place it means anything), the prefixed form is
+// cluster-wide. Pods are deduplicated in case one carries both.
+func (r *JoinLabelDiagnosticReconciler) vnetToLabelledPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
+	if !ok || vnet == nil {
+		return nil
+	}
+	keyPrefix := DefaultLabelPrefix + "net."
+	bareKey := keyPrefix + vnet.Name
+	prefixedKey := keyPrefix + vnet.Namespace + "." + vnet.Name
+
+	seen := map[types.NamespacedName]bool{}
+	var out []reconcile.Request
+	collect := func(pods *corev1.PodList) {
+		for i := range pods.Items {
+			p := &pods.Items[i]
+			nn := types.NamespacedName{Namespace: p.Namespace, Name: p.Name}
+			if seen[nn] {
+				continue
+			}
+			seen[nn] = true
+			out = append(out, reconcile.Request{NamespacedName: nn})
+		}
+	}
+
+	var bare corev1.PodList
+	if err := r.List(ctx, &bare,
+		client.InNamespace(vnet.Namespace), client.HasLabels{bareKey}); err == nil {
+		collect(&bare)
+	}
+	var prefixed corev1.PodList
+	if err := r.List(ctx, &prefixed, client.HasLabels{prefixedKey}); err == nil {
+		collect(&prefixed)
+	}
+	return out
 }

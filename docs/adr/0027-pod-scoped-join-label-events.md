@@ -1,5 +1,13 @@
 # 0027 — Pod-scoped events for join-label diagnostics
 
+> **Amendment (2026-07-09)**: this ADR's cost estimate was wrong, and the fix changed the controller's trigger set.
+>
+> The claim that "the watch is filtered to pods carrying `kube-vnet/net.*` labels, so the steady-state cost is minimal" mistook a **membership** filter for a **change** filter. `JoinLabelPodPredicate` returns true whenever a pod *carries* a join label, so **every** update of such a pod — phase transitions, container restart counts, readiness flips, podIP assignment — re-ran the diagnostics. The `Eventf` calls have no dedupe, so a single misconfigured pod re-emitted its Warning on every heartbeat, and a pod restart storm turned into a reconcile-and-Event storm.
+>
+> The Pod watch is now `JoinLabelPodPredicate AND (LabelChanged OR GenerationChanged)`: only changes that can alter a diagnosis fire it.
+>
+> That tightening removed an *accidental* correctness property. A diagnosis depends on VirtualNetwork state ("no such vnet"), which the old predicate re-checked only as a side effect of unrelated pod churn — so creating the missing vnet would have left a stale Warning until the pod next changed. The controller therefore gains an explicit `Watches(&VirtualNetwork{})` whose map function enqueues exactly the pods referencing that vnet, via the two statically-known label keys (bare `kube-vnet/net.<name>` scoped to the vnet's namespace, and prefixed `kube-vnet/net.<ns>.<name>` cluster-wide). The re-check is now intentional rather than incidental.
+
 Status: Accepted (note: `ConflictingDirections` mentioned in this ADR's vnet-status taxonomy is renamed to `ResolutionConflict` per [ADR 0033](0033-canonical-fq-system-labels.md), now sourced from the resolver's cross-source conflicts rather than the bare-vs-prefixed pair check. The pod-event surface this ADR introduces is unchanged.)
 
 Date: 2026-05-04
@@ -66,7 +74,7 @@ Vnet-existence and `allowedNamespaces` are *stateful* — they depend on a `Virt
 - **Pro**: No mis-attribution. Each event names the specific vnet (or vnet name fragment) the pod's label refers to, scoped to the pod's own namespace.
 - **Pro**: Admission-time syntactic check on K8s ≥ 1.30 catches typos at `kubectl apply` instead of at reconcile.
 - **Pro**: No coupling to admission for stateful checks; pod ordering vs vnet ordering keeps working.
-- **Con**: One additional controller to run (the diagnostic reconciler), even when no pods are misconfigured. Watch is filtered to pods carrying `kube-vnet/net.*` labels, so the steady-state cost is minimal.
+- **Con**: One additional controller to run (the diagnostic reconciler), even when no pods are misconfigured. Its per-event cost is small (cached Gets, no List), and since the 2026-07-09 amendment the watch fires only on *changes* to a pod's labels/spec rather than on every status heartbeat — see the amendment above for why the original "steady-state cost is minimal" claim did not hold.
 - **Con**: VAP requires K8s 1.30+. Older clusters lose the admission-time surface and rely on the existing reconcile-time vnet-status reason. Acceptable degradation; the floor is what already exists today.
 - **Con**: Events on pods in `kube-vnet/disabled` or excluded namespaces are not emitted by design. A user who annotates a namespace `disabled=true` and then wonders why their labels do nothing won't get an event. Mitigated by the same condition surfacing in `kubectl describe ns` (the annotation itself), and documented in the troubleshooting guide.
 

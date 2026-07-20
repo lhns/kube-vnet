@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -17,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -219,13 +221,7 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Pod creates/updates/deletes that touch hostPort declarations need to
 	// re-trigger the NS reconcile. Filter to only pods that *currently*
 	// declare any hostPort — avoids enqueuing on every pod heartbeat.
-	hostPortPodPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		pod, ok := obj.(*corev1.Pod)
-		if !ok {
-			return false
-		}
-		return podHasHostPort(pod)
-	})
+	hostPortPodPredicate := HostPortChangedPredicate()
 
 	// Drift correction: re-enqueue NS when a managed host-source policy
 	// changes (delete/edit). Filter by LabelSourceKind=host so a Service
@@ -251,6 +247,35 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(hostPolicyPredicate),
 		).
 		Complete(r)
+}
+
+// HostPortChangedPredicate fires only when a pod's *derived hostPort key set*
+// changes — the set that actually determines the emitted policy.
+//
+// The previous predicate asked "does this pod declare any hostPort?", a
+// membership test, so every status update of a hostPort pod (restart counts,
+// readiness, podIP) enqueued its namespace, and a port swap (8080 -> 9090) was
+// indistinguishable from no change on the boolean. Deriving both sides through
+// desiredHostPortKeys keeps this exact: it also skips hostNetwork pods, which
+// are out of scope per ADR 0040, so those never enqueue at all.
+func HostPortChangedPredicate() predicate.Predicate {
+	keysOf := func(obj client.Object) map[hostPortKey]bool {
+		pod, ok := obj.(*corev1.Pod)
+		if !ok || pod == nil {
+			return map[hostPortKey]bool{}
+		}
+		return desiredHostPortKeys([]corev1.Pod{*pod})
+	}
+	has := func(obj client.Object) bool { return len(keysOf(obj)) > 0 }
+
+	return predicate.Funcs{
+		CreateFunc:  func(e event.CreateEvent) bool { return has(e.Object) },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return has(e.Object) },
+		GenericFunc: func(e event.GenericEvent) bool { return has(e.Object) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !maps.Equal(keysOf(e.ObjectOld), keysOf(e.ObjectNew))
+		},
+	}
 }
 
 func podHasHostPort(pod *corev1.Pod) bool {

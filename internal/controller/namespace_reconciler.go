@@ -37,9 +37,8 @@ import (
 // VirtualNetworkReconciler provides for membership policies.
 type NamespaceReconciler struct {
 	client.Client
-	APIReader client.Reader
-	Scheme    *runtime.Scheme
-	NSFilter  *NamespaceFilter
+	Scheme   *runtime.Scheme
+	NSFilter *NamespaceFilter
 }
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch

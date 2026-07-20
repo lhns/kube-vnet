@@ -46,12 +46,12 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr        string
-		probeAddr          string
-		enableLeaderElect  bool
-		disabledNamespaces string
+		metricsAddr         string
+		probeAddr           string
+		enableLeaderElect   bool
+		disabledNamespaces  string
 		apiserverSourceCIDR string
-		showVersion        bool
+		showVersion         bool
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -147,10 +147,9 @@ func main() {
 	}
 
 	nsReconciler := &controller.NamespaceReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		NSFilter:  nsFilter,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: nsFilter,
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")
@@ -181,7 +180,6 @@ func main() {
 
 	sysVnetReconciler := &controller.SystemVnetReconciler{
 		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,

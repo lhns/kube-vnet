@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,12 +47,12 @@ const (
 
 // Event reasons (Kubernetes Event.Reason — short, stable, machine-readable).
 const (
-	EventReady           = "Ready"
-	EventNotReady        = "NotReady"
-	EventDegraded        = "Degraded"
-	EventRecovered       = "Recovered"
-	EventApplyFailed     = "ApplyFailed"
-	EventPolicyRestored  = "PolicyRestored"
+	EventReady          = "Ready"
+	EventNotReady       = "NotReady"
+	EventDegraded       = "Degraded"
+	EventRecovered      = "Recovered"
+	EventApplyFailed    = "ApplyFailed"
+	EventPolicyRestored = "PolicyRestored"
 )
 
 // nameRegex enforces DNS-1123 label format on VirtualNetwork names (no dots).
@@ -542,9 +544,29 @@ func (r *VirtualNetworkReconciler) updateStatus(
 		out = append(out, vnetv1alpha1.NamespaceMembers{Namespace: ns, Pods: pods})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Namespace < out[j].Namespace })
+
+	// Skip the write when nothing actually changed. An unconditional
+	// Status().Update() is self-feeding: the write produces a watch event on
+	// the VirtualNetwork, the For() watch re-enqueues it, and the next
+	// reconcile writes again — burning an apiserver PUT plus (via the apply
+	// loop) one uncached NetworkPolicy GET per generated policy, forever.
+	//
+	// Comparing the whole Status with equality.Semantic is safe here:
+	// upsertCondition reuses the existing LastTransitionTime unless the
+	// condition's Status actually flips, so timestamps can't churn a no-op
+	// into a false diff. Ready/Degraded Events are unaffected — they compare
+	// the in-memory prior snapshot, never a read-back, and an unchanged status
+	// means there was no transition to report.
+	//
+	// Same short-circuit the resolution controller already applies to its pod
+	// label writes (resolution_controller.go, applyResolution).
+	prior := vnet.Status.DeepCopy()
 	vnet.Status.Members = out
 	vnet.Status.GeneratedPolicies = policies
 	vnet.Status.ObservedGeneration = vnet.Generation
+	if equality.Semantic.DeepEqual(prior, &vnet.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, vnet)
 }
 
@@ -684,6 +706,11 @@ func HasJoinLabel(obj client.Object, labelPrefix string) bool {
 
 // JoinLabelPodPredicate returns a predicate that fires when *either* the old
 // or new pod object carries any join label.
+//
+// NOTE this is a *membership* test, not a change test: on Update it fires for
+// every mutation of a labelled pod, including pure status churn (phase,
+// restart counts, readiness, podIP). Prefer JoinLabelChangedPredicate for
+// controllers whose work only depends on the join labels themselves.
 func JoinLabelPodPredicate(labelPrefix string) predicate.Predicate {
 	return predicate.Funcs{
 		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
@@ -695,12 +722,58 @@ func JoinLabelPodPredicate(labelPrefix string) predicate.Predicate {
 	}
 }
 
+// joinLabelSet extracts the join labels that determine vnet membership: the
+// user-input `<prefix>net.*` family and the operator-stamped
+// `kube-vnet.system/net.*` family. Both matter — the generator's selectors key
+// on the system stamp (ADR 0030), while podEventHandler routes on either — so
+// a change in EITHER family must enqueue.
+func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
+	out := map[string]string{}
+	if obj == nil {
+		return out
+	}
+	userPrefix := labelPrefix + "net."
+	for k, v := range obj.GetLabels() {
+		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// JoinLabelChangedPredicate is JoinLabelPodPredicate's change-based sibling: on
+// Update it fires only when the join-label set actually differs.
+//
+// The membership form enqueued a reconcile for every mutation of a labelled
+// pod, so a pod restart storm (each restart churning phase, restart counts,
+// readiness and podIP) became a reconcile storm — and each VirtualNetwork
+// reconcile runs a cluster-wide PodList. Nothing in the reconcile depends on
+// pod status: membership is decided purely by these labels.
+//
+// Create/Delete/Generic keep membership semantics; those are real state
+// changes the handler must see.
+func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
+	return predicate.Funcs{
+		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return !maps.Equal(
+				joinLabelSet(e.ObjectOld, labelPrefix),
+				joinLabelSet(e.ObjectNew, labelPrefix),
+			)
+		},
+		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+	}
+}
+
 // SetupWithManager wires watches: VirtualNetwork (primary), Pod (label-prefix predicate
 // + handler.Funcs to see old+new on Update), NetworkPolicy (managed-by predicate, drift).
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	keyPrefix := DefaultLabelPrefix + "net."
 
-	podPredicate := JoinLabelPodPredicate(DefaultLabelPrefix)
+	// Change-based: pure pod status churn must not enqueue (see the predicate's
+	// doc comment). Vnet-side changes still arrive via the three Watches below.
+	podPredicate := JoinLabelChangedPredicate(DefaultLabelPrefix)
 
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue

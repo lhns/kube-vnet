@@ -43,7 +43,6 @@ const (
 // See ADR 0030.
 type SystemVnetReconciler struct {
 	client.Client
-	APIReader         client.Reader
 	Scheme            *runtime.Scheme
 	NSFilter          *NamespaceFilter
 	OperatorNamespace string

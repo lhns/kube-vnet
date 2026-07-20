@@ -100,10 +100,9 @@ func TestMain(m *testing.M) {
 	}
 
 	testNSReconciler = &NamespaceReconciler{
-		Client:    mgr.GetClient(),
-		APIReader: mgr.GetAPIReader(),
-		Scheme:    mgr.GetScheme(),
-		NSFilter:  NewNamespaceFilter(nil),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NSFilter: NewNamespaceFilter(nil),
 	}
 	if err := testNSReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)
@@ -112,10 +111,10 @@ func TestMain(m *testing.M) {
 	}
 
 	diagReconciler := &JoinLabelDiagnosticReconciler{
-		Client:      mgr.GetClient(),
-		Scheme:      mgr.GetScheme(),
-		Recorder:    mgr.GetEventRecorder("kube-vnet-joinlabel-test"),
-		NSFilter:    NewNamespaceFilter(nil),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("kube-vnet-joinlabel-test"),
+		NSFilter: NewNamespaceFilter(nil),
 	}
 	if err := diagReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup joinlabel diagnostic reconciler: %v\n", err)
@@ -138,7 +137,6 @@ func TestMain(m *testing.M) {
 
 	sysVnetReconciler := &SystemVnetReconciler{
 		Client:            mgr.GetClient(),
-		APIReader:         mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",

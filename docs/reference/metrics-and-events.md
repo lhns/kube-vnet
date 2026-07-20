@@ -243,3 +243,28 @@ Each `VirtualNetwork.status.conditions` carries `Ready` and `Degraded`. Full rea
 | `Degraded` | True | `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
 
 `kubectl wait --for=condition=Ready vnet/<name> -n <ns>` works because of this standard pattern.
+
+---
+
+## Diagnosing reconcile churn
+
+If the operator's CPU looks high, the question is almost always *"which controller is reconciling, and why"*. kube-vnet's own `kube_vnet_reconciliations_total` is labelled by `result` only, so it cannot attribute churn — use controller-runtime's built-in metrics, which are exported on the same `/metrics` endpoint. Every controller is named, so the `controller` label is meaningful.
+
+```promql
+# Which controller is spinning? (names: virtualnetwork, resolution,
+# joinlabel-diagnostic, host-port, external-allow, apiserver-reachable,
+# namespace, system-vnet, virtualnetworkbinding)
+sum by (controller) (rate(controller_runtime_reconcile_total[5m]))
+
+# Is it apiserver traffic, and is it reads or writes? A high PUT rate on a
+# steady cluster means something is writing status in a loop.
+sum by (verb) (rate(rest_client_requests_total[5m]))
+
+# Queue pressure — adds that never settle indicate a self-feeding loop.
+sum by (name) (rate(workqueue_adds_total[5m]))
+workqueue_depth
+```
+
+**What healthy looks like.** On an idle cluster, reconcile rate should be near zero apart from the 10-minute periodic resync per VirtualNetwork. A sustained non-zero rate with no one changing anything means an event source is firing on data the operator doesn't care about — historically the two causes were an unconditional status write (each write re-triggering its own watch) and pod predicates that fired on status heartbeats rather than label changes. Both are fixed, and both are covered by regression tests, but the same shape can reappear whenever a watch is added without a predicate.
+
+**When you see churn:** check `workqueue_adds_total` first to find the busy controller, then look at what that controller watches. A controller whose adds greatly exceed the rate of real object changes is being triggered by something it should be filtering out.
