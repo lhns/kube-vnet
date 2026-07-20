@@ -116,6 +116,37 @@ func TestJoinLabelChangedPredicate_FiresOnEitherPrefix(t *testing.T) {
 	}
 }
 
+// The resolution-marker branch. For a pod whose membership is *denied*
+// (foreign namespace, typo'd vnet, bad direction) the resolution controller
+// writes ONLY the kube-vnet.system/resolved-generation annotation — no system
+// stamp label is ever added, and the user label never changes again. A
+// label-only diff would drop that update, leaving InvalidJoiners stale until
+// the 10-minute resync. The annotation diff makes the vnet re-evaluate exactly
+// when resolution finishes.
+func TestJoinLabelChangedPredicate_ResolvedGenerationChangeFires(t *testing.T) {
+	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
+
+	// Labels identical on both sides — only the resolution annotation moves.
+	labels := map[string]string{"kube-vnet/net.payments": "both"}
+	oldPod := podWithLabels("shop", "web-0", labels)
+	newPod := oldPod.DeepCopy()
+	newPod.Annotations = map[string]string{AnnotationResolvedGeneration: "5"}
+	newPod.ResourceVersion = "2"
+
+	if !p.Update(event.UpdateEvent{ObjectOld: oldPod, ObjectNew: newPod}) {
+		t.Fatal("resolved-generation annotation change must fire; a denied pod " +
+			"gets only this annotation, and dropping it leaves InvalidJoiners stale")
+	}
+
+	// And a no-op on the annotation (unchanged) with unchanged labels must NOT.
+	same := oldPod.DeepCopy()
+	same.Annotations = map[string]string{AnnotationResolvedGeneration: "5"}
+	oldPod.Annotations = map[string]string{AnnotationResolvedGeneration: "5"}
+	if p.Update(event.UpdateEvent{ObjectOld: oldPod, ObjectNew: same}) {
+		t.Fatal("identical labels and identical resolved-generation must not fire")
+	}
+}
+
 // Create/Delete keep membership semantics — those are genuine state changes,
 // and the handler needs them to enqueue (or clean up) the vnet.
 func TestJoinLabelChangedPredicate_CreateDeleteUnchanged(t *testing.T) {

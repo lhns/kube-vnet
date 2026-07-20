@@ -125,9 +125,13 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
 	}
 
-	// Snapshot prior condition states so we can emit events on transitions.
+	// Snapshot prior condition states so we can emit events on transitions,
+	// and the whole stored status so updateStatus can skip no-op writes.
+	// Both must be taken BEFORE any setReady/setDegraded call below, since
+	// those mutate vnet.Status in place.
 	priorReady := conditionStatus(vnet, "Ready")
 	priorDegraded := conditionStatus(vnet, "Degraded")
+	storedStatus := vnet.Status.DeepCopy()
 
 	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
 	if !nameRegex.MatchString(vnet.Name) {
@@ -135,7 +139,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name))
 		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidName,
 			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
-		_ = r.updateStatus(ctx, vnet, nil, nil)
+		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		return ctrl.Result{}, nil
 	}
@@ -157,7 +161,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
 		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,
 			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
-		_ = r.updateStatus(ctx, vnet, nil, nil)
+		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		// Clean up any policies that may exist from a previous reconcile.
 		_ = r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
@@ -186,7 +190,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventApplyFailed, "Apply",
 				"apply %s/%s: %v", p.Namespace, p.Name, err)
 			setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, err.Error())
-			_ = r.updateStatus(ctx, vnet, members, policyRefs)
+			_ = r.updateStatus(ctx, vnet, members, policyRefs, storedStatus)
 			r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 			return ctrl.Result{}, err
 		}
@@ -222,7 +226,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				pluralize(len(members), "1 namespace", "%d namespaces")))
 	}
 
-	if err := r.updateStatus(ctx, vnet, members, policyRefs); err != nil {
+	if err := r.updateStatus(ctx, vnet, members, policyRefs, storedStatus); err != nil {
 		return ctrl.Result{}, err
 	}
 	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
@@ -527,6 +531,7 @@ func (r *VirtualNetworkReconciler) updateStatus(
 	vnet *vnetv1alpha1.VirtualNetwork,
 	members map[string]map[Direction][]string,
 	policies []vnetv1alpha1.PolicyRef,
+	stored *vnetv1alpha1.VirtualNetworkStatus,
 ) error {
 	out := make([]vnetv1alpha1.NamespaceMembers, 0, len(members))
 	for ns, byDir := range members {
@@ -560,11 +565,16 @@ func (r *VirtualNetworkReconciler) updateStatus(
 	//
 	// Same short-circuit the resolution controller already applies to its pod
 	// label writes (resolution_controller.go, applyResolution).
-	prior := vnet.Status.DeepCopy()
+	//
+	// `stored` MUST be the status as fetched from the apiserver, captured
+	// before Reconcile called setReady/setDegraded — those mutate
+	// vnet.Status.Conditions in place. Snapshotting here instead would compare
+	// the already-mutated object against itself, find no difference, and skip
+	// EVERY write, freezing status forever.
 	vnet.Status.Members = out
 	vnet.Status.GeneratedPolicies = policies
 	vnet.Status.ObservedGeneration = vnet.Generation
-	if equality.Semantic.DeepEqual(prior, &vnet.Status) {
+	if stored != nil && equality.Semantic.DeepEqual(stored, &vnet.Status) {
 		return nil
 	}
 	return r.Status().Update(ctx, vnet)
@@ -742,13 +752,25 @@ func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
 }
 
 // JoinLabelChangedPredicate is JoinLabelPodPredicate's change-based sibling: on
-// Update it fires only when the join-label set actually differs.
+// Update it fires only when something the reconcile actually depends on
+// changed — the join-label set, or the resolution marker.
 //
 // The membership form enqueued a reconcile for every mutation of a labelled
 // pod, so a pod restart storm (each restart churning phase, restart counts,
 // readiness and podIP) became a reconcile storm — and each VirtualNetwork
 // reconcile runs a cluster-wide PodList. Nothing in the reconcile depends on
-// pod status: membership is decided purely by these labels.
+// pod *status*.
+//
+// It does, however, depend on `kube-vnet.system/resolved-generation`, and that
+// is easy to miss: for a pod whose membership is *denied* (foreign namespace
+// not in allowedNamespaces, typo'd vnet, bad direction), the resolution
+// controller writes ONLY that annotation — no system stamp is ever added, and
+// the user label never changes again. A label-only diff drops that update, so
+// if the vnet's pod-create reconcile raced the informer cache the pod would
+// never be re-examined and the InvalidJoiners diagnostic would stay stale until
+// the 10-minute resync. Watching the annotation gives exactly one extra event
+// per pod — when resolution finishes — which is precisely when the vnet should
+// re-evaluate.
 //
 // Create/Delete/Generic keep membership semantics; those are real state
 // changes the handler must see.
@@ -757,13 +779,24 @@ func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
 		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return !maps.Equal(
+			if !maps.Equal(
 				joinLabelSet(e.ObjectOld, labelPrefix),
 				joinLabelSet(e.ObjectNew, labelPrefix),
-			)
+			) {
+				return true
+			}
+			// Resolution finished (or re-ran) for this pod.
+			return resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
 		},
 		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 	}
+}
+
+func resolvedGeneration(obj client.Object) string {
+	if obj == nil {
+		return ""
+	}
+	return obj.GetAnnotations()[AnnotationResolvedGeneration]
 }
 
 // SetupWithManager wires watches: VirtualNetwork (primary), Pod (label-prefix predicate
