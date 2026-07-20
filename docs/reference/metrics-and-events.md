@@ -174,17 +174,15 @@ The condition reasons that drive these events include `PoliciesGenerated`, `NoMe
 
 (A `NameCollision` event reason is planned alongside the same-named `Degraded` reason for the case where a user-managed `NetworkPolicy` blocks an operator name.)
 
-### Pod event reasons (join-label diagnostics)
+### Pod event reason: `VirtualNetworkNotJoinable` (join-label diagnostics)
 
-Emitted by the `JoinLabelDiagnosticReconciler` on the Pod object in the pod's own namespace. All Warning. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
+Emitted by the `ResolutionReconciler` on the Pod object in the pod's own namespace, Warning, whenever a join label (or binding/baseline ref) can't be honored. A single reason covers what used to be three separate `JoinLabelDiagnosticReconciler` reasons — the message's note distinguishes the cause, and a hint steers the fix. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace.md).
 
 | Reason | Type | Scope | When it fires |
 |---|---|---|---|
-| `BareJoinLabelVnetNotFound` | Warning | Pod | Pod carries `kube-vnet/net.<X>` but no `VirtualNetwork` of name `<X>` exists in the pod's own namespace. |
-| `PrefixedJoinLabelVnetNotFound` | Warning | Pod | Pod carries `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` does not exist. |
-| `JoinLabelNamespaceNotAllowed` | Warning | Pod | The named vnet exists, but its `spec.allowedNamespaces` does not permit the pod's namespace. |
+| `VirtualNetworkNotJoinable` | Warning | Pod | A referenced vnet can't be joined: bare `kube-vnet/net.<X>` with no local vnet `<X>` (message hints the prefixed form `kube-vnet/net.<homeNS>.<X>`); prefixed `kube-vnet/net.<homeNS>.<X>` where `<homeNS>/<X>` doesn't exist; or the vnet exists but its `spec.allowedNamespaces` doesn't permit the pod's namespace. |
 
-Pods in `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespaces are skipped — explicit opt-out trumps diagnostic noise.
+Pods in `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespaces are skipped — explicit opt-out trumps diagnostic noise. Note Events are best-effort: the durable source of truth for a vnet's rejected joiners remains the vnet's `Degraded`/`InvalidJoiners` condition.
 
 ### VirtualNetworkBinding event reasons
 
@@ -252,7 +250,7 @@ If the operator's CPU looks high, the question is almost always *"which controll
 
 ```promql
 # Which controller is spinning? (names: virtualnetwork, resolution,
-# joinlabel-diagnostic, host-port, external-allow, apiserver-reachable,
+# host-port, external-allow, apiserver-reachable,
 # namespace, system-vnet, virtualnetworkbinding)
 sum by (controller) (rate(controller_runtime_reconcile_total[5m]))
 

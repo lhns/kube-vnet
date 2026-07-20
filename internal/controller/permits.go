@@ -23,7 +23,6 @@ import (
 //     membership, not that a user merely requested it.
 //   - VirtualNetworkReconciler.discoverMembers — gates inclusion in the
 //     generated membership policy's `from:` rules.
-//   - JoinLabelDiagnosticReconciler.diagPrefixed — gates Event emission.
 //
 // Returns (false, nil) for "not permitted" — covers vnet-doesn't-exist,
 // pod NS not in allowedNamespaces, malformed key. Returns (false, err)

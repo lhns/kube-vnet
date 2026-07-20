@@ -189,6 +189,24 @@ func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
 	}
 }
 
+// bareJoinLabelHint returns the guidance to append when a *bare* pod join label
+// `kube-vnet/net.<X>` can't be honored: the bare form is only resolved against
+// the pod's own namespace, so a missing local vnet usually means the user meant
+// a vnet hosted elsewhere and should use the prefixed form. suffix is the label
+// key's tail (the part after `kube-vnet/net.`); a dot means it's already the
+// prefixed `<homeNS>.<name>` form (fully covered by notJoinableNote — no hint),
+// and the reserved system-vnet names are legitimately bare. Folded in from the
+// retired JoinLabelDiagnosticReconciler (ADR 0027).
+func bareJoinLabelHint(labelKey, suffix string) string {
+	if strings.Contains(suffix, ".") ||
+		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
+		return ""
+	}
+	return fmt.Sprintf(" hint: the bare form %q is only honored in the vnet's home namespace; "+
+		"to join a vnet hosted in another namespace use the prefixed form %q.",
+		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
+}
+
 // notJoinableNote explains WHY the pod cannot join, distinguishing "no such
 // vnet" from "exists but doesn't allow you" — different problems with
 // different fixes. Only called on the failure path, so the extra Get is free
@@ -239,9 +257,9 @@ func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules [
 			if r.Recorder != nil && rule.Owner != nil {
 				r.Recorder.Eventf(rule.Owner, nil, corev1.EventTypeWarning,
 					ReasonVirtualNetworkNotJoinable, "Resolve",
-					"pod namespace %q cannot join %q (from %s): %s%s",
+					"pod namespace %q cannot join %q (from %s): %s%s%s",
 					podNS, rule.Vnet, rule.Source,
-					r.notJoinableNote(ctx, rule.Vnet, podNS), notJoinableHint(rule.Ref))
+					r.notJoinableNote(ctx, rule.Vnet, podNS), notJoinableHint(rule.Ref), rule.Hint)
 			}
 			continue
 		}
@@ -377,9 +395,10 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			Direction: dir,
 			Source:    "<pod-label>",
 			// No Ref: a join label carries no namespace field to be wrong
-			// about, so there is nothing to hint at. The Event still lands
-			// on the pod that asked for the unjoinable vnet.
+			// about. The Event still lands on the pod that asked for the
+			// unjoinable vnet.
 			Owner: pod,
+			Hint:  bareJoinLabelHint(k, suffix),
 		})
 	}
 	return out

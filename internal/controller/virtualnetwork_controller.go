@@ -697,10 +697,9 @@ func summarizeInvalid(in []InvalidJoiner) string {
 // HasJoinLabel reports whether obj carries at least one label key with the
 // kube-vnet user-input prefix `<labelPrefix>net.` OR the operator-stamped
 // prefix `kube-vnet.system/net.`. Used as the predicate for the
-// VirtualNetworkReconciler's pod watch and the JoinLabelDiagnosticReconciler's
-// pod watch. The system prefix is included because the generator selects on
-// system-stamped labels (ADR 0030), so changes to them must enqueue the
-// affected vnet.
+// VirtualNetworkReconciler's pod watch. The system prefix is included because
+// the generator selects on system-stamped labels (ADR 0030), so changes to
+// them must enqueue the affected vnet.
 func HasJoinLabel(obj client.Object, labelPrefix string) bool {
 	if obj == nil {
 		return false
@@ -712,24 +711,6 @@ func HasJoinLabel(obj client.Object, labelPrefix string) bool {
 		}
 	}
 	return false
-}
-
-// JoinLabelPodPredicate returns a predicate that fires when *either* the old
-// or new pod object carries any join label.
-//
-// NOTE this is a *membership* test, not a change test: on Update it fires for
-// every mutation of a labelled pod, including pure status churn (phase,
-// restart counts, readiness, podIP). Prefer JoinLabelChangedPredicate for
-// controllers whose work only depends on the join labels themselves.
-func JoinLabelPodPredicate(labelPrefix string) predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return HasJoinLabel(e.ObjectOld, labelPrefix) || HasJoinLabel(e.ObjectNew, labelPrefix)
-		},
-		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
-	}
 }
 
 // joinLabelSet extracts the join labels that determine vnet membership: the
@@ -751,15 +732,16 @@ func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
 	return out
 }
 
-// JoinLabelChangedPredicate is JoinLabelPodPredicate's change-based sibling: on
-// Update it fires only when something the reconcile actually depends on
-// changed — the join-label set, or the resolution marker.
+// JoinLabelChangedPredicate is the change-based pod predicate for the
+// VirtualNetworkReconciler: on Update it fires only when something the
+// reconcile actually depends on changed — the join-label set, or the
+// resolution marker.
 //
-// The membership form enqueued a reconcile for every mutation of a labelled
-// pod, so a pod restart storm (each restart churning phase, restart counts,
-// readiness and podIP) became a reconcile storm — and each VirtualNetwork
-// reconcile runs a cluster-wide PodList. Nothing in the reconcile depends on
-// pod *status*.
+// It replaced an earlier *membership* predicate that fired for every mutation
+// of a labelled pod, so a pod restart storm (each restart churning phase,
+// restart counts, readiness and podIP) became a reconcile storm — and each
+// VirtualNetwork reconcile runs a cluster-wide PodList. Nothing in the
+// reconcile depends on pod *status*.
 //
 // It does, however, depend on `kube-vnet.system/resolved-generation`, and that
 // is easy to miss: for a pod whose membership is *denied* (foreign namespace
@@ -779,10 +761,7 @@ func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
 		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if !maps.Equal(
-				joinLabelSet(e.ObjectOld, labelPrefix),
-				joinLabelSet(e.ObjectNew, labelPrefix),
-			) {
+			if joinLabelSetChanged(e.ObjectOld, e.ObjectNew, labelPrefix) {
 				return true
 			}
 			// Resolution finished (or re-ran) for this pod.
@@ -790,6 +769,16 @@ func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
 		},
 		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
 	}
+}
+
+// joinLabelSetChanged reports whether the join-label set (both the user
+// kube-vnet/net.* and the operator kube-vnet.system/net.* families) differs
+// between two revisions of an object.
+func joinLabelSetChanged(oldObj, newObj client.Object, labelPrefix string) bool {
+	return !maps.Equal(
+		joinLabelSet(oldObj, labelPrefix),
+		joinLabelSet(newObj, labelPrefix),
+	)
 }
 
 func resolvedGeneration(obj client.Object) string {

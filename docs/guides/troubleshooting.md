@@ -35,22 +35,24 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Pod events kube-vnet emits
 
-Three Warning events fire on the Pod itself when a `kube-vnet/net.*` label is present but the membership can't be honored. They surface in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) for the design.
+A `VirtualNetworkNotJoinable` Warning fires on the Pod itself when a `kube-vnet/net.*` label (or a binding/baseline ref) is present but the membership can't be honored. It surfaces in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. The message note tells you which of the cases below applies. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace.md).
 
-> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get these events. Disabled is an explicit opt-out — the operator stays silent there by design.
+> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. Disabled is an explicit opt-out — the operator stays silent there by design.
+>
+> Events are **best-effort**. The durable record of a vnet's rejected joiners is always the vnet's own `Degraded`/`InvalidJoiners` condition (`kubectl describe vnet`); reach for that if a pod event didn't land.
 
-### `BareJoinLabelVnetNotFound`
+### Bare label, no local vnet
 
 **Symptom.** The pod has `kube-vnet/net.<X>` (bare form) and isn't a member. `kubectl describe pod` shows:
 
 ```
 Events:
-  Type     Reason                        Age   From       Message
-  ----     ------                        ----  ----       -------
-  Warning  BareJoinLabelVnetNotFound     10s   kube-vnet  no VirtualNetwork named "X" in namespace "<this-pod-ns>"
+  Type     Reason                       Age   From                 Message
+  ----     ------                       ----  ----                 -------
+  Warning  VirtualNetworkNotJoinable    10s   kube-vnet-resolution  pod namespace "<this-pod-ns>" cannot join "<this-pod-ns>.X" (from <pod-label>): VirtualNetwork "X" does not exist in namespace "<this-pod-ns>". hint: the bare form "kube-vnet/net.X" is only honored in the vnet's home namespace; to join a vnet hosted in another namespace use the prefixed form "kube-vnet/net.<homeNS>.X".
 ```
 
-**Cause.** Either no `VirtualNetwork` of name `<X>` exists in the pod's *own* namespace, or the pod is in a foreign namespace where the bare form is not recognized at all. The bare form only works in the vnet's home namespace.
+**Cause.** No `VirtualNetwork` of name `<X>` exists in the pod's *own* namespace. The bare form only resolves against the pod's namespace.
 
 **Fix.** If the vnet lives in a different namespace, use the prefixed form:
 
@@ -69,16 +71,9 @@ metadata:
   namespace: <this-pod-ns>
 ```
 
-### `PrefixedJoinLabelVnetNotFound`
+### Prefixed label, vnet doesn't exist
 
-**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>` and isn't a member. `kubectl describe pod`:
-
-```
-Events:
-  Type     Reason                            Age   From       Message
-  ----     ------                            ----  ----       -------
-  Warning  PrefixedJoinLabelVnetNotFound     10s   kube-vnet  no VirtualNetwork "<homeNS>/<X>"
-```
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>` and isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork "X" does not exist in namespace "<homeNS>"`.
 
 **Cause.** The vnet `<homeNS>/<X>` doesn't exist — either typo'd home-namespace, typo'd vnet name, or the vnet hasn't been created yet.
 
@@ -90,16 +85,9 @@ kubectl get vnet -n <homeNS> <X>
 
 Either correct the label key, or apply the missing `VirtualNetwork` manifest.
 
-### `JoinLabelNamespaceNotAllowed`
+### Prefixed label, namespace not allowed
 
-**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. `kubectl describe pod`:
-
-```
-Events:
-  Type     Reason                          Age   From       Message
-  ----     ------                          ----  ----       -------
-  Warning  JoinLabelNamespaceNotAllowed    10s   kube-vnet  vnet "<homeNS>/<X>" does not allow namespace "<this-pod-ns>"
-```
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork <homeNS>/X does not permit namespace "<this-pod-ns>" (spec.allowedNamespaces)`.
 
 **Cause.** The vnet's `spec.allowedNamespaces` does not permit the pod's namespace. Same condition that surfaces on the *vnet's* `Degraded`/`InvalidJoiners` status, but addressed to the pod owner instead of the vnet owner.
 

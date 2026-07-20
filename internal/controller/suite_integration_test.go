@@ -110,18 +110,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	diagReconciler := &JoinLabelDiagnosticReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("kube-vnet-joinlabel-test"),
-		NSFilter: NewNamespaceFilter(nil),
-	}
-	if err := diagReconciler.SetupWithManager(mgr); err != nil {
-		fmt.Fprintf(os.Stderr, "setup joinlabel diagnostic reconciler: %v\n", err)
-		_ = testEnv.Stop()
-		os.Exit(1)
-	}
-
 	resReconciler := &ResolutionReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

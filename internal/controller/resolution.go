@@ -33,6 +33,13 @@ type ResolutionRule struct {
 	// hint at the fix (ADR 0043). Zero for rules derived from pod join labels.
 	Ref vnetv1alpha1.VirtualNetworkRef
 
+	// Hint is an optional extra sentence appended to the VirtualNetworkNotJoinable
+	// Warning when this rule is dropped, carrying source-specific guidance a
+	// generic message can't. Pod join labels set it to steer a bare
+	// `kube-vnet/net.<X>` toward the prefixed form when no local vnet X exists
+	// (folded in from the retired JoinLabelDiagnosticReconciler; see ADR 0027).
+	Hint string
+
 	// Owner is the object that declared this rule — the Baseline, Binding, or
 	// the Pod itself for join labels. A VirtualNetworkNotJoinable Warning
 	// Event is emitted on it when the rule is dropped. Never used for

@@ -1,6 +1,17 @@
 # 0027 — Pod-scoped events for join-label diagnostics
 
-> **Amendment (2026-07-09)**: this ADR's cost estimate was wrong, and the fix changed the controller's trigger set.
+> **Amendment (2026-07-20) — the `JoinLabelDiagnosticReconciler` is retired; its guidance is folded into the resolution controller. This supersedes the 2026-07-09 amendment below.**
+>
+> The separate diagnostic controller emitted its three Warning reasons (`BareJoinLabelVnetNotFound`, `PrefixedJoinLabelVnetNotFound`, `JoinLabelNamespaceNotAllowed`) as best-effort Kubernetes Events. Two problems converged:
+>
+> 1. **Best-effort delivery made a single emit unreliable.** With the churn-fixed change-based predicate the controller emits **once** per misconfiguration. Measured in envtest, ~20–30% of single Events are silently dropped by the shared client-go/controller-runtime event broadcaster — no error logged, the Event never reaches the apiserver. The old membership predicate only appeared reliable because it re-emitted on every pod heartbeat, masking the drop with exactly the reconcile churn ADR 0027's cost estimate got wrong. There is no low-churn predicate that both emits rarely and delivers reliably: reliability came from repetition.
+> 2. **The coverage was redundant.** The `ResolutionReconciler` already emits a **pod-scoped** `VirtualNetworkNotJoinable` Warning (ADR 0043) for the *same three conditions* — its `podLabelRules` → `filterPermittedRules` path denies and warns on the pod for a bare vnet that doesn't exist locally, a prefixed vnet that doesn't exist, and a namespace not in `allowedNamespaces`. That Event lands reliably (the resolution controller reconciles the pod twice, so it emits twice), and its `notJoinableNote` already distinguishes "no such vnet" from "exists but doesn't permit you".
+>
+> **Decision:** delete `JoinLabelDiagnosticReconciler` (removing one cluster-wide pod watch — a net churn win) and fold its only non-redundant contribution — the bare-form "use the prefixed form `kube-vnet/net.<homeNS>.<X>`" guidance — into the resolution controller's `VirtualNetworkNotJoinable` message via `bareJoinLabelHint`. The pod owner still gets a pod-scoped Warning for every misconfiguration; it is now delivered by the controller that already had reliable, non-duplicated coverage. The message content (including the hint) is unit-tested; the not-joinable *behavior* is covered by the durable `Resolution_*_NoStamp` integration tests. We deliberately no longer assert best-effort Event **delivery** in integration tests — that assertion was the long-standing source of the flaky `TestIntegration_PodEvent_*` cases.
+>
+> The **admission-time VAP** surface (below) is unaffected: syntactic direction-value validation still rejects bad labels at `kubectl apply`.
+
+> **Amendment (2026-07-09)** *(superseded by the 2026-07-20 amendment above)*: this ADR's cost estimate was wrong, and the fix changed the controller's trigger set.
 >
 > The claim that "the watch is filtered to pods carrying `kube-vnet/net.*` labels, so the steady-state cost is minimal" mistook a **membership** filter for a **change** filter. `JoinLabelPodPredicate` returns true whenever a pod *carries* a join label, so **every** update of such a pod — phase transitions, container restart counts, readiness flips, podIP assignment — re-ran the diagnostics. The `Eventf` calls have no dedupe, so a single misconfigured pod re-emitted its Warning on every heartbeat, and a pod restart storm turned into a reconcile-and-Event storm.
 >

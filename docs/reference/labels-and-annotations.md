@@ -64,13 +64,13 @@ X→Y flows iff X is initiator-capable (`both`/`egress`) **and** Y is receiver-c
 
 ### Diagnostics
 
-When a join label is present but membership can't be honored, kube-vnet surfaces the cause on the *Pod* (Warning event) so the pod owner sees it via `kubectl describe pod`. Three reasons:
+When a join label is present but membership can't be honored, kube-vnet surfaces the cause on the *Pod* (a `VirtualNetworkNotJoinable` Warning event) so the pod owner sees it via `kubectl describe pod`. The one reason covers every case; the message note says which:
 
-| Reason | Meaning |
+| Case | Message note (and hint) |
 |---|---|
-| `BareJoinLabelVnetNotFound` | Pod has the bare form `kube-vnet/net.<X>` but no `VirtualNetwork` named `<X>` exists in the pod's own namespace (or the pod is in a foreign namespace where the bare form is not recognized). |
-| `PrefixedJoinLabelVnetNotFound` | Pod has `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` doesn't exist. |
-| `JoinLabelNamespaceNotAllowed` | The vnet exists at the named home, but its `spec.allowedNamespaces` does not permit the pod's namespace. |
+| Bare `kube-vnet/net.<X>` with no `VirtualNetwork` named `<X>` in the pod's own namespace | "does not exist in namespace …" + hint: *the bare form is only honored in the vnet's home namespace; use the prefixed form `kube-vnet/net.<homeNS>.<X>`*. |
+| Prefixed `kube-vnet/net.<homeNS>.<X>` but the vnet `<homeNS>/<X>` doesn't exist | "does not exist in namespace …" (check the home namespace / name for typos). |
+| The vnet exists at the named home, but its `spec.allowedNamespaces` does not permit the pod's namespace | "does not permit namespace … (spec.allowedNamespaces)". |
 
 In addition, on Kubernetes ≥ 1.30 the chart installs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none]`. On older clusters the same condition still surfaces at reconcile time as `Degraded`/`UnknownDirection` on the vnet.
 

@@ -108,16 +108,15 @@ kube-vnet/
     │                                         Pod. Resolves binding's
     │                                         podSelector, sets binding
     │                                         status (Ready,
-    │                                         attachedPods). Does NOT emit
-    │                                         policies — bindings stamp via
-    │                                         resolution layer per ADR 0033
-    └── joinlabel_diagnostic_controller.go ... JoinLabelDiagnosticReconciler:
-                                              emits Warning Events on pods
-                                              with misconfigured kube-vnet/
-                                              net.* labels (typos, dangling
-                                              vnet refs, NS-not-allowed)
-                                              per ADR 0027
+    └                                         attachedPods). Does NOT emit
+                                              policies — bindings stamp via
+                                              resolution layer per ADR 0033
 ```
+
+The pod-scoped Warning for misconfigured `kube-vnet/net.*` labels (typos,
+dangling vnet refs, NS-not-allowed) is emitted as `VirtualNetworkNotJoinable`
+by the `ResolutionReconciler`; the separate `JoinLabelDiagnosticReconciler` was
+retired (ADR 0027 retirement amendment).
 
 ## Code flow
 
@@ -279,9 +278,8 @@ Each reconciler owns exactly one resource family and never crosses into another'
 |---|---|---|
 | `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
-| `ResolutionReconciler` | `Pod` labels + annotations | `Pod`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
+| `ResolutionReconciler` | `Pod` labels + annotations, `VirtualNetworkNotJoinable` `Event` on pods | `Pod`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `Pod` |
-| `JoinLabelDiagnosticReconciler` | Kubernetes `Event` on pods | `Pod`, `VirtualNetwork` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.

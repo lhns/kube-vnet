@@ -440,9 +440,10 @@ func TestIntegration_Resolution_Binding_NotPermitted_NoStamp(t *testing.T) {
 }
 
 // TestIntegration_Resolution_VnetMissing_NoStamp: a pod-label references
-// a vnet that doesn't exist. No stamp. (The JoinLabelDiagnosticReconciler
-// emits a BareJoinLabelVnetNotFound Event; not asserted here since this
-// test focuses on the stamping path.)
+// a vnet that doesn't exist. No stamp. (The resolution controller also emits
+// a VirtualNetworkNotJoinable Warning with a bare-form hint, but that
+// best-effort Event is covered by unit tests, not asserted here since this
+// test focuses on the durable stamping path.)
 func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
 	setClusterBaseline(t, nil)
 	ctx := context.Background()

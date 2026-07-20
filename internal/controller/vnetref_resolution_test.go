@@ -187,3 +187,58 @@ func TestReasonVirtualNetworkNotJoinable_IsUniform(t *testing.T) {
 		t.Fatalf("reason changed: %q", ReasonVirtualNetworkNotJoinable)
 	}
 }
+
+// bareJoinLabelHint carries the guidance folded in from the retired
+// JoinLabelDiagnosticReconciler (ADR 0027): a bare `kube-vnet/net.<X>` that
+// can't be honored should point the user at the prefixed form. Prefixed labels
+// (already fully explained by notJoinableNote) and reserved system-vnet names
+// (legitimately bare) get no hint.
+func TestBareJoinLabelHint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		labelKey string
+		suffix   string
+		wantSub  string // "" = expect no hint
+	}{
+		{
+			name:     "bare user vnet steers to prefixed form",
+			labelKey: "kube-vnet/net.payments",
+			suffix:   "payments",
+			wantSub:  "kube-vnet/net.<homeNS>.payments",
+		},
+		{
+			name:     "prefixed form gets no extra hint",
+			labelKey: "kube-vnet/net.shop.payments",
+			suffix:   "shop.payments",
+			wantSub:  "",
+		},
+		{
+			name:     "reserved cluster name is legitimately bare",
+			labelKey: "kube-vnet/net.cluster",
+			suffix:   SystemVnetCluster,
+			wantSub:  "",
+		},
+		{
+			name:     "reserved namespace name is legitimately bare",
+			labelKey: "kube-vnet/net.namespace",
+			suffix:   SystemVnetNamespace,
+			wantSub:  "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := bareJoinLabelHint(tc.labelKey, tc.suffix)
+			if tc.wantSub == "" {
+				if got != "" {
+					t.Fatalf("expected no hint, got %q", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantSub) {
+				t.Fatalf("hint %q does not mention %q", got, tc.wantSub)
+			}
+			if !strings.Contains(got, tc.labelKey) {
+				t.Fatalf("hint %q should quote the offending label %q", got, tc.labelKey)
+			}
+		})
+	}
+}
