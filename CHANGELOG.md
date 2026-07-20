@@ -10,6 +10,43 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **Bare-form hint on `VirtualNetworkNotJoinable`.** When a bare
+  `kube-vnet/net.<X>` join label can't be honored because no `VirtualNetwork`
+  `<X>` exists in the pod's own namespace, the Warning now suggests the
+  prefixed form `kube-vnet/net.<homeNS>.<X>` (folded in from the retired
+  diagnostic controller — see Removed).
+
+### Changed
+
+- **Reduced reconcile churn and apiserver traffic.** `VirtualNetwork` status is
+  written only when it actually changes (previously an unconditional
+  `status` write on every reconcile re-triggered the reconciler in a loop); the
+  pod watches for the `VirtualNetworkReconciler` and `HostPortReconciler` are
+  now change-based rather than membership-based (a pod restart storm no longer
+  becomes a reconcile storm). Generated policies, status contents, and events
+  are unchanged — only reconcile/write *frequency* drops.
+
+### Removed
+
+- **Retired the `JoinLabelDiagnosticReconciler`.** Its pod-scoped diagnostics
+  are now emitted by the resolution controller, which already surfaced the same
+  three misconfigurations reliably. The three previous Event reasons —
+  `BareJoinLabelVnetNotFound`, `PrefixedJoinLabelVnetNotFound`,
+  `JoinLabelNamespaceNotAllowed` — are **consolidated into the single
+  `VirtualNetworkNotJoinable` reason** (the message note distinguishes the
+  cause; the new hint covers the bare→prefixed case). The pod owner still gets a
+  `kubectl describe pod` Warning for every misconfiguration.
+
+  **Action required** only if you alert or `--field-selector` on the three old
+  reason strings — switch them to `VirtualNetworkNotJoinable`. The
+  admission-time direction VAP (Kubernetes ≥ 1.30) is unchanged. One narrow
+  behavior change: on pre-1.30 clusters (no VAP) a label whose *direction value*
+  is malformed (e.g. a typo, or the removed `true`/`false`/`""` aliases) and
+  that also points at a missing vnet no longer produces a pod Event; on ≥ 1.30
+  the VAP rejects such labels at admission instead.
+
 ## [0.6.0] — 2026-07-09
 
 ### Changed
