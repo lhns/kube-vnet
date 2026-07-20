@@ -172,6 +172,16 @@ func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod,
 // enriched, by notJoinableHint.
 const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
 
+// ReasonInvalidJoinLabelDirection is the Event reason emitted on a Pod when one
+// of its `kube-vnet/net.*` join labels carries a direction value the operator
+// doesn't recognize (anything other than both, ingress, egress, none). It is
+// the operator-side counterpart to the admission VAP: the same bad value is
+// surfaced at reconcile time even on clusters where the VAP isn't installed
+// (Kubernetes < 1.30, or when disabled), so a typo never fails silently. The
+// vnet-owner-facing mirror is the vnet's `UnknownDirection`/`InvalidJoiners`
+// condition, which fires only when the named vnet exists.
+const ReasonInvalidJoinLabelDirection = "InvalidJoinLabelDirection"
+
 // notJoinableHint returns a targeted suggestion when a ref names one of the
 // reserved system vnets, whose namespace semantics trip people up. It is
 // PURE FORMATTING — it must never influence control flow, or the per-kind
@@ -386,6 +396,18 @@ func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 		}
 		dir, ok := ParseBareDirection(v)
 		if !ok {
+			// Malformed direction value: membership silently ignores it. Surface
+			// it on the pod so the mistake is visible even without the admission
+			// VAP (which is absent on Kubernetes < 1.30, or if disabled). This
+			// is nearly free — we already parsed the value here, and it only
+			// fires for a misconfigured label the user fixes once.
+			if r.Recorder != nil {
+				r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning,
+					ReasonInvalidJoinLabelDirection, "Resolve",
+					"join label %q has an unrecognized direction value %q; must be one of "+
+						"both, ingress, egress, none (ADR 0030). The label is ignored until fixed.",
+					k, v)
+			}
 			continue
 		}
 		suffix := strings.TrimPrefix(k, userNetPrefix)

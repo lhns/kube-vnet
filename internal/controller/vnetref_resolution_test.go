@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
@@ -177,6 +179,46 @@ func TestNotJoinableHint(t *testing.T) {
 				t.Fatalf("hint %q does not mention %q", got, tc.wantSub)
 			}
 		})
+	}
+}
+
+// podLabelRules must surface a malformed direction value on the pod itself
+// (InvalidJoinLabelDirection), independent of the admission VAP — that is the
+// only pod-owner-facing signal on clusters without the VAP. Valid values
+// (including none) produce a rule and no warning.
+func TestPodLabelRules_WarnsOnInvalidDirection(t *testing.T) {
+	rec := &fakeRecorder{}
+	r := &ResolutionReconciler{Recorder: rec}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "shop", Name: "p",
+			Labels: map[string]string{
+				"kube-vnet/net.payments": "both",  // valid  → rule, no warn
+				"kube-vnet/net.optout":   "none",  // valid  → rule, no warn
+				"kube-vnet/net.orders":   "bothh", // typo   → warn, no rule
+				"kube-vnet/net.legacy":   "true",  // ADR 0030-removed alias → warn
+				"kube-vnet/net.blank":    "",      // empty  → warn, no rule
+				"app":                    "web",   // not a join label → ignored
+			},
+		},
+	}
+
+	rules := r.podLabelRules(pod)
+
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 valid rules (payments, optout), got %d: %v", len(rules), rules)
+	}
+	warns := 0
+	for _, reason := range rec.reasons {
+		if reason == ReasonInvalidJoinLabelDirection {
+			warns++
+		} else {
+			t.Fatalf("unexpected event reason %q", reason)
+		}
+	}
+	if warns != 3 {
+		t.Fatalf("expected 3 %s events (orders, legacy, blank), got %d",
+			ReasonInvalidJoinLabelDirection, warns)
 	}
 }
 

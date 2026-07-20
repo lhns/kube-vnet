@@ -17,6 +17,14 @@ release. Pinning to an exact version is recommended.
   `<X>` exists in the pod's own namespace, the Warning now suggests the
   prefixed form `kube-vnet/net.<homeNS>.<X>` (folded in from the retired
   diagnostic controller — see Removed).
+- **Reconcile-time warning for malformed join-label direction values
+  (`InvalidJoinLabelDirection`).** A `kube-vnet/net.*` label whose value isn't
+  one of `both`/`ingress`/`egress`/`none` is now surfaced as a Warning Event on
+  the pod by the operator itself, not only rejected by the admission VAP. This
+  makes the diagnostic reliable on clusters where the VAP is absent (Kubernetes
+  < 1.30) or disabled — the operator no longer depends on admission to tell a
+  pod owner their direction value is wrong. The VAP remains as the fail-fast
+  validator at `kubectl apply`; the two are complementary.
 
 ### Changed
 
@@ -40,12 +48,10 @@ release. Pinning to an exact version is recommended.
   `kubectl describe pod` Warning for every misconfiguration.
 
   **Action required** only if you alert or `--field-selector` on the three old
-  reason strings — switch them to `VirtualNetworkNotJoinable`. The
-  admission-time direction VAP (Kubernetes ≥ 1.30) is unchanged. One narrow
-  behavior change: on pre-1.30 clusters (no VAP) a label whose *direction value*
-  is malformed (e.g. a typo, or the removed `true`/`false`/`""` aliases) and
-  that also points at a missing vnet no longer produces a pod Event; on ≥ 1.30
-  the VAP rejects such labels at admission instead.
+  reason strings — switch them to `VirtualNetworkNotJoinable` (vnet not
+  joinable) or `InvalidJoinLabelDirection` (bad direction value; see Added).
+  Both are now emitted at reconcile time on every cluster, independent of the
+  admission VAP.
 
 ## [0.6.0] — 2026-07-09
 
