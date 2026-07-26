@@ -536,6 +536,57 @@ func TestIntegration_Resolution_VnetCreatedAfterPod_StampsWithoutPodChange(t *te
 	})
 }
 
+// Same shape, baseline-sourced: a namespace VirtualNetworkBaseline naming a
+// vnet that doesn't exist yet. Completes the membership-source matrix
+// (join label / binding / baseline) for the pod-before-vnet ordering, so the
+// admitted-namespaces fan-out is proven to reach pods whose membership comes
+// from a source that never mentions them individually.
+func TestIntegration_Resolution_VnetCreatedAfterBaseline_StampsWithoutBaselineChange(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	ns := uniqueNS(t, "late-base")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	sysLabel := "kube-vnet.system/net." + ns + ".latebase"
+
+	// The baseline references a vnet that does not exist yet. The pod carries
+	// no join label at all — its membership comes solely from the baseline.
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBaselineSpec{
+			Memberships: []vnetv1alpha1.BaselineMembership{{
+				VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "latebase"},
+				Direction:         "both",
+			}},
+		},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p"}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels[sysLabel]; ok {
+		t.Fatalf("pod stamped %q before the vnet existed", got)
+	}
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "latebase", Namespace: ns},
+	})
+
+	eventually(t, 20*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels[sysLabel]; got != "both" {
+			return fmt.Errorf("%s = %q, want both (neither pod nor baseline was touched)", sysLabel, got)
+		}
+		return nil
+	})
+}
+
 // Same shape, binding-sourced: a VirtualNetworkBinding applied before its
 // target vnet exists. Bindings are a first-class membership source, so they
 // get stuck identically — and are just as likely to lose the ordering race in

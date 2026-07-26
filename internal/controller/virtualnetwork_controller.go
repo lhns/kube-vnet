@@ -817,7 +817,47 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&vnetv1alpha1.VirtualNetworkBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.bindingToVNet),
 		).
+		// Namespace managed-ness gates this reconcile twice: the home namespace
+		// decides whether the vnet is served at all, and each member's namespace
+		// decides whether its pods count. Both were read without being watched.
+		// A disabled home namespace ends the reconcile early WITHOUT the
+		// happy-path requeue, so re-enabling it left the vnet Degraded with its
+		// policies deleted and its members isolated — permanently. See ADR 0044.
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.nsToVnets),
+		).
 		Complete(r)
+}
+
+// nsToVnets maps a Namespace event to the vnets whose reconcile could change:
+// those living in it (home managed-ness) and those admitting it (member
+// managed-ness, and the `allowedNamespaces.selector` labels this event may have
+// just changed). Vnets are few, so a full List is cheap.
+func (r *VirtualNetworkReconciler) nsToVnets(ctx context.Context, obj client.Object) []reconcile.Request {
+	var vnets vnetv1alpha1.VirtualNetworkList
+	if err := r.List(ctx, &vnets); err != nil {
+		return nil
+	}
+	ns := obj.GetName()
+	var out []reconcile.Request
+	for i := range vnets.Items {
+		v := &vnets.Items[i]
+		admits := v.Namespace == ns
+		if !admits {
+			ok, err := PermitsForVnet(ctx, r.Client, v, ns)
+			if err != nil {
+				continue
+			}
+			admits = ok
+		}
+		if admits {
+			out = append(out, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: v.Namespace, Name: v.Name},
+			})
+		}
+	}
+	return out
 }
 
 // podEventHandler returns a handler.Funcs that enqueues the union of vnets

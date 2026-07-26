@@ -70,8 +70,10 @@ kube-vnet/
     │
     │   --- Reconcilers (controller-runtime) ---
     ├── resolution_controller.go ............. ResolutionReconciler: watches
-    │                                         Pod + the two baseline CRDs +
-    │                                         VirtualNetworkBinding. Builds
+    │                                         Pod + Namespace + VirtualNetwork
+    │                                         + the two baseline CRDs +
+    │                                         VirtualNetworkBinding (ADR 0044:
+    │                                         it reads all of them). Builds
     │                                         the three resolution layers,
     │                                         calls resolution.go::Resolve,
     │                                         patches kube-vnet.system/net.*
@@ -82,7 +84,8 @@ kube-vnet/
     ├── virtualnetwork_controller.go ......... VirtualNetworkReconciler: watches
     │                                         VirtualNetwork + Pod +
     │                                         NetworkPolicy +
-    │                                         VirtualNetworkBinding. Discovers
+    │                                         VirtualNetworkBinding +
+    │                                         Namespace. Discovers
     │                                         members (by system label), calls
     │                                         policy_generator.go::Generate,
     │                                         SSA-applies the resulting
@@ -105,7 +108,8 @@ kube-vnet/
     │                                         transition
     ├── virtualnetworkbinding_controller.go .. VirtualNetworkBindingReconciler:
     │                                         watches VirtualNetworkBinding +
-    │                                         Pod. Resolves binding's
+    │                                         VirtualNetwork + Pod +
+    │                                         Namespace. Resolves binding's
     │                                         podSelector, sets binding
     │                                         status (Ready,
     └                                         attachedPods). Does NOT emit
@@ -274,12 +278,17 @@ The system label `kube-vnet.system/net.<canonical-key>=<direction>` is the contr
 
 Each reconciler owns exactly one resource family and never crosses into another's territory:
 
-| Reconciler | Writes | Reads (for decisions) |
+Per [ADR 0044](../adr/0044-trigger-sets-must-cover-read-sets.md) the third column is
+also the **trigger** set: every input a reconciler reads it must also watch, because
+change-based predicates filter the informer resync, so an unwatched input diverges
+permanently rather than slowly.
+
+| Reconciler | Writes | Reads = watches |
 |---|---|---|
-| `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding` |
+| `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding`, `NetworkPolicy` (drift), `Namespace` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
-| `ResolutionReconciler` | `Pod` labels + annotations, `VirtualNetworkNotJoinable` `Event` on pods | `Pod`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
+| `ResolutionReconciler` | `Pod` labels + annotations, `VirtualNetworkNotJoinable` `Event` on pods | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
-| `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `Pod` |
+| `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.

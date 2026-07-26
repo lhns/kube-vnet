@@ -608,10 +608,19 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&vnetv1alpha1.VirtualNetworkBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
 		).
+		// Both namespace properties resolution reads must fire: the
+		// `kube-vnet/disabled` ANNOTATION (managed-ness) and the namespace
+		// LABELS, which `allowedNamespaces.selector` matches on. Filtering to
+		// annotations alone meant labelling a namespace to grant it access —
+		// the documented workflow — never re-resolved its pods, leaving them
+		// permanently unstamped. See ADR 0044.
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToPods),
-			builder.WithPredicates(predicate.AnnotationChangedPredicate{}),
+			builder.WithPredicates(predicate.Or(
+				predicate.AnnotationChangedPredicate{},
+				predicate.LabelChangedPredicate{},
+			)),
 		).
 		// A rule *references* a vnet, so vnet existence is an input to
 		// resolution too. Without this watch, a rule naming a not-yet-created
@@ -633,105 +642,23 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// namespaceToPods fans a Namespace event to every pod in it. Catches
-// the `kube-vnet/disabled` annotation flip: on disable, each pod's
-// reconcile takes the stripStampedLabels path (the NS fails IsManaged);
-// on re-enable, pods get re-resolved and re-stamped. Without this
-// watch, a disabled namespace's pods kept their kube-vnet.system/net.*
-// stamps — and therefore their vnet memberships — until an unrelated
-// pod event or the informer resync. Filtered to annotation changes;
-// namespace create is uninteresting (no pods yet) and label-only
-// changes don't affect the managed/disabled decision.
-func (r *ResolutionReconciler) namespaceToPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(obj.GetName())); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(pods.Items))
-	for i := range pods.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
-		})
-	}
-	return out
-}
-
-// clusterBaselineToPods fans a ClusterVirtualNetworkBaseline event to every
-// pod cluster-wide. The baseline cascades to all managed namespaces so
-// every pod re-resolves; coarse but the singleton baseline rarely changes.
-func (r *ResolutionReconciler) clusterBaselineToPods(ctx context.Context, _ client.Object) []reconcile.Request {
-	var pods corev1.PodList
-	if err := r.List(ctx, &pods); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(pods.Items))
-	for i := range pods.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
-		})
-	}
-	return out
-}
-
-// namespaceBaselineToPods fans a VirtualNetworkBaseline event to every pod
-// in the baseline's namespace.
-func (r *ResolutionReconciler) namespaceBaselineToPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(pods.Items))
-	for i := range pods.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
-		})
-	}
-	return out
-}
-
-// vnbToPods maps a VirtualNetworkBinding event to all pods in the binding's namespace.
-func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(pods.Items))
-	for i := range pods.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
-		})
-	}
-	return out
-}
-
-// vnetToAffectedPods maps a VirtualNetwork event to every pod whose resolution
-// could reference it — across all four membership sources, deduplicated.
-//
-// Membership can name a vnet via a pod join label, a VirtualNetworkBinding, a
-// namespace VirtualNetworkBaseline, or the ClusterVirtualNetworkBaseline. Any
-// of them resolving before the vnet exists yields "no stamp"; this is what
-// re-resolves those pods once it appears.
-//
-// A ref with an OMITTED namespace means "the vnet of this name in the *pod's
-// own* namespace" (canonicalVnetKey), so it can only resolve to this vnet for
-// pods in the vnet's own namespace — every source below scopes that case to
-// vnet.Namespace rather than fanning out cluster-wide.
-//
-// Per-source List errors are swallowed, matching the sibling map funcs: a
-// partial fan-out is better than none, and the next event retries.
-func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
-	if !ok || vnet == nil {
-		return nil
-	}
-	key := VnetKey(vnet.Namespace + "." + vnet.Name)
-	if vnet.Name == SystemVnetCluster {
-		key = VnetKey(SystemVnetCluster)
-	}
-
+// podsIn turns a set of namespaces into reconcile requests for the pods in
+// them. Every fan-out below is some choice of namespaces plus this; keeping the
+// enumeration in one place is what lets each mapper read as a single statement
+// of intent. An empty namespace name means cluster-wide. See ADR 0044.
+func (r *ResolutionReconciler) podsIn(ctx context.Context, namespaces ...string) []reconcile.Request {
 	seen := map[types.NamespacedName]bool{}
 	var out []reconcile.Request
-	add := func(pods *corev1.PodList) {
+	for _, ns := range namespaces {
+		var pods corev1.PodList
+		var opts []client.ListOption
+		if ns != "" {
+			opts = append(opts, client.InNamespace(ns))
+		}
+		// A partial fan-out beats none; the next event retries.
+		if err := r.List(ctx, &pods, opts...); err != nil {
+			continue
+		}
 		for i := range pods.Items {
 			nn := types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name}
 			if seen[nn] {
@@ -741,82 +668,59 @@ func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj clien
 			out = append(out, reconcile.Request{NamespacedName: nn})
 		}
 	}
-	addNamespace := func(ns string) {
-		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(ns)); err == nil {
-			add(&pods)
-		}
-	}
-	// refMatches reports whether a ref taken from an object in scopeNS names
-	// this vnet, using the same canonicalization resolution itself applies.
-	refMatches := func(ref vnetv1alpha1.VirtualNetworkRef, scopeNS string) bool {
-		return r.canonicalVnetKey(ref, scopeNS) == key
-	}
-
-	// 1. Pod join labels. Both keys are known exactly, so this is two
-	//    label-selected Lists rather than a cluster-wide pod scan. The bare
-	//    form is only honored in the vnet's home namespace (ADR 0022).
-	keyPrefix := DefaultLabelPrefix + "net."
-	var bare corev1.PodList
-	if err := r.List(ctx, &bare,
-		client.InNamespace(vnet.Namespace),
-		client.HasLabels{keyPrefix + vnet.Name}); err == nil {
-		add(&bare)
-	}
-	var prefixed corev1.PodList
-	if err := r.List(ctx, &prefixed,
-		client.HasLabels{keyPrefix + vnet.Namespace + "." + vnet.Name}); err == nil {
-		add(&prefixed)
-	}
-
-	// 2. Bindings referencing this vnet — pods in the binding's namespace (a
-	//    safe superset of its podSelector, as vnbToPods already uses).
-	var vnbs vnetv1alpha1.VirtualNetworkBindingList
-	if err := r.List(ctx, &vnbs); err == nil {
-		for i := range vnbs.Items {
-			b := &vnbs.Items[i]
-			if refMatches(b.Spec.VirtualNetworkRef, b.Namespace) {
-				addNamespace(b.Namespace)
-			}
-		}
-	}
-
-	// 3. Namespace baselines referencing this vnet.
-	var nsBaselines vnetv1alpha1.VirtualNetworkBaselineList
-	if err := r.List(ctx, &nsBaselines); err == nil {
-		for i := range nsBaselines.Items {
-			b := &nsBaselines.Items[i]
-			for _, m := range b.Spec.Memberships {
-				if refMatches(m.VirtualNetworkRef, b.Namespace) {
-					addNamespace(b.Namespace)
-					break
-				}
-			}
-		}
-	}
-
-	// 4. The cluster baseline. Its refs are evaluated per pod namespace, so an
-	//    explicit-namespace ref reaches every pod while an omitted-namespace
-	//    ref only ever resolves to this vnet for pods in its own namespace.
-	var clusterBaselines vnetv1alpha1.ClusterVirtualNetworkBaselineList
-	if err := r.List(ctx, &clusterBaselines); err == nil {
-		for i := range clusterBaselines.Items {
-			for _, m := range clusterBaselines.Items[i].Spec.Memberships {
-				if m.VirtualNetworkRef.Namespace == "" {
-					if refMatches(m.VirtualNetworkRef, vnet.Namespace) {
-						addNamespace(vnet.Namespace)
-					}
-					continue
-				}
-				if refMatches(m.VirtualNetworkRef, "") {
-					var pods corev1.PodList
-					if err := r.List(ctx, &pods); err == nil {
-						add(&pods)
-					}
-				}
-			}
-		}
-	}
-
 	return out
+}
+
+// namespaceToPods fans a Namespace event to every pod in it. Two namespace
+// properties feed resolution, and both must trigger it: the
+// `kube-vnet/disabled` ANNOTATION (managed-ness — on disable each pod takes the
+// stripStampedLabels path, on re-enable they are re-stamped) and the namespace
+// LABELS, which `allowedNamespaces.selector` matches on, so labelling a
+// namespace is what grants it access to a vnet.
+func (r *ResolutionReconciler) namespaceToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.podsIn(ctx, obj.GetName())
+}
+
+// clusterBaselineToPods fans a ClusterVirtualNetworkBaseline event to every pod
+// cluster-wide. The baseline cascades to all managed namespaces so every pod
+// re-resolves; coarse but the singleton baseline rarely changes.
+func (r *ResolutionReconciler) clusterBaselineToPods(ctx context.Context, _ client.Object) []reconcile.Request {
+	return r.podsIn(ctx, "")
+}
+
+// namespaceBaselineToPods fans a VirtualNetworkBaseline event to every pod in
+// the baseline's namespace.
+func (r *ResolutionReconciler) namespaceBaselineToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.podsIn(ctx, obj.GetNamespace())
+}
+
+// vnbToPods maps a VirtualNetworkBinding event to all pods in the binding's
+// namespace — a binding only ever selects pods there.
+func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	return r.podsIn(ctx, obj.GetNamespace())
+}
+
+// vnetToAffectedPods maps a VirtualNetwork event to the pods it could change.
+//
+// A rule *references* a vnet, so vnet existence and its allowedNamespaces are
+// inputs to resolution: a rule naming a not-yet-created vnet resolves to "no
+// stamp", and nothing revisits it without this watch (the pod predicate is
+// change-based, so the informer resync — old == new — is filtered, leaving the
+// pod unstamped and isolated by the deny-all baseline until it is edited or
+// recreated).
+//
+// The affected set is exactly the pods in the namespaces this vnet admits: a
+// pod outside that set cannot become a member however it names the vnet, so
+// re-resolving it could not change anything. That single question covers all
+// four membership sources without matching each of them. See ADR 0044.
+func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
+	if !ok || vnet == nil {
+		return nil
+	}
+	admitted, err := NamespacesAdmittedBy(ctx, r.Client, vnet)
+	if err != nil {
+		return nil
+	}
+	return r.podsIn(ctx, admitted...)
 }

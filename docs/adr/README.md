@@ -49,6 +49,7 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 41. [0041 — Auto-allow Services reached by the apiserver](0041-auto-allow-apiserver-reachable-services.md)
 42. [0042 — CoreDNS ingress carve-out and kube-system enrollment](0042-coredns-ingress-carveout-and-kube-system-enrollment.md)
 43. [0043 — `virtualNetworkRef.namespace`: optional, inferred, or honored — never ignored](0043-virtualnetworkref-namespace-inferred-or-honored.md)
+44. [0044 — A reconciler's trigger set must cover its read set](0044-trigger-sets-must-cover-read-sets.md)
 
 ## Format
 

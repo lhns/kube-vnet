@@ -123,6 +123,21 @@ func TestMain(m *testing.M) {
 	}
 	testResolutionReconciler = resReconciler
 
+	// The binding reconciler owns VirtualNetworkBinding status (Ready,
+	// attachedPods). It was absent from this suite, which is why its stale-status
+	// gap (ADR 0044) went unnoticed — nothing here exercised it.
+	bindingReconciler := &VirtualNetworkBindingReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("kube-vnet-binding-test"),
+		NSFilter: NewNamespaceFilter(nil),
+	}
+	if err := bindingReconciler.SetupWithManager(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "setup binding reconciler: %v\n", err)
+		_ = testEnv.Stop()
+		os.Exit(1)
+	}
+
 	sysVnetReconciler := &SystemVnetReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),

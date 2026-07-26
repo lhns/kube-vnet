@@ -12,6 +12,29 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
+- **Three more cases where the operator never noticed a change it depended on.**
+  All the same shape as the pod-before-vnet bug below: a reconciler decided
+  something by reading state it did not watch, so the decision was never
+  revisited. None of them self-healed — every predicate is change-based, and the
+  informer resync reports "no change", so it is filtered (see
+  [ADR 0044](docs/adr/0044-trigger-sets-must-cover-read-sets.md)).
+
+  - **Labelling a namespace to satisfy a vnet's `allowedNamespaces.selector` had
+    no effect.** The resolution controller watched namespace *annotations* only,
+    while `selector` matches namespace *labels* — so the documented way to grant
+    a namespace access left its pods unstamped and isolated by the deny-all
+    baseline, indefinitely.
+  - **Re-enabling a vnet's home namespace did not bring the vnet back.** It
+    stayed `Degraded`, its membership policies stayed deleted, and its members
+    stayed isolated until something else happened to touch it.
+  - **`VirtualNetworkBinding.status.attachedPods` went stale.** Pods created or
+    removed after the binding last reconciled were never reflected. Status only —
+    membership itself was always correct.
+
+  Fixed by completing the trigger sets rather than by adding polling: fan-out is
+  now expressed once, as the namespaces a vnet admits, which covers join labels,
+  bindings and both baselines at the same time. Steady-state cost is unchanged.
+
 - **A pod created before its `VirtualNetwork` stayed unstamped forever.** With
   ordinary GitOps ordering — a HelmRelease rendering its Deployment before its
   VirtualNetwork — resolution ran first, found no vnet, dropped the membership,

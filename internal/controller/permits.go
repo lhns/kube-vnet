@@ -70,6 +70,40 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 	return matchesAllowedNamespaces(ctx, c, v.Spec.AllowedNamespaces, podNS)
 }
 
+// NamespacesAdmittedBy is the inverse of Permits: given a vnet, which
+// namespaces may join it (`home ∪ allowedNamespaces`)?
+//
+// This is the blast radius of a VirtualNetwork. A pod's membership can only
+// change if its namespace may join, so a vnet event needs to reach exactly the
+// pods in these namespaces — whatever named the vnet (join label, binding, or
+// either baseline). Expressing fan-out this way means the four membership
+// sources don't each re-derive permission logic. See ADR 0044.
+//
+// Deliberately delegates to PermitsForVnet rather than re-reading the selector,
+// so `home ∪ allowedNamespaces` keeps exactly one definition. Namespaces are
+// few and the client is cached, so the per-namespace check is cheap.
+func NamespacesAdmittedBy(ctx context.Context, c client.Reader, vnet *vnetv1alpha1.VirtualNetwork) ([]string, error) {
+	if vnet == nil {
+		return nil, nil
+	}
+	var namespaces corev1.NamespaceList
+	if err := c.List(ctx, &namespaces); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(namespaces.Items))
+	for i := range namespaces.Items {
+		ns := namespaces.Items[i].Name
+		ok, err := PermitsForVnet(ctx, c, vnet, ns)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out = append(out, ns)
+		}
+	}
+	return out, nil
+}
+
 // PermitsForVnet is a convenience for callers that already have the
 // VirtualNetwork object loaded (e.g. VirtualNetworkReconciler's reconcile
 // flow that fetched the vnet for other reasons). Saves a redundant Get.

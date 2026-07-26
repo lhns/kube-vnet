@@ -184,7 +184,42 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(r.vnetToBindings),
 		).
+		// This reconcile also reads pods (status.attachedPods) and its own
+		// namespace (IsManaged, plus the labels nsPermits may match on), and
+		// watched neither — so with no requeue either, the status froze at
+		// whatever was true when the binding was last reconciled. Both mappings
+		// are trivial because a binding only ever selects pods in its own
+		// namespace, and both namespace-derived inputs key on that same
+		// namespace. See ADR 0044.
+		Watches(
+			&corev1.Pod{},
+			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),
+		).
+		Watches(
+			&corev1.Namespace{},
+			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),
+		).
 		Complete(r)
+}
+
+// bindingsInNamespaceOf enqueues every binding in the changed object's
+// namespace. For a Pod that is its namespace; for a Namespace, itself.
+func (r *VirtualNetworkBindingReconciler) bindingsInNamespaceOf(ctx context.Context, obj client.Object) []reconcile.Request {
+	ns := obj.GetNamespace()
+	if ns == "" {
+		ns = obj.GetName() // cluster-scoped: the Namespace itself
+	}
+	var bindings vnetv1alpha1.VirtualNetworkBindingList
+	if err := r.List(ctx, &bindings, client.InNamespace(ns)); err != nil {
+		return nil
+	}
+	out := make([]reconcile.Request, 0, len(bindings.Items))
+	for i := range bindings.Items {
+		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
+			Namespace: bindings.Items[i].Namespace, Name: bindings.Items[i].Name,
+		}})
+	}
+	return out
 }
 
 // vnetToBindings enqueues every binding that targets the changed vnet.
