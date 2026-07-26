@@ -124,7 +124,7 @@ spec:
 | `names: [a, b]` | Pods in these namespaces may join. Exact match — no glob/regex; use `selector` for groups. |
 | `selector` | A standard `metav1.LabelSelector`. Pods in any namespace whose labels match may join. |
 
-The home namespace is always implicitly included. If `allowedNamespaces` is unset, only the home namespace can join.
+The home namespace is always implicitly included — listing it here is redundant and has no effect. If `allowedNamespaces` is unset, only the home namespace can join.
 
 ### `allowedNamespaces` is **join eligibility, not blanket access**
 

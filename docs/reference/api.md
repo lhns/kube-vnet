@@ -94,7 +94,7 @@ allowedNamespaces:
 | `names` | `[]string` | `[]` | Explicit list of namespace names allowed to join. Names matched exactly — no glob/regex. Use `selector` for groups. |
 | `selector` | `metav1.LabelSelector` | nil | Standard Kubernetes label selector on the `Namespace` object. Pods in matching namespaces may join. |
 
-The home namespace is always implicitly allowed. If multiple matchers are set they union — a namespace matches if any one of (`all`, `names`, `selector`) matches.
+The home namespace is always implicitly allowed — listing it here is redundant and has no effect. If multiple matchers are set they union — a namespace matches if any one of (`all`, `names`, `selector`) matches.
 
 Examples:
 

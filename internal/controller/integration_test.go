@@ -441,6 +441,72 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 	})
 }
 
+// The vnet's own namespace never needs to appear in spec.allowedNamespaces: it
+// is permitted before the selector is consulted (Permits/PermitsForVnet), and
+// discoverMembers skips the permits check for home-NS pods.
+// TestPermits_HomeNamespaceAlwaysAllowed covers the permit gate; this covers the
+// generated policy, where the home namespace's ingress `from` peer comes from
+// having member pods, not from being listed.
+func TestIntegration_AllowedNamespaces_HomeNamespaceNeedNotBeListed(t *testing.T) {
+	ctx := context.Background()
+	home := uniqueNS(t, "hnl-home")
+	foreign := uniqueNS(t, "hnl-foreign")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(foreign, nil, nil))
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "hnlvnet", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			// Only the foreign namespace is listed. `home` is deliberately
+			// absent — it must still be a full member.
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
+		},
+	})
+	// Home-namespace pod uses the bare form (valid in the vnet's own namespace).
+	mustCreate(t, makePod(home, "h", map[string]string{"kube-vnet/net.hnlvnet": "both"}))
+	// Foreign pod uses the prefixed form.
+	mustCreate(t, makePod(foreign, "f", map[string]string{
+		"kube-vnet/net." + home + ".hnlvnet": "both",
+	}))
+
+	peerNamespaces := func(p *networkingv1.NetworkPolicy) map[string]bool {
+		out := map[string]bool{}
+		for _, rule := range p.Spec.Ingress {
+			for _, peer := range rule.From {
+				if peer.NamespaceSelector == nil {
+					continue
+				}
+				if ns, ok := peer.NamespaceSelector.MatchLabels[NamespaceMetadataNameLabel]; ok {
+					out[ns] = true
+				}
+			}
+		}
+		return out
+	}
+
+	eventually(t, 15*time.Second, func() error {
+		hp, err := findPolicy(ctx, home, PolicyName("hnlvnet", home))
+		if err != nil {
+			return err
+		}
+		peers := peerNamespaces(hp)
+		if !peers[home] {
+			return fmt.Errorf("home NS %q missing from ingress peers %v", home, peers)
+		}
+		if !peers[foreign] {
+			return fmt.Errorf("foreign NS %q missing from ingress peers %v", foreign, peers)
+		}
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "hnlvnet"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Degraded") == metav1.ConditionTrue {
+			return fmt.Errorf("Degraded=True; the home-NS pod must not be an InvalidJoiner")
+		}
+		return nil
+	})
+}
+
 // TestIntegration_PodRelabeling exercises the handler.Funcs path (ADR 0013):
 // removing the join label from a pod must enqueue the formerly-joined vnet
 // so its policy stops listing this pod's namespace.
