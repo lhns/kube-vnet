@@ -14,46 +14,45 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
-- **Three more cases where the operator never noticed a change it depended on.**
-  All the same shape as the pod-before-vnet bug below: a reconciler decided
-  something by reading state it did not watch, so the decision was never
-  revisited. None of them self-healed — every predicate is change-based, and the
-  informer resync reports "no change", so it is filtered (see
-  [ADR 0044](docs/adr/0044-trigger-sets-must-cover-read-sets.md)).
+- **Four cases where a pod could be silently and permanently cut off from its
+  virtual network.** All four are the same bug: a controller decided something
+  by reading state it does not watch, so the decision was never revisited.
 
-  - **Labelling a namespace to satisfy a vnet's `allowedNamespaces.selector` had
-    no effect.** The resolution controller watched namespace *annotations* only,
-    while `selector` matches namespace *labels* — so the documented way to grant
-    a namespace access left its pods unstamped and isolated by the deny-all
-    baseline, indefinitely.
-  - **Re-enabling a vnet's home namespace did not bring the vnet back.** It
-    stayed `Degraded`, its membership policies stayed deleted, and its members
-    stayed isolated until something else happened to touch it.
-  - **`VirtualNetworkBinding.status.attachedPods` went stale.** Pods created or
-    removed after the binding last reconciled were never reflected. Status only —
-    membership itself was always correct.
+  None of them healed on their own. Every watch predicate is change-based (a
+  deliberate churn reduction in 0.7.0), and the periodic informer resync reports
+  "nothing changed" — so it is filtered out and never reaches the controller.
+  The affected object stayed wrong until someone edited or recreated it. The
+  usual symptom was a pod that simply could not be reached, with no event or
+  condition pointing at why, and deleting the pod as the only workaround.
 
-  Fixed by completing the trigger sets rather than by adding polling: fan-out is
-  now expressed once, as the namespaces a vnet admits, which covers join labels,
-  bindings and both baselines at the same time. Steady-state cost is unchanged.
+  - **A pod created before its `VirtualNetwork`** — ordinary GitOps ordering,
+    e.g. a HelmRelease rendering its Deployment before its VirtualNetwork.
+    Resolution found no vnet, dropped the membership, and never looked again.
+    The pod never received its `kube-vnet.system/net.*` stamp, so it was left
+    out of every membership NetworkPolicy and isolated by the deny-all baseline.
+    A `VirtualNetworkBinding` or Baseline applied before its target vnet was
+    stuck the same way.
+  - **A namespace labelled to satisfy `allowedNamespaces.selector`** — the
+    documented way to grant a namespace access. The resolution controller
+    watched namespace *annotations* only, while `selector` matches namespace
+    *labels*, so granting access had no effect at all.
+  - **A vnet's home namespace disabled and then re-enabled** — the vnet stayed
+    `Degraded` with its membership policies deleted and its members isolated,
+    long after the namespace was managed again.
+  - **`VirtualNetworkBinding.status.attachedPods` going stale** — pods created
+    or removed after the binding last reconciled were never reflected. Status
+    only; membership itself was always correct.
 
-- **A pod created before its `VirtualNetwork` stayed unstamped forever.** With
-  ordinary GitOps ordering — a HelmRelease rendering its Deployment before its
-  VirtualNetwork — resolution ran first, found no vnet, dropped the membership,
-  and never revisited the pod when the vnet appeared. The pod kept no
-  `kube-vnet.system/net.*` stamp, so it was excluded from every membership
-  NetworkPolicy and left isolated by the deny-all baseline; cross-namespace
-  traffic to it was refused. This did **not** self-heal — the pod watch is
-  change-based, so the informer resync (which reports no change) was filtered —
-  and the only recovery was deleting or editing the pod.
+  Fixed by making every controller watch each input it reads, rather than by
+  adding periodic polling. Fan-out is now expressed once — as the namespaces a
+  vnet admits — which covers join labels, bindings and both baselines together.
+  Steady-state cost is unchanged: vnet status writes do not trigger it, so it
+  fires only when a vnet is created, deleted, or has its spec edited. The
+  invariant and the reasoning are recorded in
+  [ADR 0044](docs/adr/0044-trigger-sets-must-cover-read-sets.md).
 
-  The `ResolutionReconciler` now watches `VirtualNetwork` and re-resolves the
-  pods whose membership could reference it, across all four sources (join
-  labels, `VirtualNetworkBinding`, and both Baselines). A Binding or Baseline
-  applied before its target vnet was stuck the same way and is fixed too.
-  Steady-state cost is unchanged: the watch ignores status writes, so it only
-  fires when a vnet is created, deleted, or has its spec edited. See
-  [ADR 0030](docs/adr/0030-unified-vnet-membership-with-resolution.md) (amended).
+  No configuration changes are required; affected pods converge on their own
+  after upgrading.
 
 ## [0.7.0] — 2026-07-20
 
