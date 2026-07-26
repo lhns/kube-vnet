@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-07-26
+
 ### Fixed
 
 - **Three more cases where the operator never noticed a change it depended on.**
