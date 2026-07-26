@@ -465,6 +465,124 @@ func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
 	}
 }
 
+// Continues where VnetMissing_NoStamp stops: the vnet shows up afterwards.
+//
+// This is ordinary GitOps ordering — a HelmRelease rendering its Deployment
+// before its VirtualNetwork. Resolution runs first, finds no vnet, drops the
+// rule, and still writes resolved-generation. Nothing then re-enqueued the pod:
+// the pod watch is change-based, so the informer resync (which delivers
+// old == new) is filtered, and the vnet controller's periodic requeue doesn't
+// help because discoverMembers only counts stamped pods. The pod stayed
+// unstamped — isolated by the deny-all baseline — until it was edited or
+// recreated. The VirtualNetwork watch on the resolution controller is what
+// converges it. See ADR 0030 (amended).
+//
+// The pod is deliberately never touched after step 1.
+func TestIntegration_Resolution_VnetCreatedAfterPod_StampsWithoutPodChange(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	home := uniqueNS(t, "late-home")
+	foreign := uniqueNS(t, "late-foreign")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(foreign, nil, nil))
+
+	sysLabel := "kube-vnet.system/net." + home + ".late"
+
+	// 1. Pod first, referencing a vnet that does not exist yet.
+	mustCreate(t, makePod(foreign, "p", map[string]string{
+		"kube-vnet/net." + home + ".late": "both",
+	}))
+
+	// 2. It settles unstamped, but resolution DID run and conclude — the
+	//    resolved-generation annotation is what makes the state terminal.
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels[sysLabel]; ok {
+		t.Fatalf("pod stamped %q before the vnet existed", got)
+	}
+	if p.Annotations[AnnotationResolvedGeneration] == "" {
+		t.Fatal("expected resolution to have run and stamped resolved-generation")
+	}
+
+	// 3. The vnet appears.
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "late", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{foreign}},
+		},
+	})
+
+	// 4. The pod converges on its own, and the membership policy names it.
+	eventually(t, 20*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels[sysLabel]; got != "both" {
+			return fmt.Errorf("%s = %q, want both (pod was never touched after creation)", sysLabel, got)
+		}
+		pol, err := findPolicy(ctx, foreign, PolicyName("late", home))
+		if err != nil {
+			return err
+		}
+		if len(pol.Spec.Ingress) == 0 {
+			return fmt.Errorf("membership policy has no ingress rule yet")
+		}
+		return nil
+	})
+}
+
+// Same shape, binding-sourced: a VirtualNetworkBinding applied before its
+// target vnet exists. Bindings are a first-class membership source, so they
+// get stuck identically — and are just as likely to lose the ordering race in
+// a single HelmRelease.
+func TestIntegration_Resolution_VnetCreatedAfterBinding_StampsWithoutBindingChange(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	ns := uniqueNS(t, "late-vnb")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	sysLabel := "kube-vnet.system/net." + ns + ".lateb"
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "lateb", Namespace: ns},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p"}))
+
+	time.Sleep(2 * time.Second)
+	p := &corev1.Pod{}
+	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got, ok := p.Labels[sysLabel]; ok {
+		t.Fatalf("pod stamped %q before the vnet existed", got)
+	}
+
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "lateb", Namespace: ns},
+	})
+
+	eventually(t, 20*time.Second, func() error {
+		p := &corev1.Pod{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
+			return err
+		}
+		if got := p.Labels[sysLabel]; got != "both" {
+			return fmt.Errorf("%s = %q, want both (neither pod nor binding was touched)", sysLabel, got)
+		}
+		return nil
+	})
+}
+
 // TestIntegration_Baseline_SystemVnetRef_ForeignNamespace_NoStamp is the
 // end-to-end regression lock for ADR 0043.
 //

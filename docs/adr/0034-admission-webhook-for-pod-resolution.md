@@ -1,5 +1,11 @@
 # 0034 — Mutating admission webhook for synchronous pod-tier resolution
 
+> **Note (2026-07-26) — still Proposed and still unimplemented; its remaining scope is narrower than the Context below implies.**
+>
+> A separate, *unbounded* failure was mistaken for this ADR's window in the field: a pod created before its VirtualNetwork existed never got stamped at all, and no webhook would have helped — the vnet did not exist at admission time either. That was a missing `VirtualNetwork` watch on the `ResolutionReconciler`, fixed under [ADR 0030](0030-unified-vnet-membership-with-resolution.md)'s 2026-07-26 amendment.
+>
+> What remains as motivation here is only the genuine **~100ms** admission→stamp window described below, which the fail-closed baseline already makes safe (unreachable, never over-permissive). Treat "kube-vnet has a mutating webhook" as false when reading incident reports: it has never been built.
+
 Status: Proposed
 
 Date: 2026-05-06

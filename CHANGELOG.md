@@ -10,6 +10,26 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A pod created before its `VirtualNetwork` stayed unstamped forever.** With
+  ordinary GitOps ordering — a HelmRelease rendering its Deployment before its
+  VirtualNetwork — resolution ran first, found no vnet, dropped the membership,
+  and never revisited the pod when the vnet appeared. The pod kept no
+  `kube-vnet.system/net.*` stamp, so it was excluded from every membership
+  NetworkPolicy and left isolated by the deny-all baseline; cross-namespace
+  traffic to it was refused. This did **not** self-heal — the pod watch is
+  change-based, so the informer resync (which reports no change) was filtered —
+  and the only recovery was deleting or editing the pod.
+
+  The `ResolutionReconciler` now watches `VirtualNetwork` and re-resolves the
+  pods whose membership could reference it, across all four sources (join
+  labels, `VirtualNetworkBinding`, and both Baselines). A Binding or Baseline
+  applied before its target vnet was stuck the same way and is fixed too.
+  Steady-state cost is unchanged: the watch ignores status writes, so it only
+  fires when a vnet is created, deleted, or has its spec edited. See
+  [ADR 0030](docs/adr/0030-unified-vnet-membership-with-resolution.md) (amended).
+
 ## [0.7.0] — 2026-07-20
 
 ### Added

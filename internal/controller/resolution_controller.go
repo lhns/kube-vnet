@@ -613,6 +613,23 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToPods),
 			builder.WithPredicates(predicate.AnnotationChangedPredicate{}),
 		).
+		// A rule *references* a vnet, so vnet existence is an input to
+		// resolution too. Without this watch, a rule naming a not-yet-created
+		// vnet resolves to "no stamp" and is never revisited: the pod predicate
+		// above is change-based, so the informer resync (which delivers
+		// old == new) is filtered, and the pod stays unstamped — and therefore
+		// isolated by the deny-all baseline — until it is edited or recreated.
+		//
+		// GenerationChangedPredicate is load-bearing: VirtualNetwork has a
+		// status subresource, so generation bumps only on spec changes. Its
+		// embedded Funcs leave Create/Delete at the default true. Without it,
+		// every membership status write would fan out to pods, recreating the
+		// churn loop removed in 75c14a6. See ADR 0030 (amended).
+		Watches(
+			&vnetv1alpha1.VirtualNetwork{},
+			handler.EnqueueRequestsFromMapFunc(r.vnetToAffectedPods),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Complete(r)
 }
 
@@ -684,5 +701,122 @@ func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object)
 			NamespacedName: types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name},
 		})
 	}
+	return out
+}
+
+// vnetToAffectedPods maps a VirtualNetwork event to every pod whose resolution
+// could reference it — across all four membership sources, deduplicated.
+//
+// Membership can name a vnet via a pod join label, a VirtualNetworkBinding, a
+// namespace VirtualNetworkBaseline, or the ClusterVirtualNetworkBaseline. Any
+// of them resolving before the vnet exists yields "no stamp"; this is what
+// re-resolves those pods once it appears.
+//
+// A ref with an OMITTED namespace means "the vnet of this name in the *pod's
+// own* namespace" (canonicalVnetKey), so it can only resolve to this vnet for
+// pods in the vnet's own namespace — every source below scopes that case to
+// vnet.Namespace rather than fanning out cluster-wide.
+//
+// Per-source List errors are swallowed, matching the sibling map funcs: a
+// partial fan-out is better than none, and the next event retries.
+func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
+	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
+	if !ok || vnet == nil {
+		return nil
+	}
+	key := VnetKey(vnet.Namespace + "." + vnet.Name)
+	if vnet.Name == SystemVnetCluster {
+		key = VnetKey(SystemVnetCluster)
+	}
+
+	seen := map[types.NamespacedName]bool{}
+	var out []reconcile.Request
+	add := func(pods *corev1.PodList) {
+		for i := range pods.Items {
+			nn := types.NamespacedName{Namespace: pods.Items[i].Namespace, Name: pods.Items[i].Name}
+			if seen[nn] {
+				continue
+			}
+			seen[nn] = true
+			out = append(out, reconcile.Request{NamespacedName: nn})
+		}
+	}
+	addNamespace := func(ns string) {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(ns)); err == nil {
+			add(&pods)
+		}
+	}
+	// refMatches reports whether a ref taken from an object in scopeNS names
+	// this vnet, using the same canonicalization resolution itself applies.
+	refMatches := func(ref vnetv1alpha1.VirtualNetworkRef, scopeNS string) bool {
+		return r.canonicalVnetKey(ref, scopeNS) == key
+	}
+
+	// 1. Pod join labels. Both keys are known exactly, so this is two
+	//    label-selected Lists rather than a cluster-wide pod scan. The bare
+	//    form is only honored in the vnet's home namespace (ADR 0022).
+	keyPrefix := DefaultLabelPrefix + "net."
+	var bare corev1.PodList
+	if err := r.List(ctx, &bare,
+		client.InNamespace(vnet.Namespace),
+		client.HasLabels{keyPrefix + vnet.Name}); err == nil {
+		add(&bare)
+	}
+	var prefixed corev1.PodList
+	if err := r.List(ctx, &prefixed,
+		client.HasLabels{keyPrefix + vnet.Namespace + "." + vnet.Name}); err == nil {
+		add(&prefixed)
+	}
+
+	// 2. Bindings referencing this vnet — pods in the binding's namespace (a
+	//    safe superset of its podSelector, as vnbToPods already uses).
+	var vnbs vnetv1alpha1.VirtualNetworkBindingList
+	if err := r.List(ctx, &vnbs); err == nil {
+		for i := range vnbs.Items {
+			b := &vnbs.Items[i]
+			if refMatches(b.Spec.VirtualNetworkRef, b.Namespace) {
+				addNamespace(b.Namespace)
+			}
+		}
+	}
+
+	// 3. Namespace baselines referencing this vnet.
+	var nsBaselines vnetv1alpha1.VirtualNetworkBaselineList
+	if err := r.List(ctx, &nsBaselines); err == nil {
+		for i := range nsBaselines.Items {
+			b := &nsBaselines.Items[i]
+			for _, m := range b.Spec.Memberships {
+				if refMatches(m.VirtualNetworkRef, b.Namespace) {
+					addNamespace(b.Namespace)
+					break
+				}
+			}
+		}
+	}
+
+	// 4. The cluster baseline. Its refs are evaluated per pod namespace, so an
+	//    explicit-namespace ref reaches every pod while an omitted-namespace
+	//    ref only ever resolves to this vnet for pods in its own namespace.
+	var clusterBaselines vnetv1alpha1.ClusterVirtualNetworkBaselineList
+	if err := r.List(ctx, &clusterBaselines); err == nil {
+		for i := range clusterBaselines.Items {
+			for _, m := range clusterBaselines.Items[i].Spec.Memberships {
+				if m.VirtualNetworkRef.Namespace == "" {
+					if refMatches(m.VirtualNetworkRef, vnet.Namespace) {
+						addNamespace(vnet.Namespace)
+					}
+					continue
+				}
+				if refMatches(m.VirtualNetworkRef, "") {
+					var pods corev1.PodList
+					if err := r.List(ctx, &pods); err == nil {
+						add(&pods)
+					}
+				}
+			}
+		}
+	}
+
 	return out
 }

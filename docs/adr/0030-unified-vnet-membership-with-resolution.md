@@ -1,5 +1,19 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
+> **Amendment (2026-07-26) — the resolution controller watches a *fifth* input: `VirtualNetwork` itself.**
+>
+> "A new controller watches the four input sources" (below) was an incomplete list. A rule doesn't only come *from* a source — it **references a vnet**, so the existence of that vnet is itself an input to resolution. `filterPermittedRules` drops a rule whose vnet doesn't exist (`Permits` → NotFound), and `applyResolution` still writes the `resolved-generation` annotation. With no `VirtualNetwork` watch, nothing re-enqueued the pod when the vnet later appeared.
+>
+> **That state was terminal, not a race.** The pod watch is change-based (`Or(LabelChanged, AnnotationChanged, GenerationChanged)`) and all three compare old-vs-new, so the informer resync — which delivers `old == new` — is filtered. The VirtualNetworkReconciler's periodic requeue doesn't help either: `discoverMembers` only counts pods that already carry the system stamp. A pod created before its vnet stayed unstamped, and therefore isolated by the deny-all baseline, until it was edited or recreated. Observed in the field as "rolling the pod fixed it" — which was the only available fix, not merely the fastest.
+>
+> This is ordinary GitOps ordering (a HelmRelease rendering its Deployment before its VirtualNetwork), and it applies to **every** membership source, not just join labels: a Binding or Baseline applied before its target vnet gets stuck the same way.
+>
+> `ResolutionReconciler` therefore also watches `VirtualNetwork`, mapping an event to the pods whose membership could name it (`vnetToAffectedPods`): the two statically-known join-label keys, plus pods reached via Bindings and Baselines whose `virtualNetworkRef` resolves to it. A ref with an **omitted** namespace means "the vnet of this name in the pod's own namespace", so that case is scoped to the vnet's own namespace instead of fanning out cluster-wide.
+>
+> The watch carries `GenerationChangedPredicate`, which is load-bearing: `VirtualNetwork` has a status subresource, so `metadata.generation` bumps only on spec changes, while Create/Delete stay at the predicate's default `true`. Without it every membership **status** write would fan out to pods, recreating the self-feeding reconcile loop removed in `75c14a6`.
+>
+> The "**No mutating admission webhook**" statement below still stands and is unchanged — [ADR 0034](0034-admission-webhook-for-pod-resolution.md) remains *Proposed*. Stamping happens asynchronously after admission; admission ordering has never been what determines membership.
+
 Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity; the operator-owned label keys introduced here — `kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system` — were moved to the `kube-vnet.system/` prefix by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md), generalizing the convention already used for stamped pod labels; **policy names were updated to include explicit kind prefixes by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) — baseline becomes `kube-vnet.base`, membership becomes `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`**; the system-vnet reserved-name/label VAP introduced here now guards `CREATE`/`UPDATE` only — `DELETE` is intentionally unguarded so the namespace controller can cascade-delete the per-namespace `namespace` system vnet during namespace teardown (guarding it left managed namespaces stuck in `Terminating`), with user-initiated deletes recovered by the SystemVnetReconciler's drift-correction)
 
 Date: 2026-05-05
