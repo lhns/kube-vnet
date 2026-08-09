@@ -10,6 +10,14 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-09
+
+### Security
+
+- Bumped `golang.org/x/text` to v0.39.0 for
+  [CVE-2026-56852](https://avd.aquasec.com/nvd/cve-2026-56852) (HIGH; denial of
+  service via invalid UTF-8 input). Indirect dependency.
+
 ### Fixed
 
 - **The operator could not write any Events, on every cluster.** Reconcilers emit
