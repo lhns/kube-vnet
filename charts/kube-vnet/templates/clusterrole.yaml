@@ -17,7 +17,10 @@ metadata:
   labels:
     {{- include "kube-vnet.labels" . | nindent 4 }}
 rules:
-  - apiGroups: [""]
+  # Both groups are required. Reconcilers emit via mgr.GetEventRecorder, which
+  # is controller-runtime's events.k8s.io/v1 recorder; the core "" group is
+  # still needed because leader election uses the deprecated core-v1 recorder.
+  - apiGroups: ["", events.k8s.io]
     resources: [events]
     verbs: [create, patch]
   - apiGroups: [""]

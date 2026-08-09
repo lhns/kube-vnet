@@ -10,6 +10,19 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The operator could not write any Events, on every cluster.** Reconcilers emit
+  through controller-runtime's `events.k8s.io/v1` recorder, but RBAC granted
+  Events only in the core (`""`) API group, so every Event was rejected. The
+  effect was constant `cannot create resource "events" in API group
+  "events.k8s.io"` errors in the operator log, and — worse — none of the
+  user-facing diagnostics (`VirtualNetworkNotJoinable`,
+  `InvalidJoinLabelDirection`, `Ready`, `Degraded`, `PolicyRestored`) ever
+  reaching `kubectl describe`. Both groups are now granted; the core one is
+  still required for leader election. Nothing catches this in envtest, which
+  does not enforce RBAC, so the manifests are now asserted directly.
+
 ## [0.7.1] — 2026-07-26
 
 ### Fixed
