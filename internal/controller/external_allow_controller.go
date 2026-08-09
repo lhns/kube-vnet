@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -227,7 +226,7 @@ func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, 
 		inNamespacePolicyLabels(namespace, map[string]string{
 			LabelRole:       LabelRoleExternalAllow,
 			LabelSourceKind: LabelSourceKindService,
-			LabelSource:     "svc-" + serviceName,
+			LabelSource:     SourceLabelValue("svc-", namespace, serviceName),
 		}),
 		nil,
 	)
@@ -286,7 +285,7 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 				// `svc-<name>`. Kind is also carried explicitly in
 				// LabelSourceKind above; the prefix here is for readability
 				// when staring at `kubectl get netpol -o yaml`.
-				LabelSource: "svc-" + svc.Name,
+				LabelSource: SourceLabelValue("svc-", svc.Namespace, svc.Name),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -424,13 +423,32 @@ func cloneStringMap(m map[string]string) map[string]string {
 	return out
 }
 
+// externalAllowPolicyPredicate bounds the NetworkPolicy watch to policies this
+// reconciler owns.
+//
+// The source-kind check mirrors apiserverPolPredicate and is load-bearing: the
+// ApiserverReachableReconciler's policies carry the SAME owner (the Service) and
+// the same role, differing only by source-kind. Since the handler enqueues by
+// owner reference rather than by parsing LabelSource (which is now
+// length-bounded and no longer round-trips to a name — ADR 0011 amended), this
+// predicate is what keeps the two reconcilers from fighting over each other's
+// policies. The map func it replaced did that filtering inline.
+//
+// HostPort policies need no exclusion: they carry no Service owner, so an
+// owner-ref handler never resolves them to a request at all.
+func externalAllowPolicyPredicate() predicate.Predicate {
+	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
+		l := obj.GetLabels()
+		return l[LabelManagedBy] == LabelManagedByValue &&
+			l[LabelRole] == LabelRoleExternalAllow &&
+			l[LabelSourceKind] == LabelSourceKindService
+	})
+}
+
 func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Re-enqueue the source Service when an external-allow policy event
 	// fires (delete = drift correction; user-edit-then-update = SSA reapply).
-	extPolPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		l := obj.GetLabels()
-		return l[LabelManagedBy] == LabelManagedByValue && l[LabelRole] == LabelRoleExternalAllow
-	})
+	extPolPredicate := externalAllowPolicyPredicate()
 
 	// Pod creates only — a new pod is the only event that can unblock a
 	// previously-unresolvable named targetPort. Pod updates/deletes never
@@ -450,7 +468,13 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Service{}).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(externalAllowPolicyToService),
+			// Owner-ref rather than parsing LabelSource: that value is now
+			// length-bounded (SourceLabelValue), so it no longer round-trips to a
+			// Service name. Owner-refs are set on every generated policy, are
+			// stable across label-format changes, and extPolPredicate still bounds
+			// the watch. See ADR 0011 (amended).
+			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
+				&corev1.Service{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(extPolPredicate),
 		).
 		Watches(
@@ -463,28 +487,6 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(podCreateOnly),
 		).
 		Complete(r)
-}
-
-// externalAllowPolicyToService derives the source Service from the
-// `kube-vnet.system/source: svc-<name>` label so a deleted/edited policy
-// re-enqueues only the affected Service, not the whole NS. Returns no
-// requests for host-source policies (the HostPortReconciler watches those
-// separately).
-func externalAllowPolicyToService(_ context.Context, obj client.Object) []reconcile.Request {
-	l := obj.GetLabels()
-	if l[LabelSourceKind] != LabelSourceKindService {
-		return nil
-	}
-	const prefix = "svc-"
-	src := l[LabelSource]
-	if !strings.HasPrefix(src, prefix) {
-		return nil
-	}
-	name := strings.TrimPrefix(src, prefix)
-	if name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
 }
 
 // namespaceToServices enqueues every Service in a namespace when the NS

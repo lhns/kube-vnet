@@ -597,3 +597,63 @@ func TestIntegration_ExternalAllow_Regression_TraefikDaemonSet(t *testing.T) {
 		t.Errorf("podSelector match = %q, want traefik", got)
 	}
 }
+
+// A Service name long enough to overflow the 63-char label-value limit once
+// prefixed. Before SourceLabelValue bounded it, the apply was rejected with
+// "metadata.labels: Invalid value" and the reconciler retried forever, so no
+// policy ever appeared. Shape taken from the real report: a Helm-prefixed
+// OpenTelemetry operator webhook Service.
+//
+// Service names are DNS-1035 labels (max 63), so this is reachable in practice.
+// 61 chars: with the 4-char "svc-" prefix that is 65, i.e. over the limit. The
+// length is the whole point of the test — keep it above 59.
+const longSvcName = "opentelemetry-operator-opentelemetry-operator-webhook-service"
+
+func TestIntegration_ExternalAllow_LongServiceName_PolicyStillApplies(t *testing.T) {
+	ns := uniqueNS(t, "extallow-longname")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, makeLBService(ns, longSvcName))
+
+	pol := waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+
+	src := pol.Labels[LabelSource]
+	if len(src) > 63 {
+		t.Fatalf("source label is %d chars: %q", len(src), src)
+	}
+	if src != SourceLabelValue("svc-", ns, longSvcName) {
+		t.Errorf("source label %q does not match SourceLabelValue — the delete "+
+			"selector would not find this policy", src)
+	}
+}
+
+// The label doubles as the List selector used to delete a Service's policies.
+// If the written and queried values ever diverged, the delete would match
+// nothing and orphan the policy — so exercise the whole path, not just the apply.
+func TestIntegration_ExternalAllow_LongServiceName_DeleteRemovesPolicy(t *testing.T) {
+	ns := uniqueNS(t, "extallow-longdel")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	svc := makeLBService(ns, longSvcName)
+	mustCreate(t, svc)
+	waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+
+	if err := testClient.Delete(context.Background(), svc); err != nil {
+		t.Fatalf("delete service: %v", err)
+	}
+	waitForExternalAllowPolicyAbsent(t, ns, longSvcName, 15*time.Second)
+}
+
+// Drift correction for a long-named Service. The handler no longer parses
+// LabelSource back into a Service name (it can't — the value is truncated); it
+// enqueues by owner reference instead. Deleting the generated policy must still
+// bring it back.
+func TestIntegration_ExternalAllow_LongServiceName_PolicyDriftRestored(t *testing.T) {
+	ns := uniqueNS(t, "extallow-longdrift")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, makeLBService(ns, longSvcName))
+
+	pol := waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+	if err := testClient.Delete(context.Background(), pol); err != nil {
+		t.Fatalf("delete policy: %v", err)
+	}
+	waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+}

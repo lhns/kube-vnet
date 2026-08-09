@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"sort"
-	"strings"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -419,7 +418,7 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 				LabelK8sManagedBy: LabelManagedByValue,
 				LabelRole:         LabelRoleExternalAllow,
 				LabelSourceKind:   LabelSourceKindApiserver,
-				LabelSource:       "apiserver-" + svc.Name,
+				LabelSource:       SourceLabelValue("apiserver-", svc.Namespace, svc.Name),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -496,7 +495,7 @@ func (r *ApiserverReachableReconciler) deletePolicyByServiceKey(ctx context.Cont
 		inNamespacePolicyLabels(namespace, map[string]string{
 			LabelRole:       LabelRoleExternalAllow,
 			LabelSourceKind: LabelSourceKindApiserver,
-			LabelSource:     "apiserver-" + serviceName,
+			LabelSource:     SourceLabelValue("apiserver-", namespace, serviceName),
 		}),
 		nil,
 	)
@@ -529,7 +528,11 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		For(&corev1.Service{}).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(apiserverReachablePolicyToService),
+			// Owner-ref rather than parsing LabelSource: that value is now
+			// length-bounded (SourceLabelValue), so it no longer round-trips to a
+			// Service name. See ADR 0011 (amended).
+			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
+				&corev1.Service{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(apiserverPolPredicate),
 		).
 		Watches(
@@ -586,25 +589,6 @@ func (r *ApiserverReachableReconciler) podToServicesWithNamedPorts(ctx context.C
 		})
 	}
 	return out
-}
-
-// apiserverReachablePolicyToService derives the source Service from the
-// `kube-vnet.system/source: apiserver-<name>` label.
-func apiserverReachablePolicyToService(_ context.Context, obj client.Object) []reconcile.Request {
-	l := obj.GetLabels()
-	if l[LabelSourceKind] != LabelSourceKindApiserver {
-		return nil
-	}
-	const prefix = "apiserver-"
-	src := l[LabelSource]
-	if !strings.HasPrefix(src, prefix) {
-		return nil
-	}
-	name := strings.TrimPrefix(src, prefix)
-	if name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
 }
 
 // namespaceToServices enqueues every Service in the namespace that

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
 // svc returns a minimal Service skeleton; specific fields overridden per-test.
@@ -295,44 +295,39 @@ func TestIsExternallyExposed_TypeTable(t *testing.T) {
 	}
 }
 
-func TestExternalAllowPolicyToService_DerivesFromLabel(t *testing.T) {
-	// Mapper extracts the source Service name from a `svc-<name>`
-	// LabelSource value when LabelSourceKind=svc. Host-source policies
-	// don't enqueue Service reconciles; neither do un-labeled junk.
+func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
+	// Replaces TestExternalAllowPolicyToService_DerivesFromLabel. The handler
+	// no longer parses LabelSource back into a Service name (that value is now
+	// length-bounded and no longer round-trips — ADR 0011 amended); it enqueues
+	// by owner reference instead. The same separation the old mapper enforced —
+	// don't act on the ApiserverReachableReconciler's or the HostPortReconciler's
+	// policies — now lives in the watch predicate, so it is asserted here.
+	pred := externalAllowPolicyPredicate()
+
 	cases := []struct {
-		name        string
-		kind        string
-		src         string
-		expectName  string
-		expectEmpty bool
+		name string
+		kind string
+		want bool
 	}{
-		{name: "service_source", kind: LabelSourceKindService, src: "svc-traefik", expectName: "traefik"},
-		{name: "host_source_skipped", kind: LabelSourceKindHost, src: "host-8080-tcp", expectEmpty: true},
-		{name: "no_kind_label", kind: "", src: "svc-traefik", expectEmpty: true},
-		{name: "missing_svc_prefix", kind: LabelSourceKindService, src: "traefik", expectEmpty: true},
-		{name: "empty_src", kind: LabelSourceKindService, src: "svc-", expectEmpty: true},
+		{name: "service_source_accepted", kind: LabelSourceKindService, want: true},
+		{name: "apiserver_source_skipped", kind: LabelSourceKindApiserver, want: false},
+		{name: "host_source_skipped", kind: LabelSourceKindHost, want: false},
+		{name: "no_kind_label_skipped", kind: "", want: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			obj := &networkingv1.NetworkPolicy{
 				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "ns",
-					Name:      "fake",
+					Namespace: "ns", Name: "fake",
 					Labels: map[string]string{
+						LabelManagedBy:  LabelManagedByValue,
+						LabelRole:       LabelRoleExternalAllow,
 						LabelSourceKind: c.kind,
-						LabelSource:     c.src,
 					},
 				},
 			}
-			reqs := externalAllowPolicyToService(context.Background(), obj)
-			if c.expectEmpty {
-				if len(reqs) != 0 {
-					t.Errorf("expected empty, got %v", reqs)
-				}
-				return
-			}
-			if len(reqs) != 1 || reqs[0].Name != c.expectName {
-				t.Errorf("got %v, want one request for %q", reqs, c.expectName)
+			if got := pred.Create(event.CreateEvent{Object: obj}); got != c.want {
+				t.Errorf("predicate = %v, want %v", got, c.want)
 			}
 		})
 	}

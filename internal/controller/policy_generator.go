@@ -330,6 +330,36 @@ func truncatePolicyName(name string) string {
 	return name[:keep] + suffix
 }
 
+// SourceLabelValue builds the `kube-vnet.system/source` value identifying the
+// object a generated policy came from, bounded to the 63-character label-value
+// limit. This is ADR 0011's truncate-and-hash applied to a LABEL rather than a
+// name — the same convention, a tighter budget (63, not 253).
+//
+// Policy *names* were capped from the start while this value was built by plain
+// concatenation, so a long enough Service name produced an invalid label: the
+// apiserver rejected the apply, and the reconciler retried it forever.
+//
+// Callers must use this for BOTH writing the label and building any selector
+// that queries it (see deletePolicyByServiceKey) — if the two disagree, deletes
+// silently match nothing and leave policies orphaned. The hash covers
+// namespace/name so two truncated-to-identical names stay distinguishable.
+//
+// Values that already fit are returned unchanged, so existing policies keep
+// their labels and nothing is rewritten on upgrade.
+func SourceLabelValue(prefix, namespace, name string) string {
+	const max = 63
+	full := prefix + name
+	if len(full) <= max {
+		return full
+	}
+	suffix := "-" + policyHash("source", namespace, name)
+	keep := max - len(prefix) - len(suffix)
+	if keep < 0 {
+		keep = 0
+	}
+	return prefix + name[:keep] + suffix
+}
+
 // Direction value helpers for selector LabelSelectorRequirement values.
 var (
 	// selfValuesReceiver matches pods that ACCEPT ingress: `both`,

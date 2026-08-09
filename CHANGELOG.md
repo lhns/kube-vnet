@@ -23,6 +23,19 @@ release. Pinning to an exact version is recommended.
   still required for leader election. Nothing catches this in envtest, which
   does not enforce RBAC, so the manifests are now asserted directly.
 
+- **A Service with a long name broke its auto-allow policy permanently.** The
+  `kube-vnet.system/source` label value was built by plain concatenation, so a
+  Service name over 59 characters (53 for apiserver-reachable) pushed it past
+  the 63-character limit Kubernetes puts on label values. The apiserver rejected
+  the policy, and the reconciler retried it forever — the policy simply never
+  appeared, and external traffic to that Service stayed blocked. Reported for a
+  Helm-prefixed OpenTelemetry operator webhook Service.
+
+  Long values are now truncated with a disambiguating hash, the same rule
+  [ADR 0011](docs/adr/0011-policy-naming-and-truncation.md) already applied to
+  policy names. Values that already fit are unchanged, so existing policies are
+  not rewritten on upgrade.
+
 ## [0.7.1] — 2026-07-26
 
 ### Fixed
