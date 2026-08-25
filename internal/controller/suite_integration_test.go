@@ -197,20 +197,27 @@ func TestMain(m *testing.M) {
 	// normal exit, m.Run() panic, or interrupt signal — without leaking the
 	// envtest etcd / kube-apiserver children.
 	//
-	// On Windows, controller-runtime's testEnv.Stop() reliably calls
-	// TerminateProcess on the children but a small fraction of runs still
-	// leaves a pair behind (suspected race between manager-goroutine
-	// teardown and process kill). Belt-and-braces: after Stop(), forcefully
-	// taskkill any leftover etcd / kube-apiserver. On Linux this is a
-	// silent no-op (taskkill isn't on PATH; the exec.Command call returns
-	// an error we discard).
+	// On Windows, controller-runtime's testEnv.Stop() signals its children, and signalling is "not
+	// supported by windows", so a run can leave an etcd and a kube-apiserver behind. Belt-and-braces:
+	// after Stop(), force-kill whatever is still up.
+	//
+	// Scoped to OUR children by PID, not `taskkill /IM etcd.exe`. A kill by image name reaches every
+	// etcd on the machine, so running this suite while any other repo's integration tests are up
+	// would tear down THEIR apiserver mid-run -- a failure that looks like a flake in the other
+	// project and is nearly impossible to trace back here. envtest starts both processes with
+	// os/exec, so they are direct children and the PID filter is exact.
+	//
+	// A no-op off Windows, where Stop() works.
 	stop := func() {
 		cancel()
 		_ = testEnv.Stop()
 		if goruntime.GOOS == "windows" {
-			for _, name := range []string{"etcd.exe", "kube-apiserver.exe"} {
-				_ = exec.Command("taskkill", "/F", "/IM", name).Run()
-			}
+			script := fmt.Sprintf(
+				`Get-CimInstance Win32_Process -Filter "ParentProcessId=%d" | `+
+					`Where-Object { $_.Name -in 'etcd.exe','kube-apiserver.exe' } | `+
+					`ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
+				os.Getpid())
+			_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Run()
 		}
 	}
 
