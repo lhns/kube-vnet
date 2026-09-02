@@ -10,6 +10,20 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pods with no labels at all were rejected, in every namespace.** The
+  join-label direction `ValidatingAdmissionPolicy` failed evaluation on a pod
+  with no `labels` field and, with `failurePolicy: Fail`, that became a denial —
+  so pods with nothing to validate were refused on both create and update.
+  Deployment/StatefulSet/DaemonSet pods were unaffected (their selectors force
+  labels); this hit bare pods, label-less Jobs, and controllers creating pods
+  without labels. It also blocked the operator's own patches to such pods,
+  leaving the resolution controller retrying them.
+
+  Invalid direction values are still rejected as before. The other two
+  admission policies were audited and are unaffected.
+
 ## [0.7.2] — 2026-08-09
 
 ### Security
