@@ -4,7 +4,7 @@
 # this, arm64 builds would run the toolchain under QEMU (~5–10× slower).
 # The `RUN go build` below cross-compiles via GOOS/GOARCH, so the actual
 # binary still targets ${TARGETARCH} correctly.
-FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 WORKDIR /workspace
 
 COPY go.mod go.sum ./
