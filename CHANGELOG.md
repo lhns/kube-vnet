@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-09-02
+
 ### Fixed
 
 - **Pods with no labels at all were rejected, in every namespace.** The
