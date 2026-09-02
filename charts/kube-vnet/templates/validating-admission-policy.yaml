@@ -39,12 +39,9 @@ spec:
       expression: '"kube-vnet/net."'
     - name: validValues
       expression: '["both","ingress","egress","none"]'
-    # `object.metadata.labels` on a pod with no labels does NOT yield an empty
-    # map in CEL -- it raises `no such key: labels`, and failurePolicy: Fail
-    # turns that evaluation error into a denial. Every label-less pod in every
-    # namespace was refused, on CREATE and UPDATE, because matchConstraints
-    # carries no selectors. Bind the lookup once through the optional-field
-    # idiom the sibling VAPs already use, so an absent map reads as empty.
+    # Optional-field lookup: a bare object.metadata.labels raises
+    # `no such key: labels` on a pod with no labels, which failurePolicy: Fail
+    # turns into a denial. Same idiom as the sibling VAPs.
     - name: podLabels
       expression: 'object.metadata.?labels.orValue({})'
   validations:

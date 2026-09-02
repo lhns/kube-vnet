@@ -295,21 +295,9 @@ func awaitPolicyActive(t *testing.T, c client.Client, ns string) {
 	}
 }
 
-// TestIntegration_VAP_JoinLabelDirection covers the join-label direction VAP,
-// which had no test at all — which is how it shipped rejecting every pod that
-// carries no labels.
-//
-// In CEL, `object.metadata.labels` on an object with no labels field does not
-// evaluate to an empty map; it raises `no such key: labels`. With
-// failurePolicy: Fail that evaluation error becomes a denial, so a pod which
-// trivially satisfies the rule (no join labels to check) was refused before the
-// expression could reach that conclusion. matchConstraints carries no namespace
-// or object selector, so this hit every label-less pod in every namespace on
-// both CREATE and UPDATE.
-//
-// Real workloads were spared only because Deployments/StatefulSets/DaemonSets
-// must set labels for their own selectors; bare debug pods and label-less Jobs
-// were not.
+// The join-label direction VAP. It previously denied any pod with no labels,
+// because an unguarded object.metadata.labels raises `no such key: labels` and
+// failurePolicy: Fail turns that into a denial. See ADR 0027.
 func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 	ctx := context.Background()
 
@@ -339,11 +327,9 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
 	})
 
-	// Sent as unstructured so `labels: {}` genuinely goes over the wire (the
-	// typed client drops an empty map via omitempty). The apiserver then
-	// normalises it back to absent, so this reaches CEL as the same case as
-	// above and failed identically -- kept as a guard in case that
-	// normalisation ever changes.
+	// Unstructured because the typed client drops an empty map (omitempty).
+	// The apiserver normalises it back to absent, so this is a guard in case
+	// that ever changes.
 	t.Run("pod with an empty labels map is accepted", func(t *testing.T) {
 		p := &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "v1",
@@ -380,9 +366,8 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
 	})
 
-	// REGRESSION LOCK. Guarding the labels lookup must not disable the check
-	// itself — the obvious wrong way to fix the bug above. This case must pass
-	// both before and after the fix.
+	// Must pass before and after the fix: guarding the lookup must not disable
+	// the check itself.
 	t.Run("pod with a removed legacy direction value is rejected", func(t *testing.T) {
 		p := makePod(ns, "legacydir", map[string]string{"kube-vnet/net.x": "true"})
 		err := userClient.Create(ctx, p)
@@ -398,12 +383,8 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 		}
 	})
 
-	// The UPDATE half of matchConstraints, which nothing covered. This is also
-	// the operator's own path: applyResolution patches every pod in a managed
-	// namespace at least once to set resolved-generation, and this policy —
-	// unlike both sibling VAPs — has no operator exemption. While labels were
-	// dereferenced unguarded, that patch was denied too, wedging the
-	// ResolutionReconciler in a permanent error loop for every label-less pod.
+	// The UPDATE half of matchConstraints, and the operator's own path:
+	// applyResolution patches every pod to set resolved-generation.
 	t.Run("updating a label-less pod is accepted", func(t *testing.T) {
 		p := makePod(ns, "updatable", nil)
 		if err := userClient.Create(ctx, p); err != nil {
@@ -419,8 +400,8 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 	})
 }
 
-// awaitDirectionPolicyActive probes with a known-rejected pod until the policy
-// is loaded; VAPs are not active the instant they are created.
+// awaitDirectionPolicyActive probes until the policy loads; VAPs are not
+// active the instant they are created.
 func awaitDirectionPolicyActive(t *testing.T, c client.Client, ns string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
