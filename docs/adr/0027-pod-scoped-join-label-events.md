@@ -1,5 +1,15 @@
 # 0027 — Pod-scoped events for join-label diagnostics
 
+> **Amendment (2026-08-09) — the direction VAP must guard the labels lookup.**
+>
+> As written, the policy evaluated `object.metadata.labels.all(...)`. In CEL that does **not** yield an empty map for an object with no labels — it raises `no such key: labels`, and `failurePolicy: Fail` turns an evaluation error into a denial. Since `matchConstraints` carries no namespace or object selector and covers `CREATE` **and** `UPDATE`, every label-less pod in every namespace was rejected: a pod that trivially satisfies the rule, refused because the expression failed before it could say so.
+>
+> Deployment/StatefulSet/DaemonSet pods were unaffected — their selectors force labels — so the damage landed on bare pods: hand-written debug pods, label-less Jobs, and controllers creating label-less pods. (`kubectl run` masks it by adding `run=`.) It also hit the operator itself: this policy, unlike the two sibling VAPs, has no operator exemption, and `applyResolution` patches every pod in a managed namespace at least once to set `resolved-generation` — an UPDATE that was denied for label-less pods, wedging the resolution controller.
+>
+> The lookup is now bound once as a `podLabels` variable via `object.metadata.?labels.orValue({})`, the optional-field idiom both sibling VAPs already used. Note that an empty `labels: {}` is *not* a separate case in practice: the apiserver normalises it back to absent before admission, so it failed identically.
+>
+> No operator exemption was added. The siblings need one because they protect operator-*owned* fields; this policy validates user input, and the operator's own writes are valid by construction — exempting it would only weaken the check.
+
 > **Amendment (2026-07-20) — the `JoinLabelDiagnosticReconciler` is retired; its guidance is folded into the resolution controller. This supersedes the 2026-07-09 amendment below.**
 >
 > The separate diagnostic controller emitted its three Warning reasons (`BareJoinLabelVnetNotFound`, `PrefixedJoinLabelVnetNotFound`, `JoinLabelNamespaceNotAllowed`) as best-effort Kubernetes Events. Two problems converged:

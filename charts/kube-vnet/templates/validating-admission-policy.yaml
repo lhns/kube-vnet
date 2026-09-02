@@ -39,11 +39,19 @@ spec:
       expression: '"kube-vnet/net."'
     - name: validValues
       expression: '["both","ingress","egress","none"]'
+    # `object.metadata.labels` on a pod with no labels does NOT yield an empty
+    # map in CEL -- it raises `no such key: labels`, and failurePolicy: Fail
+    # turns that evaluation error into a denial. Every label-less pod in every
+    # namespace was refused, on CREATE and UPDATE, because matchConstraints
+    # carries no selectors. Bind the lookup once through the optional-field
+    # idiom the sibling VAPs already use, so an absent map reads as empty.
+    - name: podLabels
+      expression: 'object.metadata.?labels.orValue({})'
   validations:
     - expression: |
-        object.metadata.labels.all(k,
+        variables.podLabels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
-          object.metadata.labels[k] in variables.validValues)
+          variables.podLabels[k] in variables.validValues)
       message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 apiVersion: admissionregistration.k8s.io/v1

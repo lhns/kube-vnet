@@ -43,7 +43,7 @@ const operatorUserName = "system:serviceaccount:kube-vnet-system:kube-vnet-contr
 func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 	ctx := context.Background()
 
-	policyObjs := mustLoadVAPFromKustomize(t)
+	policyObjs := mustLoadVAPFromKustomize(t, "system-vnet-vap.yaml")
 	for _, obj := range policyObjs {
 		obj := obj
 		if err := testClient.Create(ctx, obj); err != nil {
@@ -183,9 +183,9 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 // kustomize-rendered file rather than re-rendering via `helm template`
 // keeps the test free of a helm-on-PATH dependency and exercises the same
 // bytes that a kustomize-installed user would apply.
-func mustLoadVAPFromKustomize(t *testing.T) []*unstructured.Unstructured {
+func mustLoadVAPFromKustomize(t *testing.T, file string) []*unstructured.Unstructured {
 	t.Helper()
-	path := filepath.Join("..", "..", "config", "admission", "system-vnet-vap.yaml")
+	path := filepath.Join("..", "..", "config", "admission", file)
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
@@ -292,5 +292,185 @@ func awaitPolicyActive(t *testing.T, c client.Client, ns string) {
 			t.Fatalf("VAP did not become active within deadline (last err: %v)", err)
 		}
 		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// TestIntegration_VAP_JoinLabelDirection covers the join-label direction VAP,
+// which had no test at all — which is how it shipped rejecting every pod that
+// carries no labels.
+//
+// In CEL, `object.metadata.labels` on an object with no labels field does not
+// evaluate to an empty map; it raises `no such key: labels`. With
+// failurePolicy: Fail that evaluation error becomes a denial, so a pod which
+// trivially satisfies the rule (no join labels to check) was refused before the
+// expression could reach that conclusion. matchConstraints carries no namespace
+// or object selector, so this hit every label-less pod in every namespace on
+// both CREATE and UPDATE.
+//
+// Real workloads were spared only because Deployments/StatefulSets/DaemonSets
+// must set labels for their own selectors; bare debug pods and label-less Jobs
+// were not.
+func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
+	ctx := context.Background()
+
+	policyObjs := mustLoadVAPFromKustomize(t, "validating-admission-policy.yaml")
+	for _, obj := range policyObjs {
+		obj := obj
+		if err := testClient.Create(ctx, obj); err != nil {
+			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
+		}
+		t.Cleanup(func() { _ = testClient.Delete(context.Background(), obj) })
+	}
+
+	mustGrantPodRBAC(t, "alice@example.com")
+	userClient := mustImpersonate(t, "alice@example.com")
+
+	ns := uniqueNS(t, "vapdir")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+
+	awaitDirectionPolicyActive(t, userClient, ns)
+
+	// The bug. A pod with no labels field at all must be admitted.
+	t.Run("pod with no labels is accepted", func(t *testing.T) {
+		p := makePod(ns, "nolabels", nil)
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("expected accept, got: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+	})
+
+	// Sent as unstructured so `labels: {}` genuinely goes over the wire (the
+	// typed client drops an empty map via omitempty). The apiserver then
+	// normalises it back to absent, so this reaches CEL as the same case as
+	// above and failed identically -- kept as a guard in case that
+	// normalisation ever changes.
+	t.Run("pod with an empty labels map is accepted", func(t *testing.T) {
+		p := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "v1",
+			"kind":       "Pod",
+			"metadata": map[string]interface{}{
+				"name": "emptylabels", "namespace": ns,
+				"labels": map[string]interface{}{},
+			},
+			"spec": map[string]interface{}{
+				"containers": []interface{}{map[string]interface{}{
+					"name": "app", "image": "registry.k8s.io/pause:3.10",
+				}},
+			},
+		}}
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("expected accept, got: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+	})
+
+	t.Run("pod with unrelated labels is accepted", func(t *testing.T) {
+		p := makePod(ns, "unrelated", map[string]string{"foo": "bar"})
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("expected accept, got: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+	})
+
+	t.Run("pod with a valid join label is accepted", func(t *testing.T) {
+		p := makePod(ns, "validdir", map[string]string{"kube-vnet/net.x": "both"})
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("expected accept, got: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+	})
+
+	// REGRESSION LOCK. Guarding the labels lookup must not disable the check
+	// itself — the obvious wrong way to fix the bug above. This case must pass
+	// both before and after the fix.
+	t.Run("pod with a removed legacy direction value is rejected", func(t *testing.T) {
+		p := makePod(ns, "legacydir", map[string]string{"kube-vnet/net.x": "true"})
+		err := userClient.Create(ctx, p)
+		if err == nil {
+			_ = userClient.Delete(ctx, p)
+			t.Fatal("expected the VAP to reject the legacy `true` direction value")
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("expected an admission rejection, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "both, ingress, egress, none") {
+			t.Errorf("rejection should name the valid values, got: %v", err)
+		}
+	})
+
+	// The UPDATE half of matchConstraints, which nothing covered. This is also
+	// the operator's own path: applyResolution patches every pod in a managed
+	// namespace at least once to set resolved-generation, and this policy —
+	// unlike both sibling VAPs — has no operator exemption. While labels were
+	// dereferenced unguarded, that patch was denied too, wedging the
+	// ResolutionReconciler in a permanent error loop for every label-less pod.
+	t.Run("updating a label-less pod is accepted", func(t *testing.T) {
+		p := makePod(ns, "updatable", nil)
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+
+		patched := p.DeepCopy()
+		patched.Annotations = map[string]string{AnnotationResolvedGeneration: "1"}
+		if err := userClient.Patch(ctx, patched, client.MergeFrom(p)); err != nil {
+			t.Fatalf("expected the annotation patch to be accepted, got: %v", err)
+		}
+	})
+}
+
+// awaitDirectionPolicyActive probes with a known-rejected pod until the policy
+// is loaded; VAPs are not active the instant they are created.
+func awaitDirectionPolicyActive(t *testing.T, c client.Client, ns string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		p := makePod(ns, "vap-probe", map[string]string{"kube-vnet/net.probe": "true"})
+		err := c.Create(context.Background(), p)
+		if err != nil && apierrors.IsInvalid(err) {
+			return
+		}
+		if err == nil {
+			_ = c.Delete(context.Background(), p)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("direction VAP did not become active within deadline (last err: %v)", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+// mustGrantPodRBAC mirrors mustGrantVnetRBAC for pods: without it the apiserver
+// returns Forbidden before the VAP ever runs.
+func mustGrantPodRBAC(t *testing.T, users ...string) {
+	t.Helper()
+	role := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: "vap-test-pod-rw"},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"pods"},
+			Verbs:     []string{"create", "get", "list", "update", "patch", "delete"},
+		}},
+	}
+	if err := testClient.Create(context.Background(), role); err != nil {
+		t.Fatalf("create ClusterRole: %v", err)
+	}
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), role) })
+
+	for _, user := range users {
+		user := user
+		binding := &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "vap-test-pod-rw-" + sanitizeUser(user)},
+			Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: user, APIGroup: rbacv1.GroupName}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     "vap-test-pod-rw",
+			},
+		}
+		if err := testClient.Create(context.Background(), binding); err != nil {
+			t.Fatalf("create ClusterRoleBinding for %s: %v", user, err)
+		}
+		t.Cleanup(func() { _ = testClient.Delete(context.Background(), binding) })
 	}
 }

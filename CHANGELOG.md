@@ -10,6 +10,28 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pods with no labels were rejected cluster-wide.** The join-label direction
+  `ValidatingAdmissionPolicy` read `object.metadata.labels` without guarding it.
+  In CEL that raises `no such key: labels` rather than yielding an empty map on
+  an object with no labels, and with `failurePolicy: Fail` the evaluation error
+  became a denial — so a pod with nothing to validate was refused. The policy
+  matches every pod in every namespace on both CREATE and UPDATE, so this hit
+  bare pods everywhere: hand-written debug pods, label-less Jobs, and any
+  controller creating pods without labels. Workload pods were spared only
+  because Deployments and friends must set labels for their own selectors.
+
+  It also affected the operator: this policy has no ServiceAccount exemption,
+  and the resolution controller patches every pod once to record
+  `kube-vnet.system/resolved-generation` — an UPDATE that was likewise denied,
+  leaving it retrying forever for each label-less pod.
+
+  The policy behaved correctly for what it exists to catch; invalid direction
+  values are still rejected, and that is now covered by a test, as is the
+  label-less case. The two sibling policies were audited and are unaffected —
+  they already used the optional-field idiom this one now uses.
+
 ## [0.7.2] — 2026-08-09
 
 ### Security
