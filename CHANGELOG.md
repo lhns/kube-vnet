@@ -12,25 +12,17 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
-- **Pods with no labels were rejected cluster-wide.** The join-label direction
-  `ValidatingAdmissionPolicy` read `object.metadata.labels` without guarding it.
-  In CEL that raises `no such key: labels` rather than yielding an empty map on
-  an object with no labels, and with `failurePolicy: Fail` the evaluation error
-  became a denial — so a pod with nothing to validate was refused. The policy
-  matches every pod in every namespace on both CREATE and UPDATE, so this hit
-  bare pods everywhere: hand-written debug pods, label-less Jobs, and any
-  controller creating pods without labels. Workload pods were spared only
-  because Deployments and friends must set labels for their own selectors.
+- **Pods with no labels at all were rejected, in every namespace.** The
+  join-label direction `ValidatingAdmissionPolicy` failed evaluation on a pod
+  with no `labels` field and, with `failurePolicy: Fail`, that became a denial —
+  so pods with nothing to validate were refused on both create and update.
+  Deployment/StatefulSet/DaemonSet pods were unaffected (their selectors force
+  labels); this hit bare pods, label-less Jobs, and controllers creating pods
+  without labels. It also blocked the operator's own patches to such pods,
+  leaving the resolution controller retrying them.
 
-  It also affected the operator: this policy has no ServiceAccount exemption,
-  and the resolution controller patches every pod once to record
-  `kube-vnet.system/resolved-generation` — an UPDATE that was likewise denied,
-  leaving it retrying forever for each label-less pod.
-
-  The policy behaved correctly for what it exists to catch; invalid direction
-  values are still rejected, and that is now covered by a test, as is the
-  label-less case. The two sibling policies were audited and are unaffected —
-  they already used the optional-field idiom this one now uses.
+  Invalid direction values are still rejected as before. The other two
+  admission policies were audited and are unaffected.
 
 ## [0.7.2] — 2026-08-09
 
