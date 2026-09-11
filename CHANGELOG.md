@@ -40,6 +40,12 @@ release. Pinning to an exact version is recommended.
   rules are unchanged, and with the webhook off the chart renders exactly as
   before.
 
+### Fixed
+
+- **e2e: the helm-uninstall cleanup assertion slept a fixed 5s and then checked
+  once.** On a loaded runner that is a spurious failure — the same
+  wait-a-guessed-duration mistake the webhook above exists to remove. It now
+  polls for the condition.
 
 ## [0.7.3] — 2026-09-02
 

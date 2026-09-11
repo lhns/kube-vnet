@@ -471,17 +471,24 @@ jobs:
           # Helm tears down the rest of the release.
           helm uninstall kube-vnet --namespace kube-vnet-system --wait --timeout 3m
 
-          # apiserver finalizer processing can lag a moment after the hook's
-          # `kubectl delete --wait=true` returns. 5s is generous.
-          sleep 5
-
           # ASSERT: zero operator-managed NetworkPolicies remain anywhere.
           # If the hook silently no-op'd (wrong selector, RBAC error swallowed,
           # selector mismatch with what the operator actually emitted), this
           # catches it.
-          remaining=$(kubectl get networkpolicy -A \
-            -l kube-vnet.system/managed-by=kube-vnet \
-            --no-headers 2>/dev/null | wc -l)
+          #
+          # apiserver finalizer processing can lag after the hook's
+          # `kubectl delete --wait=true` returns, so poll for the condition
+          # instead of sleeping a guessed constant and asserting once: a
+          # fixed wait is either longer than it needs to be or, on a loaded
+          # runner, too short, and the too-short case fails a green build.
+          remaining=-1
+          for _ in $(seq 1 30); do
+            remaining=$(kubectl get networkpolicy -A \
+              -l kube-vnet.system/managed-by=kube-vnet \
+              --no-headers 2>/dev/null | wc -l)
+            if [ "$remaining" -eq 0 ]; then break; fi
+            sleep 1
+          done
           if [ "$remaining" -ne 0 ]; then
             echo "FAIL: $remaining operator-managed NetworkPolicies survived helm uninstall."
             kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet -o yaml
