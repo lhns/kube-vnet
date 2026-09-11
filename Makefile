@@ -35,7 +35,7 @@ envtest: ## Install setup-envtest if missing
 .PHONY: integration-test
 integration-test: envtest manifests ## Run envtest-backed integration tests
 	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
-	go test -tags integration ./internal/controller/... -count=1 -timeout 300s -v
+	go test -tags integration ./internal/... -count=1 -timeout 600s -v
 
 .PHONY: e2e-up
 e2e-up: ## Bootstrap a kind cluster with a CNI + the operator (local dev). CNI defaults to kube-router; pass `calico` for Calico.

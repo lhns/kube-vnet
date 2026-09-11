@@ -49,3 +49,37 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end -}}
+
+{{/*
+Selectors shared by both pod-resolution webhook configurations (ADR 0034).
+
+They MUST be identical on the mutating and validating sides: a pod the
+mutator skips but the validator judges would be checked against a resolution
+that was never applied.
+
+Namespaces excluded here mirror the operator's own --disabled-namespaces
+default plus the release namespace. `kube-vnet/disabled=true` is an
+ANNOTATION and so cannot be expressed as a namespaceSelector; the handlers
+re-check it through the same NamespaceFilter the reconcilers use, which is
+why that check is duplicated in Go.
+
+The objectSelector keeps the operator's own pods out, so an operator restart
+never depends on an operator that is not running yet.
+*/}}
+{{- define "kube-vnet.webhookSelectors" -}}
+namespaceSelector:
+  matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+        - kube-system
+        - kube-public
+        - kube-node-lease
+        - {{ .Release.Namespace }}
+objectSelector:
+  matchExpressions:
+    - key: app.kubernetes.io/name
+      operator: NotIn
+      values:
+        - {{ include "kube-vnet.name" . }}
+{{- end }}

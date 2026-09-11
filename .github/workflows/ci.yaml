@@ -63,7 +63,7 @@ jobs:
       - name: run integration tests
         run: |
           ASSETS=$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)
-          KUBEBUILDER_ASSETS="$ASSETS" go test -tags integration ./internal/controller/... -count=1 -timeout 300s -v
+          KUBEBUILDER_ASSETS="$ASSETS" go test -tags integration ./internal/... -count=1 -timeout 600s -v
 
   docker:
     runs-on: ubuntu-latest

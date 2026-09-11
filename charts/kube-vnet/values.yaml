@@ -221,3 +221,38 @@ cleanup:
     repository: registry.k8s.io/kubectl
     tag: "v1.30.0"
     pullPolicy: IfNotPresent
+
+# Pod-resolution admission webhooks (ADR 0034).
+#
+# Off by default. When enabled, pod membership labels are stamped inside the
+# apiserver's write path, so a pod is a member of its virtual networks from
+# the instant it exists. Without it there is a window — field-observed at
+# under a second, long enough to break a client that does not retry — in
+# which a starting pod matches no membership policy and is denied.
+#
+# READ BEFORE ENABLING. The validating half runs with failurePolicy: Fail,
+# preserving the guarantee that kube-vnet.system/* labels cannot be forged
+# even while the operator is unreachable. The cost is that an operator
+# outage BLOCKS POD CREATION in managed namespaces. kube-system, kube-public,
+# kube-node-lease and this release's namespace are excluded, so the cluster
+# and the operator itself can always recover. Run at least 2 replicas.
+#
+# The mutating half is failurePolicy: Ignore — it is an acceleration, and if
+# it is unreachable pods simply land unstamped and the controller stamps them
+# as it does today.
+webhook:
+  enabled: false
+  # helm         — self-signed CA generated at install time and reused across
+  #                upgrades via lookup. No external dependencies.
+  # cert-manager — renders a Certificate against certManager.issuerRef and
+  #                relies on the ca-injector for the caBundle.
+  certSource: helm
+  certManager:
+    issuerRef:
+      name: ""
+      kind: Issuer
+      group: cert-manager.io
+  # Keep this well under the apiserver's own timeout. Resolution is served
+  # from the controller-runtime cache, so a slow response means the operator
+  # is unhealthy, and failing fast is better than holding up every pod write.
+  timeoutSeconds: 5

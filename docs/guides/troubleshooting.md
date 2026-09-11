@@ -12,6 +12,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [`kubectl apply` rejected my pod: "must be one of: both, ingress, egress, none"](#kubectl-apply-rejected-my-pod-must-be-one-of-both-ingress-egress-none)
 - [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
+- [A Job or one-shot pod fails to connect on startup, but succeeds on retry](#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [Admission webhook fails with `context deadline exceeded`](#admission-webhook-fails-with-context-deadline-exceeded)
 - [CNI pitfalls that silently break enforcement (separate page)](cni-pitfalls.md)
@@ -209,6 +210,77 @@ To enforce stricter ingress on a specific pod:
 
 For the full design, see the [deny-all baseline section in `concepts.md`](../getting-started/concepts.md#the-deny-all-baseline) and [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md).
 
+## A Job or one-shot pod fails to connect on startup, but succeeds on retry
+
+The classic shape: a migration or backup Job fails immediately, and the same Job with a `sleep`
+in front of it works. Adding the sleep is not the fix — it is a guess at a duration you do not
+control.
+
+**What is happening.** Membership policies select pods by the `kube-vnet.system/net.*` label the
+operator stamps *after* the apiserver persists the pod. Until that stamp lands, the pod matches
+no membership policy and the deny-all baseline applies. Field-measured at **under a second**, but
+it stretches under load, during an operator restart, and with a slow apiserver. The permanent fix
+is the admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)),
+which stamps inside the apiserver's write path so the pod is a member from the instant it exists.
+
+**Before diagnosing, establish what a denial looks like on your CNI.** This is the step people
+skip, and getting it wrong sends you after the wrong bug — a refusal reads like "nothing is
+listening" rather than "policy denied".
+
+```bash
+# A pod identical to yours, minus the join label. It should be denied for as
+# long as it runs.
+kubectl run denial-control --image=curlimages/curl -n <ns> -it --rm --restart=Never -- \
+  sh -c 'for i in $(seq 1 20); do curl -s -o /dev/null -m 2 -w "%{http_code} " \
+    http://<svc>.<target-ns>.svc.cluster.local/ ; echo; sleep 1; done'
+```
+
+- Consistently **`Connection refused`** (immediate) — that is your denial signature. kube-router
+  with iptables behaves this way.
+- Consistently **hangs / times out** — your CNI drops rather than rejects.
+
+Now re-run your real probe and compare. A result matching the control means policy, not the
+application.
+
+**Then separate "policy not programmed" from "endpoints not ready"** by retrying against the pod
+IP, which bypasses Service endpoint selection entirely:
+
+```bash
+kubectl get pod -n <target-ns> <pod> -o jsonpath='{.status.podIP}'
+```
+
+- Pod IP works, ClusterIP does not → endpoint readiness, not kube-vnet.
+- **Both** fail → the allow rule is not programmed yet. That is this window.
+
+**Confirm from the pod itself** — the stamp is either there or it is not:
+
+```bash
+kubectl get pod -n <ns> <pod> -o jsonpath='{.metadata.labels}' | tr ',' '\n' | grep kube-vnet.system
+kubectl get pod -n <ns> <pod> -o jsonpath='{.metadata.annotations.kube-vnet\.system/resolved-by}'
+```
+
+`resolved-by` is `admission` when the webhook stamped it and `controller` when the reconciler did.
+Seeing `controller` on a cluster where you enabled the webhook means the webhook was unreachable
+for that pod and it fell back — which is safe, but it is also the window reappearing.
+
+**If you cannot enable the webhook**, gate on the real condition rather than on a duration. An
+initContainer shares the pod's network namespace and IP, so it tests exactly what the main
+container needs — can *this pod* reach *that target*:
+
+```yaml
+initContainers:
+  - name: wait-for-target
+    image: curlimages/curl:8.10.1
+    command: ["sh", "-c"]
+    args:
+      - |
+        until curl -sf -m 2 http://<svc>.<target-ns>.svc.cluster.local/health; do
+          echo "target not reachable yet"; sleep 1
+        done
+```
+
+This covers the policy window and target readiness together, and it stops being a guess.
+
 ## Pods I expect to be isolated can talk to each other
 
 1. **Does your CNI enforce NetworkPolicy?**
@@ -259,7 +331,11 @@ For the full design, see the [deny-all baseline section in `concepts.md`](../get
      curl -sv -m 5 http://<svc>.<target-ns>.svc.cluster.local/
    ```
 
-   Expected under correct isolation: immediate `Connection refused`. If the probe is denied but real traffic from the source workload (e.g. traefik) still flows, the workload is holding a stale ESTABLISHED entry. Find it:
+   Expected under correct isolation: a denial. **What a denial looks like is CNI-specific** —
+   an immediate `Connection refused` on kube-router/iptables, a hang on CNIs that drop. Establish
+   yours with the unlabelled control pod described in
+   [A Job or one-shot pod fails to connect on startup](#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry)
+   before reading anything into the result. If the probe is denied but real traffic from the source workload (e.g. traefik) still flows, the workload is holding a stale ESTABLISHED entry. Find it:
 
    ```bash
    SRC_POD=$(kubectl get pods -n <source-ns> -l <selector> -o jsonpath='{.items[0].metadata.name}')

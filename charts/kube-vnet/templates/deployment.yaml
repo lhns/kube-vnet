@@ -49,6 +49,10 @@ spec:
             {{- with .Values.operator.apiserverSourceCIDR }}
             - --apiserver-source-cidr={{ . }}
             {{- end }}
+            {{- if .Values.webhook.enabled }}
+            - --webhook-enabled
+            - --service-account-name={{ include "kube-vnet.serviceAccountName" . }}
+            {{- end }}
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -59,6 +63,11 @@ spec:
               name: metrics
             - containerPort: {{ regexReplaceAll "^:" .Values.operator.healthProbeBindAddress "" | atoi }}
               name: health
+            {{- if .Values.webhook.enabled }}
+            - containerPort: 9443
+              name: webhook
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -75,6 +84,22 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.webhook.enabled }}
+          {{- /*
+          readOnlyRootFilesystem is on, so the serving cert has to come from
+          a mounted Secret rather than anything written at runtime.
+          */}}
+          volumeMounts:
+            - name: webhook-cert
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+          {{- end }}
+      {{- if .Values.webhook.enabled }}
+      volumes:
+        - name: webhook-cert
+          secret:
+            secretName: {{ include "kube-vnet.fullname" . }}-webhook-cert
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

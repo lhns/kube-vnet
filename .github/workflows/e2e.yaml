@@ -70,6 +70,88 @@ jobs:
           echo "===== networkpolicies ====="
           kubectl get networkpolicy -A -o yaml || true
 
+  # The admission webhook lane (ADR 0034). kube-router, because that is the CNI
+  # the resolution race was observed on and it boots in ~30s. Every other lane
+  # runs with webhook.enabled=false, so the default install stays covered too.
+  e2e-webhook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: create kind cluster (no default CNI)
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: kube-vnet-e2e-wh
+          config: test/e2e/kind-config.yaml
+          wait: 60s
+
+      - name: install kube-router
+        run: |
+          set -euxo pipefail
+          kubectl apply -f https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
+          kubectl rollout status -n kube-system ds/kube-router --timeout=180s
+          kubectl wait --for=condition=Ready node --all --timeout=180s
+
+      - name: build operator image
+        run: docker build -t kube-vnet:e2e .
+
+      - name: load image into kind
+        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-wh
+
+      - name: deploy operator with the admission webhook enabled
+        run: |
+          set -euxo pipefail
+          helm install kube-vnet charts/kube-vnet \
+            --namespace kube-vnet-system --create-namespace \
+            --set fullnameOverride=kube-vnet-controller \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=true \
+            --set image.repository=kube-vnet \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --wait --timeout 3m
+          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
+            -n kube-vnet-system --timeout=180s
+
+      - name: assert the webhook is actually installed
+        run: |
+          set -euxo pipefail
+          # The validating webhook is failurePolicy: Fail, so if it were
+          # missing the tests below would pass for the wrong reason.
+          kubectl get mutatingwebhookconfiguration kube-vnet-controller-pod-resolution
+          kubectl get validatingwebhookconfiguration kube-vnet-controller-pod-resolution
+          # The system-labels policy must NOT cover pods here: with the mutator
+          # running it would reject every pod creation in a managed namespace.
+          if kubectl get validatingadmissionpolicy \
+               kube-vnet-controller-system-labels-protected \
+               -o jsonpath='{.spec.matchConstraints.resourceRules[*].resources}' \
+               | tr ' ' '\n' | grep -qx '\["pods"\]'; then
+            echo "FAIL: the system-labels VAP still covers pods while the webhook is enabled."
+            exit 1
+          fi
+
+      - name: run webhook e2e tests
+        run: go test -tags e2e_webhook ./test/e2e/... -count=1 -v -timeout 15m
+
+      - name: dump diagnostics on failure
+        if: failure()
+        run: |
+          echo "===== events ====="
+          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
+          echo "===== operator logs ====="
+          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
+          echo "===== webhook configurations ====="
+          kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration -o yaml || true
+          echo "===== pods with stamps ====="
+          kubectl get pods -A --show-labels || true
+          echo "===== networkpolicies ====="
+          kubectl get networkpolicy -A -o yaml || true
+
   e2e-calico:
     runs-on: ubuntu-latest
     timeout-minutes: 25
