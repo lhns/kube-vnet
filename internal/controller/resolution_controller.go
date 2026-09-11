@@ -33,6 +33,17 @@ const LabelSystemNetPrefix = "kube-vnet.system/net."
 // haven't been resolved yet (fail-closed during the race window).
 const AnnotationResolvedGeneration = "kube-vnet.system/resolved-generation"
 
+// AnnotationResolvedBy records which path stamped the pod: the admission
+// webhook (ADR 0034) or the reconciler. Purely diagnostic — nothing branches
+// on it — but when the webhook is unreachable the reconciler takes over
+// silently, and this is the only way to see that from the pod itself.
+const AnnotationResolvedBy = "kube-vnet.system/resolved-by"
+
+const (
+	ResolvedByAdmission  = "admission"
+	ResolvedByController = "controller"
+)
+
 // ResolutionReconciler resolves the inheritance lattice for each pod and
 // stamps `kube-vnet.system/net.<vnet>=<direction>` labels accordingly. Three
 // scopes per ADR 0031:
@@ -60,6 +71,13 @@ type ResolutionReconciler struct {
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=clustervirtualnetworkbaselines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbaselines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbaselines/status,verbs=get;update;patch
+
+// resolver returns the shared Resolver over this reconciler's client. The
+// reconciler writes; the Resolver only reads, so handing it the same client
+// as a client.Reader is safe and keeps one implementation of resolution.
+func (r *ResolutionReconciler) resolver() *Resolver {
+	return &Resolver{Reader: r.Client, NSFilter: r.NSFilter, Recorder: r.Recorder}
+}
 
 func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("pod", req.NamespacedName)
@@ -89,16 +107,17 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.stripStampedLabels(ctx, pod)
 	}
 
-	// Build the four resolution layers from current cluster state.
-	layers, err := r.buildLayers(ctx, pod, ns)
+	// Resolve through the shared Resolver — the same code path the
+	// admission webhook runs, so a pod stamped at admission reconciles to
+	// an identical label set and this pass is a no-op (ADR 0034).
+	desired, _, err := r.resolver().DesiredLabels(ctx, pod)
 	if err != nil {
 		logger.Error(err, "build resolution layers")
 		return ctrl.Result{}, err
 	}
-	res := Resolve(layers)
 
 	// Stamp the result onto the pod.
-	if err := r.applyResolution(ctx, pod, res); err != nil {
+	if err := r.applyResolution(ctx, pod, desired); err != nil {
 		logger.Error(err, "apply resolution")
 		return ctrl.Result{}, err
 	}
@@ -106,63 +125,6 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-func (r *ResolutionReconciler) buildLayers(ctx context.Context, pod *corev1.Pod, ns *corev1.Namespace) ([]ResolutionLayer, error) {
-	var layers []ResolutionLayer
-
-	// Every rule set is filtered through filterPermittedRules before
-	// becoming a layer. Rules that reference vnets the pod's NS can't
-	// actually join get dropped here, so the system-label stamping that
-	// follows resolution only stamps vnets the pod genuinely belongs to.
-	// Without this gate, a pod-label or baseline entry pointing at a
-	// non-permitting vnet would still stamp `kube-vnet.system/net.*` on
-	// the pod — a lying stamp that doesn't match the membership policy
-	// the VirtualNetworkReconciler later generates. Dropped rules emit a
-	// VirtualNetworkNotJoinable Warning Event. See ADR 0043.
-
-	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
-	// `default`.
-	clusterRules, err := r.clusterBaselineRules(ctx, pod)
-	if err != nil {
-		return nil, err
-	}
-	clusterRules, err = r.filterPermittedRules(ctx, clusterRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(clusterRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: clusterRules})
-	}
-
-	// 2. Namespace baseline (ScopeNamespaceBaseline).
-	nsBaselineRules, err := r.namespaceBaselineRules(ctx, pod)
-	if err != nil {
-		return nil, err
-	}
-	nsBaselineRules, err = r.filterPermittedRules(ctx, nsBaselineRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(nsBaselineRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBaseline, Rules: nsBaselineRules})
-	}
-
-	// 3. Pod tier (ScopePod): VirtualNetworkBindings + pod labels merged into
-	// a single layer. Within-layer intersection applies on conflict.
-	bindRules, err := r.bindingRules(ctx, pod)
-	if err != nil {
-		return nil, err
-	}
-	podRules := append(bindRules, r.podLabelRules(pod)...)
-	podRules, err = r.filterPermittedRules(ctx, podRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(podRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopePod, Rules: podRules})
-	}
-
-	return layers, nil
-}
 
 // ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
 // baseline/binding/label rule names a vnet the pod's namespace cannot join.
@@ -217,220 +179,6 @@ func bareJoinLabelHint(labelKey, suffix string) string {
 		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
 }
 
-// notJoinableNote explains WHY the pod cannot join, distinguishing "no such
-// vnet" from "exists but doesn't allow you" — different problems with
-// different fixes. Only called on the failure path, so the extra Get is free
-// in the happy case.
-func (r *ResolutionReconciler) notJoinableNote(ctx context.Context, key VnetKey, podNS string) string {
-	homeNS, name, ok := splitVnetKey(key)
-	if !ok {
-		return fmt.Sprintf("malformed virtual network key %q", key)
-	}
-	var v vnetv1alpha1.VirtualNetwork
-	if err := r.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: name}, &v); err != nil {
-		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("VirtualNetwork %q does not exist in namespace %q", name, homeNS)
-		}
-		return fmt.Sprintf("could not read VirtualNetwork %s/%s: %v", homeNS, name, err)
-	}
-	return fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q (spec.allowedNamespaces)",
-		homeNS, name, podNS)
-}
-
-// filterPermittedRules drops rules that reference vnets the pod's NS
-// isn't permitted to join (per Permits, the single-source-of-truth
-// helper in permits.go). "Not permitted" — vnet doesn't exist, NS not
-// in allowedNamespaces — drops the rule and emits a
-// VirtualNetworkNotJoinable Warning Event on the object that declared it,
-// so a wrong `virtualNetworkRef.namespace` is visible instead of silent
-// (ADR 0043). A transient apiserver
-// error is NOT the same thing: it propagates as an error so the caller
-// requeues instead of stripping a possibly-valid stamp. Collapsing
-// errors into "deny" caused stamp churn (momentary membership loss)
-// during apiserver blips, with no requeue to recover.
-//
-// This is the membership gate for the stamping pipeline. The
-// VirtualNetworkReconciler does the same check independently when
-// generating membership policies; this filter keeps the pod's stamped
-// labels honest by deciding the same thing here.
-func (r *ResolutionReconciler) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) ([]ResolutionRule, error) {
-	if len(rules) == 0 {
-		return rules, nil
-	}
-	out := rules[:0]
-	for _, rule := range rules {
-		ok, err := Permits(ctx, r.Client, rule.Vnet, podNS)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			if r.Recorder != nil && rule.Owner != nil {
-				r.Recorder.Eventf(rule.Owner, nil, corev1.EventTypeWarning,
-					ReasonVirtualNetworkNotJoinable, "Resolve",
-					"pod namespace %q cannot join %q (from %s): %s%s%s",
-					podNS, rule.Vnet, rule.Source,
-					r.notJoinableNote(ctx, rule.Vnet, podNS), notJoinableHint(rule.Ref), rule.Hint)
-			}
-			continue
-		}
-		// Permission is decided on the fully-qualified key so a wrong
-		// `<ns>.cluster` can be denied; identity is stamped in ADR 0033's
-		// canonical form, which collapses `<anything>.cluster` to bare
-		// `cluster`. Only survivors reach here, so the collapse is safe.
-		rule.Vnet = VnetKey(CanonicalSuffix(string(rule.Vnet), podNS))
-		out = append(out, rule)
-	}
-	return out, nil
-}
-
-// clusterBaselineRules reads the singleton ClusterVirtualNetworkBaseline
-// named `default` (if it exists). Absent → no rules, nil error. A
-// transient Get error propagates — treating it as "no baseline" would
-// strip baseline-driven stamps from every pod reconciled during an
-// apiserver blip.
-func (r *ResolutionReconciler) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
-	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{}
-	if err := r.Get(ctx, client.ObjectKey{Name: "default"}, cb); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	out := make([]ResolutionRule, 0, len(cb.Spec.Memberships))
-	for _, m := range cb.Spec.Memberships {
-		dir, ok := ParseDirection(m.Direction)
-		if !ok {
-			continue
-		}
-		out = append(out, ResolutionRule{
-			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    "ClusterVirtualNetworkBaseline/default",
-			Ref:       m.VirtualNetworkRef,
-			Owner:     cb,
-		})
-	}
-	return out, nil
-}
-
-// namespaceBaselineRules reads the singleton VirtualNetworkBaseline named
-// `default` in the pod's namespace. Same NotFound-vs-transient split as
-// clusterBaselineRules.
-func (r *ResolutionReconciler) namespaceBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
-	nb := &vnetv1alpha1.VirtualNetworkBaseline{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: "default"}, nb); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	out := make([]ResolutionRule, 0, len(nb.Spec.Memberships))
-	for _, m := range nb.Spec.Memberships {
-		dir, ok := ParseDirection(m.Direction)
-		if !ok {
-			continue
-		}
-		out = append(out, ResolutionRule{
-			Vnet:      r.canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
-			Ref:       m.VirtualNetworkRef,
-			Owner:     nb,
-		})
-	}
-	return out, nil
-}
-
-// bindingRules reads VirtualNetworkBindings in the pod's namespace that
-// match the pod's labels. Pod-tier source. A List error propagates —
-// reading it as "no bindings" would strip binding-driven stamps during
-// an apiserver blip.
-func (r *ResolutionReconciler) bindingRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
-	var vnbs vnetv1alpha1.VirtualNetworkBindingList
-	if err := r.List(ctx, &vnbs, client.InNamespace(pod.Namespace)); err != nil {
-		return nil, err
-	}
-	var out []ResolutionRule
-	for i := range vnbs.Items {
-		b := &vnbs.Items[i]
-		podSel, err := selectorFromLabelSelector(&b.Spec.PodSelector)
-		if err != nil {
-			// Malformed selector on the binding itself: a per-object
-			// data problem, not a transient error. Skip the binding;
-			// its own reconciler surfaces the condition.
-			continue
-		}
-		if !podSel.Matches(labels.Set(pod.Labels)) {
-			continue
-		}
-		dirStr := b.Spec.Direction
-		if dirStr == "" {
-			dirStr = string(DirectionBoth)
-		}
-		dir, ok := ParseBareDirection(dirStr)
-		if !ok {
-			continue
-		}
-		out = append(out, ResolutionRule{
-			Vnet:      r.canonicalVnetKey(b.Spec.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    "VirtualNetworkBinding/" + b.Name,
-			Ref:       b.Spec.VirtualNetworkRef,
-			Owner:     b,
-		})
-	}
-	return out, nil
-}
-
-// podLabelRules reads the pod's own kube-vnet/net.<suffix>=<direction>
-// labels. Pod-tier source. Per ADR 0033, the suffix can be either bare
-// (`<vnet>` — only valid for the vnet's home NS or for system vnets) or
-// prefixed (`<homeNS>.<vnet>`); both forms canonicalize to the same FQ
-// VnetKey.
-func (r *ResolutionReconciler) podLabelRules(pod *corev1.Pod) []ResolutionRule {
-	userNetPrefix := DefaultLabelPrefix + "net."
-	var out []ResolutionRule
-	for k, v := range pod.Labels {
-		if !strings.HasPrefix(k, userNetPrefix) {
-			continue
-		}
-		dir, ok := ParseBareDirection(v)
-		if !ok {
-			// Malformed direction value: membership silently ignores it. Surface
-			// it on the pod so the mistake is visible even without the admission
-			// VAP (which is absent on Kubernetes < 1.30, or if disabled). This
-			// is nearly free — we already parsed the value here, and it only
-			// fires for a misconfigured label the user fixes once.
-			if r.Recorder != nil {
-				r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning,
-					ReasonInvalidJoinLabelDirection, "Resolve",
-					"join label %q has an unrecognized direction value %q; must be one of "+
-						"both, ingress, egress, none (ADR 0030). The label is ignored until fixed.",
-					k, v)
-			}
-			continue
-		}
-		suffix := strings.TrimPrefix(k, userNetPrefix)
-		key := r.canonicalKeyFromPodLabelSuffix(suffix, pod.Namespace)
-		out = append(out, ResolutionRule{
-			Vnet:      key,
-			Direction: dir,
-			Source:    "<pod-label>",
-			// No Ref: a join label carries no namespace field to be wrong
-			// about. The Event still lands on the pod that asked for the
-			// unjoinable vnet.
-			Owner: pod,
-			Hint:  bareJoinLabelHint(k, suffix),
-		})
-	}
-	return out
-}
-
-// canonicalKeyFromPodLabelSuffix translates a pod-label suffix (the part
-// after `kube-vnet/net.`) into the canonical FQ VnetKey via CanonicalSuffix.
-func (r *ResolutionReconciler) canonicalKeyFromPodLabelSuffix(suffix, podNS string) VnetKey {
-	return VnetKey(CanonicalSuffix(suffix, podNS))
-}
 
 // CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
 // or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
@@ -460,34 +208,6 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 	return scopeNS + "." + suffix
 }
 
-// canonicalVnetKey turns a vnet reference into the VnetKey to check
-// permission against, using the pod's namespace as the resolution context.
-//
-// It is pure inference — it never validates and never special-cases a vnet
-// kind (ADR 0043). `ref.Namespace` is *honored* whenever it is set; it is
-// only inferred when omitted:
-//
-//   - omitted + `cluster` → bare `cluster`, the singleton's canonical key
-//     (ADR 0033 Amendment).
-//   - omitted + anything else (the per-NS `namespace` system vnet and user
-//     vnets alike) → the pod's own namespace.
-//   - set → used verbatim.
-//
-// A wrong namespace therefore names a vnet the pod cannot join, and is
-// denied by the ordinary permission path in filterPermittedRules — exactly
-// as a user vnet that doesn't allow the pod would be. It is never rewritten
-// to something that happens to work. A *qualified* `<ns>.cluster` key is
-// deliberately left qualified so Permits can verify it against the real CR;
-// it collapses to the bare canonical form after permission passes.
-func (r *ResolutionReconciler) canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
-	if ref.Namespace == "" {
-		if ref.Name == SystemVnetCluster {
-			return VnetKey(SystemVnetCluster)
-		}
-		return VnetKey(podNS + "." + ref.Name)
-	}
-	return VnetKey(ref.Namespace + "." + ref.Name)
-}
 
 func isSystemVnetName(name string) bool {
 	return name == SystemVnetNamespace || name == SystemVnetCluster
@@ -508,16 +228,7 @@ func selectorFromLabelSelector(s *metav1.LabelSelector) (labels.Selector, error)
 // the stamp — making the pod reachable externally on that hostPort.
 // Skipped for hostNetwork pods because NetworkPolicy enforcement on them
 // is CNI-dependent.
-func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, res ResolutionResult) error {
-	// Build desired label map: vnet membership labels + host-port stamps.
-	desired := map[string]string{}
-	for vnet, dir := range res.Effective {
-		desired[LabelSystemNetPrefix+string(vnet)] = string(dir)
-	}
-	for stamp := range desiredHostPortStamps(pod) {
-		desired[stamp] = "true"
-	}
-
+func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, desired map[string]string) error {
 	// Diff + apply via the shared label-sync helper. Covers both the
 	// kube-vnet.system/net.* membership family and the new
 	// kube-vnet.system/host-port.* exposure family (ADR 0040).
@@ -532,6 +243,10 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 		patched.Annotations = map[string]string{}
 	}
 	patched.Annotations[AnnotationResolvedGeneration] = fmt.Sprintf("%d", pod.Generation)
+	// Set on the patch path only. Writing it unconditionally would make
+	// every reconcile of a webhook-stamped pod an API write — the exact
+	// churn the 0.7.x work removed.
+	patched.Annotations[AnnotationResolvedBy] = ResolvedByController
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
 }
 
