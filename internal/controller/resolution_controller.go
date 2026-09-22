@@ -209,10 +209,6 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 }
 
 
-func isSystemVnetName(name string) bool {
-	return name == SystemVnetNamespace || name == SystemVnetCluster
-}
-
 func selectorFromLabelSelector(s *metav1.LabelSelector) (labels.Selector, error) {
 	return metav1.LabelSelectorAsSelector(s)
 }

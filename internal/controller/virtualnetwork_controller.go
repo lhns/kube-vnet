@@ -295,7 +295,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	userPrefix := DefaultLabelPrefix
 	userBareKey := userPrefix + "net." + vnet.Name
 	userPrefixedKey := userPrefix + "net." + vnet.Namespace + "." + vnet.Name
-	systemVnet := isSystemVnetName(vnet.Name)
+	clusterVnet := vnet.Name == SystemVnetCluster
 
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods); err != nil {
@@ -334,22 +334,17 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	for i := range pods.Items {
 		p := &pods.Items[i]
 
-		// ---- Diagnostic scan on USER-prefix labels ----
-		// Purely advisory: surfaces InvalidJoiner reasons on the vnet's
-		// Degraded condition. It must NOT gate membership — a pod that is
-		// a valid member via a binding/baseline stamp keeps its membership
-		// even if it ALSO carries a malformed user label for this vnet.
-		// (Previously these paths `continue`d past the membership check,
-		// silently dropping a legitimately-stamped pod from the policy —
-		// if it was the sole member in its NS, the pod ended up isolated
-		// under the deny-all baseline.) Bare-form is only valid in the
-		// home NS for user vnets, or in any managed NS for system vnets.
+		// Diagnostic scan on user join labels. Advisory only: it must not
+		// gate membership, since a pod stamped via a binding or baseline
+		// stays a member even if it also carries a malformed join label.
+		// The bare form names a vnet in the pod's own namespace, except
+		// `cluster`, which is reachable by its bare name from anywhere.
 		userBareVal, hasUserBare := "", false
 		userPrefVal, hasUserPref := "", false
-		if p.Namespace == vnet.Namespace || systemVnet {
+		if p.Namespace == vnet.Namespace || clusterVnet {
 			userBareVal, hasUserBare = p.Labels[userBareKey]
 		}
-		if !systemVnet {
+		if !clusterVnet {
 			if v, ok := p.Labels[userPrefixedKey]; ok {
 				userPrefVal, hasUserPref = v, true
 			}
@@ -378,7 +373,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 				invalid = append(invalid, InvalidJoiner{
 					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceExcluded,
 				})
-			} else if p.Namespace != vnet.Namespace && !systemVnet {
+			} else if p.Namespace != vnet.Namespace && !clusterVnet {
 				permitted, err := permittedFor(p.Namespace)
 				if err != nil {
 					return nil, nil, err
@@ -423,7 +418,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if !managed {
 			continue
 		}
-		if p.Namespace != vnet.Namespace && !systemVnet {
+		if p.Namespace != vnet.Namespace && !clusterVnet {
 			permitted, err := permittedFor(p.Namespace)
 			if err != nil {
 				return nil, nil, err
