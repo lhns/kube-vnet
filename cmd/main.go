@@ -66,14 +66,11 @@ func main() {
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
 	flag.StringVar(&disabledNamespaces, "disabled-namespaces",
 		"kube-system",
-		"comma-separated namespaces the operator never touches (no baseline, no "+
-			"membership policies, pods not eligible peers, bindings ignored). "+
-			"Mirrors the per-namespace kube-vnet/disabled=true annotation. "+
-			"Default protects kube-system (its cluster-critical pods) from "+
-			"kube-vnet objects entirely; kube-public/kube-node-lease are podless "+
-			"so they are not disabled. Remove a namespace from this list to "+
-			"enroll its pods in a vnet (when enrolling kube-system, keep CoreDNS "+
-			"reachable — see the chart's dnsCarveout / ADR 0042).",
+		"comma-separated namespaces the operator never touches: no baseline or "+
+			"membership policies, pods are not vnet peers, bindings are ignored. "+
+			"Same effect as the kube-vnet/disabled=true namespace annotation. The "+
+			"operator's own namespace is always added. Enrolling kube-system "+
+			"requires keeping CoreDNS reachable (chart value dnsCarveout, ADR 0042).",
 	)
 	flag.StringVar(&apiserverSourceCIDR, "apiserver-source-cidr", "0.0.0.0/0",
 		"CIDR allowed as source for auto-allow NetworkPolicies targeting "+
@@ -119,13 +116,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	// POD_NAMESPACE is the operator's release namespace, sourced from the
-	// downward API on the Deployment. It anchors the cluster system vnet
-	// (per ADR 0033 Amendment), the bare-cluster pod-event routing (per
-	// the 059764d fix), and leader-election lease placement. If unset, the
-	// operator runs but several features degrade silently — surface a clear
-	// warning at startup instead of repeating empty-check logic in each
-	// reconciler.
+	// POD_NAMESPACE is the operator's release namespace, set through the
+	// downward API. It holds the cluster system vnet and the leader-election
+	// lease, and pod events for kube-vnet/net.cluster are routed there.
+	// Without it those degrade silently, so warn once here rather than in
+	// every reconciler.
 	operatorNS := os.Getenv("POD_NAMESPACE")
 	if operatorNS == "" {
 		setupLog.Info("POD_NAMESPACE unset; cluster system vnet ownership, " +
