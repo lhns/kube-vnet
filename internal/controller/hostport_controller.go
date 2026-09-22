@@ -278,17 +278,6 @@ func HostPortChangedPredicate() predicate.Predicate {
 	}
 }
 
-func podHasHostPort(pod *corev1.Pod) bool {
-	for _, c := range pod.Spec.Containers {
-		for _, cp := range c.Ports {
-			if cp.HostPort != 0 {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func podToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }
