@@ -6,10 +6,9 @@ on:
   pull_request:
     branches: [main]
 
-# Two CNI lanes run in parallel: faster wall-clock feedback per PR
-# (~max(kube-router, calico) instead of the sum). We accept the extra CI
-# minutes when one lane fails because the time saved on the common case
-# (both pass) is the larger win.
+# Every lane gets its own kind cluster and runs in parallel: wall-clock time
+# is the slowest lane rather than the sum, at the cost of extra CI minutes.
+# CNI install and image build/load are shared via .github/actions/e2e-setup.
 
 jobs:
   e2e-kube-router:
@@ -29,18 +28,11 @@ jobs:
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install kube-router
-        run: |
-          set -euxo pipefail
-          kubectl apply -f https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
-          kubectl rollout status -n kube-system ds/kube-router --timeout=180s
-          kubectl wait --for=condition=Ready node --all --timeout=180s
-
-      - name: build operator image
-        run: docker build -t kube-vnet:e2e .
-
-      - name: load image into kind
-        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-kr
+      - name: install kube-router, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: kube-router
+          cluster-name: kube-vnet-e2e-kr
 
       - name: deploy operator
         run: |
@@ -90,18 +82,11 @@ jobs:
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install kube-router
-        run: |
-          set -euxo pipefail
-          kubectl apply -f https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
-          kubectl rollout status -n kube-system ds/kube-router --timeout=180s
-          kubectl wait --for=condition=Ready node --all --timeout=180s
-
-      - name: build operator image
-        run: docker build -t kube-vnet:e2e .
-
-      - name: load image into kind
-        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-wh
+      - name: install kube-router, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: kube-router
+          cluster-name: kube-vnet-e2e-wh
 
       - name: deploy operator with the admission webhook enabled
         run: |
@@ -169,39 +154,11 @@ jobs:
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install Calico
-        run: |
-          set -euxo pipefail
-          kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
-          kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
-          kubectl apply -f test/e2e/calico-installation.yaml
-          # The Tigera operator creates calico-system + its workloads after the
-          # Installation CR is reconciled. Wait until calico-kube-controllers
-          # AND csi-node-driver (a DaemonSet) both exist before checking
-          # rollouts.
-          for i in $(seq 1 60); do
-            if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1 \
-               && kubectl -n calico-system get ds csi-node-driver >/dev/null 2>&1; then
-              break
-            fi
-            echo "waiting for calico-system to materialize ($i)"
-            sleep 5
-          done
-          # Workload-level readiness, not pod-level. `kubectl wait pods --all`
-          # races against the operator's rolling pod replacements; rollout
-          # status watches the workload's own generation/replica counts and is
-          # immune to that race.
-          kubectl rollout status -n calico-system deploy/calico-kube-controllers --timeout=300s
-          kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
-          kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
-          kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
-          kubectl wait --for=condition=Ready node --all --timeout=180s
-
-      - name: build operator image
-        run: docker build -t kube-vnet:e2e .
-
-      - name: load image into kind
-        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-cal
+      - name: install Calico, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: calico
+          cluster-name: kube-vnet-e2e-cal
 
       - name: deploy operator
         run: |
@@ -232,8 +189,8 @@ jobs:
   # e2e-helm uses the same kind+Calico setup as e2e-calico but installs the
   # operator via `helm install` instead of `kubectl apply -k config/default`.
   # Catches drift between the kustomize manifests (which controller-gen
-  # owns) and the chart templates (hand-maintained) — exactly the class of
-  # bug the recent ClusterRole-RBAC missing-verbs incident exposed.
+  # owns) and the chart templates (hand-maintained), such as a chart
+  # ClusterRole missing verbs the operator needs.
   e2e-helm:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -254,31 +211,11 @@ jobs:
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install Calico
-        run: |
-          set -euxo pipefail
-          kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
-          kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
-          kubectl apply -f test/e2e/calico-installation.yaml
-          for i in $(seq 1 60); do
-            if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1 \
-               && kubectl -n calico-system get ds csi-node-driver >/dev/null 2>&1; then
-              break
-            fi
-            echo "waiting for calico-system to materialize ($i)"
-            sleep 5
-          done
-          kubectl rollout status -n calico-system deploy/calico-kube-controllers --timeout=300s
-          kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
-          kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
-          kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
-          kubectl wait --for=condition=Ready node --all --timeout=180s
-
-      - name: build operator image
-        run: docker build -t kube-vnet:e2e .
-
-      - name: load image into kind
-        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-helm
+      - name: install Calico, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: calico
+          cluster-name: kube-vnet-e2e-helm
 
       - name: deploy operator (helm)
         run: |
@@ -541,31 +478,11 @@ jobs:
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install Calico
-        run: |
-          set -euxo pipefail
-          kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
-          kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
-          kubectl apply -f test/e2e/calico-installation.yaml
-          for i in $(seq 1 60); do
-            if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1 \
-               && kubectl -n calico-system get ds csi-node-driver >/dev/null 2>&1; then
-              break
-            fi
-            echo "waiting for calico-system to materialize ($i)"
-            sleep 5
-          done
-          kubectl rollout status -n calico-system deploy/calico-kube-controllers --timeout=300s
-          kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
-          kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
-          kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
-          kubectl wait --for=condition=Ready node --all --timeout=180s
-
-      - name: build operator image
-        run: docker build -t kube-vnet:e2e .
-
-      - name: load image into kind
-        run: kind load docker-image kube-vnet:e2e --name kube-vnet-e2e-helm-ns
+      - name: install Calico, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: calico
+          cluster-name: kube-vnet-e2e-helm-ns
 
       - name: deploy operator (helm, ingressIsolationLevel=namespace)
         run: |

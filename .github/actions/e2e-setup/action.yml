@@ -1,0 +1,75 @@
+name: e2e setup
+description: >-
+  Install a NetworkPolicy-enforcing CNI into a freshly created kind cluster
+  (created without a default CNI), then build the operator image and load it
+  as kube-vnet:e2e. test/e2e/up.sh is the local-dev equivalent.
+
+inputs:
+  cni:
+    description: kube-router or calico
+    required: true
+  cluster-name:
+    description: Name of the kind cluster to load the image into
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: check inputs
+      shell: bash
+      env:
+        CNI: ${{ inputs.cni }}
+      run: |
+        case "$CNI" in
+          kube-router|calico) ;;
+          *) echo "unknown cni: $CNI (want kube-router or calico)"; exit 1 ;;
+        esac
+
+    - name: install kube-router
+      if: inputs.cni == 'kube-router'
+      shell: bash
+      run: |
+        set -euxo pipefail
+        kubectl apply -f https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
+        kubectl rollout status -n kube-system ds/kube-router --timeout=180s
+        kubectl wait --for=condition=Ready node --all --timeout=180s
+
+    - name: install Calico
+      if: inputs.cni == 'calico'
+      shell: bash
+      run: |
+        set -euxo pipefail
+        kubectl apply --server-side -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/tigera-operator.yaml
+        kubectl rollout status -n tigera-operator deploy/tigera-operator --timeout=180s
+        kubectl apply -f test/e2e/calico-installation.yaml
+        # The Tigera operator creates calico-system + its workloads after the
+        # Installation CR is reconciled. Wait until calico-kube-controllers
+        # AND csi-node-driver (a DaemonSet) both exist before checking
+        # rollouts.
+        for i in $(seq 1 60); do
+          if kubectl -n calico-system get deployment calico-kube-controllers >/dev/null 2>&1 \
+             && kubectl -n calico-system get ds csi-node-driver >/dev/null 2>&1; then
+            break
+          fi
+          echo "waiting for calico-system to materialize ($i)"
+          sleep 5
+        done
+        # Workload-level readiness, not pod-level. `kubectl wait pods --all`
+        # races against the operator's rolling pod replacements; rollout
+        # status watches the workload's own generation/replica counts and is
+        # immune to that race.
+        kubectl rollout status -n calico-system deploy/calico-kube-controllers --timeout=300s
+        kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
+        kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
+        kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
+        kubectl wait --for=condition=Ready node --all --timeout=180s
+
+    - name: build operator image
+      shell: bash
+      run: docker build -t kube-vnet:e2e .
+
+    - name: load image into kind
+      shell: bash
+      env:
+        CLUSTER_NAME: ${{ inputs.cluster-name }}
+      run: kind load docker-image kube-vnet:e2e --name "$CLUSTER_NAME"
