@@ -230,10 +230,10 @@ func TestPolicyNames_NoCollisions(t *testing.T) {
 	}
 }
 
-func TestPolicyNames_StableAcrossCalls(t *testing.T) {
-	// Identity hashing must be deterministic — same inputs, same name.
-	if PolicyName("v", "n") != PolicyName("v", "n") {
-		t.Error("PolicyName not deterministic")
+func TestPolicyNames_StableAcrossVersions(t *testing.T) {
+	// A changed name makes every upgrade delete and recreate the policy.
+	if got, want := PolicyName("v", "n"), "kube-vnet.mem.n.v-c23b0c33"; got != want {
+		t.Errorf("PolicyName = %q, want %q", got, want)
 	}
 }
 
@@ -361,15 +361,15 @@ func TestDirection_Bare(t *testing.T) {
 
 func TestNameRegex(t *testing.T) {
 	cases := map[string]bool{
-		"payments":     true,
-		"a":            true,
-		"a-b-c":        true,
-		"payments.v2":  false,
-		"Payments":     false,
-		"-leading":     false,
-		"trailing-":    false,
-		"":             false,
-		"under_score":  false,
+		"payments":    true,
+		"a":           true,
+		"a-b-c":       true,
+		"payments.v2": false,
+		"Payments":    false,
+		"-leading":    false,
+		"trailing-":   false,
+		"":            false,
+		"under_score": false,
 	}
 	for in, want := range cases {
 		got := nameRegex.MatchString(in)
@@ -401,12 +401,6 @@ func summarize(p *networkingv1.NetworkPolicy) *kpolicySummary {
 		}
 	}
 	return s
-}
-
-// summaryByName is a small struct used in test reductions.
-type summaryByName struct {
-	name string
-	key  string
 }
 
 func equalStringSlice(a, b []string) bool {
@@ -459,7 +453,7 @@ func TestSystemLabelKey_ClusterCollapses(t *testing.T) {
 	cases := []struct {
 		homeNS, vnet, want string
 	}{
-		{"kube-vnet-system", "cluster", "kube-vnet.system/net.cluster"},   // bare
+		{"kube-vnet-system", "cluster", "kube-vnet.system/net.cluster"},    // bare
 		{"traefik", "namespace", "kube-vnet.system/net.traefik.namespace"}, // per-NS
 		{"platform", "payments", "kube-vnet.system/net.platform.payments"}, // user vnet FQ
 	}
