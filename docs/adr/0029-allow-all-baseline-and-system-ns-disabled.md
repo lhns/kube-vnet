@@ -58,7 +58,7 @@ To enroll a system-namespace pod in a vnet, an admin removes the relevant namesp
 
 - Existing clusters running mode=none gain one additional NetworkPolicy per managed namespace on upgrade. The policy is functionally invisible — it allows everything — but it shows up in lists. CHANGELOG calls this out.
 - One more object per managed namespace in steady state. Trivial; baselines are tiny and stable.
-- The "discover deliberate joiner pods in `kube-system`" use case from ADR 0023 now requires explicit opt-in. Users who relied on the previous default to enroll a kube-system pod in a vnet must remove the namespace from `disabledNamespaces`. This is captured in CHANGELOG and in `docs/install.md`.
+- The "discover deliberate joiner pods in `kube-system`" use case from ADR 0023 now requires explicit opt-in. Users who relied on the previous default to enroll a kube-system pod in a vnet must remove the namespace from `disabledNamespaces`. This is captured in CHANGELOG and in [`docs/getting-started/install.md`](../getting-started/install.md).
 
 ## Alternatives considered
 

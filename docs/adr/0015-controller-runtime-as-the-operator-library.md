@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+> **Amendment (2026-09-23)**: "currently `v0.19.x`" below is the version at the time of writing; `go.mod` tracks the current one (`v0.24.x` as of this note).
+
 ## Context
 
 There are several Go libraries and frameworks for building Kubernetes operators:

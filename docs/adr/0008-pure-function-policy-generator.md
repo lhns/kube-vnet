@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+> **Amendment (2026-09-23)**: the decision stands; the inputs changed. `GenerateInput` is now the `VirtualNetwork` plus `MembersByNS map[namespace]map[Direction][]podName` (direction buckets per [ADR 0021](0021-direction-modes-on-join-labels.md)). There is no label-prefix input: the prefix became the constant `DefaultLabelPrefix` when `--label-prefix` was removed.
+
 ## Context
 
 The operator's most important responsibility is producing the right `NetworkPolicy` set for a given (VirtualNetwork, member set). The mistake-prone parts are selector keys, peer enumeration across namespaces, and DNS allowance — all of which are functional, not stateful.

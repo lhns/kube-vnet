@@ -43,4 +43,4 @@ The home namespace is always implicitly allowed. If `allowedNamespaces` is unset
 - **Pro**: Future extension to cross-cluster reach is additive: `allowedNamespaces` can grow into `allowedPeers` containing namespace and cluster matchers without breaking existing manifests.
 - **Pro**: Removes the design doc's "home namespace for cluster-extent vnets" open question.
 - **Con**: Breaking change vs the originally-published `spec.extent` API. Acceptable: `v1alpha1` carries no compatibility promise, and this lands the same day as the original publication.
-- **Note**: The design doc (`docs/kube-vnet-design.md`) still uses `extent`; this ADR is the source of truth for the implemented model.
+- **Note**: The design doc ([`docs/internals/design.md`](../internals/design.md)) still uses `extent`; this ADR is the source of truth for the implemented model.

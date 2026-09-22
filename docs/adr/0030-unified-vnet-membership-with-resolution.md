@@ -31,7 +31,8 @@
 
 Status: Accepted. Later changes:
 
-- Resolution lattice: partially superseded by [ADR 0031](0031-baseline-tier-resolution.md).
+- Resolution lattice: partially superseded by [ADR 0031](0031-baseline-tier-resolution.md). The conflict surfaces named below (binding `Conflicts` condition, `kube-vnet.system/conflict.<vnet>` annotation, `kube_vnet_resolution_conflicts_total` metric) were never implemented; see ADR 0031's 2026-09-23 amendment.
+- The vestigial `--ingress-isolation*` flags and `IsolationMode` enum noted below have since been removed, as has `--default-memberships` ([ADR 0031](0031-baseline-tier-resolution.md) replaced it with the chart-seeded `ClusterVirtualNetworkBaseline`).
 - `--elide-baseline-for`: removed by [ADR 0035](0035-removal-of-elide-baseline-for.md); it had no observable effect on connectivity.
 - Operator-owned label keys (`kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system`): moved under `kube-vnet.system/` by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md).
 - Policy names: kind-prefixed by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) (`kube-vnet.base`, `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`).

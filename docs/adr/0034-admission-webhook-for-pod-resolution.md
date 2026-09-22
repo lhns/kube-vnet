@@ -78,12 +78,12 @@ Refines: [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (which defe
 
 ## Context
 
-Today, when a pod is admitted to a managed namespace, there is a brief window (typically ~100ms — eventually-consistent per [ADR 0030](0030-unified-vnet-membership-with-resolution.md):82) between apiserver persistence and the operator's `ResolutionReconciler` stamping the canonical FQ system labels (`kube-vnet.system/net.<homeNS>.<vnet>=<dir>`) and the `kube-vnet.system/resolved-generation` annotation.
+Today, when a pod is admitted to a managed namespace, there is a brief window (typically ~100ms — eventually-consistent per [ADR 0030 § "Resolution controller, not webhook"](0030-unified-vnet-membership-with-resolution.md#resolution-controller-not-webhook)) between apiserver persistence and the operator's `ResolutionReconciler` stamping the canonical FQ system labels (`kube-vnet.system/net.<homeNS>.<vnet>=<dir>`) and the `kube-vnet.system/resolved-generation` annotation.
 
 Two safeguards already exist:
 
-- **Baseline fail-closed safety net** (`internal/controller/baseline.go:32-54`, `docs/concepts.md:298-300`). The deny-all baseline `NetworkPolicy` selects every pod whose `kube-vnet.system/net.*` labels are *absent* (the `NotIn [both, ingress]` matchExpression also matches a missing label). Unresolved pods are therefore selected by the baseline → deny-all → no inbound traffic. **Security posture: unresolved pods are unreachable, never over-permissive.**
-- **Generation gate on membership inclusion** (`internal/controller/virtualnetwork_controller.go:367` — `discoverMembers` skips pods missing `kube-vnet.system/resolved-generation`). Prevents an unresolved pod from being added as a peer to other vnets' membership policies until the operator has signed off on its resolution.
+- **Baseline fail-closed safety net** (`DesiredBaseline` in `internal/controller/baseline.go`). The deny-all baseline `NetworkPolicy` selects every pod whose `kube-vnet.system/net.*` labels are *absent* (the `NotIn [both, ingress]` matchExpression also matches a missing label). Unresolved pods are therefore selected by the baseline → deny-all → no inbound traffic. **Security posture: unresolved pods are unreachable, never over-permissive.**
+- **Generation gate on membership inclusion** (`discoverMembers` in `internal/controller/virtualnetwork_controller.go` skips pods missing `kube-vnet.system/resolved-generation`). Prevents an unresolved pod from being added as a peer to other vnets' membership policies until the operator has signed off on its resolution.
 
 These safeguards close the security hole but leave a liveness hole:
 
@@ -91,7 +91,7 @@ These safeguards close the security hole but leave a liveness hole:
 - **Sender-side visibility gap.** A new pod's outbound peers don't add it to their `from:` rules until the operator reconciles every affected vnet's membership policy. Even after the new pod's labels are stamped, the *peer* policies haven't yet been refreshed — that's a second reconcile window, additive on top of the first.
 - **Pod-edit window.** `kubectl label pod` (or any controller-driven label edit) triggers re-resolution by the same controller path, with the same race characteristics.
 
-[ADR 0030 § "Mutating admission webhook for label stamping"](0030-unified-vnet-membership-with-resolution.md):199-203 explicitly deferred the webhook as future opt-in work, citing cert-lifecycle and restart-safety overhead. It noted: *"If real-world users need sub-second guarantees, a future opt-in webhook can be added."* This ADR captures the design for that opt-in. Status remains **Proposed** until the design is validated against a real workload.
+[ADR 0030 § "Mutating admission webhook for label stamping"](0030-unified-vnet-membership-with-resolution.md#mutating-admission-webhook-for-label-stamping) explicitly deferred the webhook as future opt-in work, citing cert-lifecycle and restart-safety overhead. It noted: *"If real-world users need sub-second guarantees, a future opt-in webhook can be added."* This ADR captures the design for that opt-in. Status remains **Proposed** until the design is validated against a real workload.
 
 ## Decision
 
@@ -141,7 +141,7 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 
 Key design points:
 - **No I/O** beyond cache reads. The cache is already populated by the controller manager (the webhook server shares the same manager). Cache reads are sub-millisecond.
-- **Pure function reuse**: `Resolve()` is already pure and unit-tested. The handler is glue (decode → fetch rules from cache → call Resolve → encode patch). Most logic comes from existing `internal/controller/resolution_controller.go:65-160` (the resolution loop) — refactor the rule-building helpers (`baselineRules`, `bindingRules`, `podLabelRules`) to take a `client.Reader` instead of a `client.Client` so both the webhook handler and the controller can call them. They already only do reads.
+- **Pure function reuse**: `Resolve()` is already pure and unit-tested. The handler is glue (decode → fetch rules from cache → call Resolve → encode patch). Most logic comes from the existing resolution loop in `internal/controller/resolution_controller.go` — refactor the rule-building helpers (`baselineRules`, `bindingRules`, `podLabelRules`) to take a `client.Reader` instead of a `client.Client` so both the webhook handler and the controller can call them. They already only do reads.
 - **Patch shape**: JSON Patch (`application/json-patch+json`), one `add`/`replace` op per label key + the two annotations. Strategic merge patch is also fine; JSON Patch is more deterministic for testing.
 
 ### Failure semantics
