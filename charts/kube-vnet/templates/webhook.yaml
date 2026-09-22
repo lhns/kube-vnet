@@ -79,6 +79,8 @@ spec:
   issuerRef:
     {{- toYaml .Values.webhook.certManager.issuerRef | nindent 4 }}
 ---
+{{- else }}
+{{- fail (printf "webhook.certSource must be one of: helm, cert-manager (got %q)" .Values.webhook.certSource) }}
 {{- end }}
 apiVersion: v1
 kind: Service
