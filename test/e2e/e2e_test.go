@@ -141,7 +141,7 @@ func TestE2E_AllowedNamespaces_Names_PositiveAndNegative(t *testing.T) {
 }
 
 // TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked: a pod in a namespace
-// that's listed in allowedNamespaces but does NOT carry the join label gets
+// that's listed in allowedNamespaces but does not carry the join label gets
 // no access. allowedNamespaces gates *eligibility to join*, not blanket
 // access. Proves the join-vs-blanket semantic at the actual-traffic level.
 func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
@@ -162,7 +162,7 @@ func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
 		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	// unlabeled-but-listed: even though its namespace is allowedNamespaces,
-	// without the join label it's NOT a member → must not reach.
+	// without the join label it's not a member → must not reach.
 	applyYAML(t, clientPod(listedNS, "bystander", nil))
 	waitForPod(t, homeNS, "server", 90*time.Second)
 	waitForPod(t, listedNS, "labeled", 90*time.Second)
@@ -233,7 +233,7 @@ func TestE2E_MultiVNet_Pod(t *testing.T) {
 	applyYAML(t, httpServerPod(ns, "m-server", map[string]string{
 		"kube-vnet/net.monitoring": "both",
 	}))
-	// Bridge pod is on BOTH vnets.
+	// Bridge pod is on both vnets.
 	applyYAML(t, clientPod(ns, "bridge", map[string]string{
 		"kube-vnet/net.payments":   "both",
 		"kube-vnet/net.monitoring": "both",

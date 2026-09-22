@@ -12,7 +12,7 @@ import (
 // it off, so both configurations stay covered.
 
 // The whole point of the admission webhook (ADR 0034): a pod is a member of
-// its virtual networks before it runs, so its FIRST connection succeeds.
+// its virtual networks before it runs, so its first connection succeeds.
 //
 // Deliberately single-shot. canReach retries for 30s, which would hide
 // exactly the failure under test — the window in which a just-started pod is

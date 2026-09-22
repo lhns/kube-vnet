@@ -286,28 +286,21 @@ func TestIntegration_ApiserverReachable_URLOnlyWebhook_NoEmission(t *testing.T) 
 	assertPolicyStaysAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "would-not-be-target"), 2*time.Second)
 }
 
-// makeWebhookPod returns a pause-image Pod matching the makeWebhookService
-// selector with the given (name, containerPort) pairs. Used by the
-// named-targetPort integration tests so kube-vnet's resolver can find
-// the actual pod-side port.
+// makeWebhookPod returns a Pod matching makeWebhookService's selector that
+// declares the given container ports, for resolving named targetPorts.
 func makeWebhookPod(ns, svcName string, ports ...corev1.ContainerPort) *corev1.Pod {
 	pod := makePod(ns, "webhook-backend", map[string]string{"app": svcName})
 	pod.Spec.Containers[0].Ports = ports
 	return pod
 }
 
-// TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod
-// regression test for the user-reported bug after ADR 0041 shipped:
-// cert-manager-webhook's Service uses `targetPort: webhook-tls` (named
-// string port). kube-proxy DNATs to the pod-side containerPort (10250),
-// so the emitted NetworkPolicy must allow port 10250, NOT the Service-
-// side 443. Before the fix the policy allowed 443 and admission silently
-// timed out with `context deadline exceeded`.
+// cert-manager-webhook's shape: a named `targetPort: webhook-tls`. kube-proxy
+// DNATs to the pod's containerPort (10250), so that is the port to allow; an
+// allow on the Service port 443 made admission time out.
 func TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod(t *testing.T) {
 	ns := uniqueNS(t, "ar-named")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
-	// Service with NAMED targetPort.
 	svc := makeWebhookService(ns, "webhook",
 		corev1.ServicePort{Name: "https", Port: 443, TargetPort: intstr.FromString("webhook-tls"), Protocol: corev1.ProtocolTCP},
 	)
@@ -327,10 +320,8 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod(t *testi
 	}
 }
 
-// TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears
-// covers the Service-before-Pod ordering. Without the Pod-create watcher
-// the policy would only appear after the 30s requeue; with the watcher
-// it appears as soon as the matching pod is created.
+// Service before Pod: the Pod watch must produce the policy as soon as the
+// backing pod appears, not after the 30s requeue.
 func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(t *testing.T) {
 	ns := uniqueNS(t, "ar-pending")
 	mustCreate(t, makeNamespace(ns, nil, nil))
@@ -357,25 +348,17 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(
 	}
 }
 
-// TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile is the
-// regression test for the cross-reconciler deletion bug found in the
-// project audit: the ExternalAllowReconciler's owner-ref sweeps filtered
-// only on role=external-allow (no source-kind), so reconciling a
-// not-externally-exposed webhook Service (plain ClusterIP — the exact
-// cert-manager-webhook shape) deleted the ApiserverReachableReconciler's
-// policy for the same Service on every pass. The drift watch recreated
-// it, producing a permanent delete/recreate loop with windows where the
-// apiserver→webhook allow was absent.
-//
-// The fix exempts other-source-kind policies via claimedByOtherSourceKind.
-// This test asserts the policy's UID stays STABLE across ExternalAllow
-// reconciles — existence alone would pass even under thrash, because the
-// drift watch recreates within milliseconds.
+// The ExternalAllowReconciler's sweep once matched only role=external-allow,
+// so every pass over a plain ClusterIP webhook Service (the cert-manager
+// shape) deleted this reconciler's policy and the drift watch recreated it: a
+// permanent loop with gaps in the apiserver allow. claimedByOtherSourceKind
+// fixes it. The test checks the UID, since the drift watch recreates within
+// milliseconds and existence alone would pass under thrash.
 func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testing.T) {
 	ns := uniqueNS(t, "ar-coexist")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
-	// Plain ClusterIP webhook Service — NOT externally exposed, so every
+	// Plain ClusterIP webhook Service — not externally exposed, so every
 	// ExternalAllowReconciler pass takes the deletePolicyForService path.
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
@@ -393,7 +376,7 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 		time.Sleep(1 * time.Second)
 	}
 
-	// The policy must still exist AND be the SAME object (UID unchanged) —
+	// The policy must still exist and be the same object (UID unchanged) —
 	// a delete/recreate cycle would produce a new UID.
 	var after networkingv1.NetworkPolicy
 	if err := testClient.Get(context.Background(),
@@ -408,7 +391,7 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 
 // TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookService
 // covers the both-families-on-one-Service shape: a LoadBalancer Service
-// that is ALSO referenced by a webhook config. Both ext.svc.* (ADR 0038)
+// that is also referenced by a webhook config. Both ext.svc.* (ADR 0038)
 // and ext.apiserver.* (ADR 0041) policies must coexist stably — each
 // reconciler's sweep must leave the other family's policy alone.
 func TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookService(t *testing.T) {

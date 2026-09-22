@@ -62,7 +62,7 @@ func TestIntegration_SystemVnet_DriftCorrection(t *testing.T) {
 
 // TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady verifies that
 // a system-labeled vnet whose home namespace is disabled (kube-vnet/disabled=
-// true) is NOT marked Degraded with ReasonHomeNamespaceExcluded. The cluster
+// true) is not marked Degraded with ReasonHomeNamespaceExcluded. The cluster
 // system vnet lives in the operator namespace, which the operator implicitly
 // adds to disabledNamespaces as a privilege boundary; without this exemption
 // the cluster vnet would never reach a usable state on a fresh install.
@@ -91,7 +91,7 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 	}
 	mustCreate(t, userVnet)
 
-	// System vnet must NOT end up with HomeNamespaceExcluded.
+	// System vnet must not end up with HomeNamespaceExcluded.
 	eventually(t, 10*time.Second, func() error {
 		got := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetCluster}, got); err != nil {

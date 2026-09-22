@@ -121,9 +121,6 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// The binding reconciler owns VirtualNetworkBinding status (Ready,
-	// attachedPods). It was absent from this suite, which is why its stale-status
-	// gap (ADR 0044) went unnoticed — nothing here exercised it.
 	bindingReconciler := &VirtualNetworkBindingReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
@@ -191,21 +188,11 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	// Cleanup is consolidated so it runs from every termination path —
-	// normal exit, m.Run() panic, or interrupt signal — without leaking the
-	// envtest etcd / kube-apiserver children.
-	//
-	// On Windows, controller-runtime's testEnv.Stop() signals its children, and signalling is "not
-	// supported by windows", so a run can leave an etcd and a kube-apiserver behind. Belt-and-braces:
-	// after Stop(), force-kill whatever is still up.
-	//
-	// Scoped to OUR children by PID, not `taskkill /IM etcd.exe`. A kill by image name reaches every
-	// etcd on the machine, so running this suite while any other repo's integration tests are up
-	// would tear down THEIR apiserver mid-run -- a failure that looks like a flake in the other
-	// project and is nearly impossible to trace back here. envtest starts both processes with
-	// os/exec, so they are direct children and the PID filter is exact.
-	//
-	// A no-op off Windows, where Stop() works.
+	// stop runs on every exit path (normal, panic, interrupt). On Windows,
+	// testEnv.Stop() can't signal its children and leaves etcd and
+	// kube-apiserver running, so they are then killed by parent PID. Not by
+	// image name: that would also kill another suite's apiserver on the same
+	// machine, which looks like a flake over there.
 	stop := func() {
 		cancel()
 		_ = testEnv.Stop()

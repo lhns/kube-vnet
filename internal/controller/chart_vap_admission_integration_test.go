@@ -124,20 +124,11 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		t.Cleanup(func() { _ = opClient.Delete(context.Background(), v2) })
 	})
 
-	// DELETE is intentionally NOT in this VAP's matchConstraints — it must
-	// stay open so the Kubernetes namespace controller can cascade-delete the
-	// `namespace` system vnet during namespace teardown (guarding DELETE left
-	// every managed namespace stuck in Terminating). A non-operator user
-	// deleting a system vnet is recovered by SystemVnetReconciler
-	// drift-correction, not by admission.
-	//
-	// The check uses a system-LABELED vnet with an ORDINARY name: it carries
-	// the protected `kube-vnet.system/managed-by` label (so if DELETE were
-	// still guarded the VAP would deny it), but its name isn't a reserved
-	// system-vnet name, so the SystemVnetReconciler's disabled-namespace
-	// cleanup (which only deletes the vnet named exactly `namespace`) never
-	// races us. A reserved-name delete would exercise the same now-unmatched
-	// operation but race that cleanup, adding no coverage.
+	// DELETE must stay unguarded so the namespace controller can cascade-delete
+	// the `namespace` system vnet (guarding it left namespaces stuck in
+	// Terminating); drift correction recreates a vnet a user deletes. The vnet
+	// carries the protected label but an ordinary name, so the disabled-namespace
+	// cleanup of the vnet named `namespace` can't race the delete.
 	t.Run("user DELETE of a system-labeled vnet is not blocked", func(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		v.Name = "labeled-ordinary"

@@ -412,7 +412,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 		if got := pp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
 			return fmt.Errorf("prod policy key=%s want %s", got, want)
 		}
-		// Dev does NOT produce a policy.
+		// Dev does not produce a policy.
 		if _, err := findPolicy(ctx, dev, PolicyName("selvnet", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("dev policy should not exist; err=%v", err)
 		}
@@ -585,14 +585,13 @@ func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
 		return fmt.Errorf("membership policy still exists: %v", err)
 	})
 
-	// Baseline should still be there — the annotation hasn't changed.
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-		t.Fatalf("baseline disappeared after vnet delete (annotation still says ingress-isolation=pod): %v", err)
+		t.Fatalf("baseline disappeared after vnet delete: %v", err)
 	}
 }
 
 // TestIntegration_PolicyRestoredEvent: deleting an operator-managed
-// NetworkPolicy must trigger drift correction AND emit a PolicyRestored event
+// NetworkPolicy must trigger drift correction and emit a PolicyRestored event
 // on the owning vnet, so accidental or hostile deletion is observable. See
 // ADR 0019.
 func TestIntegration_PolicyRestoredEvent(t *testing.T) {
@@ -641,19 +640,15 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 }
 
 // TestIntegration_ExcludedNamespace_PodSurfacedInDegraded: a pod in an
-// operator-excluded namespace (kube-system by default) carrying the prefixed
-// join label is dropped from membership AND surfaced as InvalidJoiner so the
-// user can see why it isn't joining.
+// unmanaged namespace carrying the prefixed join label is not a member, and is
+// surfaced as an InvalidJoiner so the user can see why.
 func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 	ctx := context.Background()
 	home := uniqueNS(t, "exhome")
 	mustCreate(t, makeNamespace(home, nil, nil))
 
-	// kube-system is excluded by default in the test reconciler? Check:
-	// suite_integration_test.go uses NewNamespaceFilter(nil) which has empty
-	// excluded set. We need to use an excluded namespace name. We'll build one
-	// by adding the kube-vnet/disabled annotation to a test namespace, since
-	// that triggers the same NamespaceExcluded path via IsManaged.
+	// The suite's NamespaceFilter excludes nothing, so exclude via the
+	// kube-vnet/disabled annotation, which takes the same IsManaged path.
 	excluded := uniqueNS(t, "exdisabled")
 	mustCreate(t, makeNamespace(excluded, map[string]string{"kube-vnet/disabled": "true"}, nil))
 
@@ -687,7 +682,7 @@ func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 }
 
 // TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember: a pod in a
-// listed allowed namespace that does NOT carry the join label is not a member.
+// listed allowed namespace that does not carry the join label is not a member.
 // allowedNamespaces gates *eligibility to join*, not blanket access. See
 // ADR 0005.
 func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
@@ -743,11 +738,10 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
-// TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
-// direction values produce two direction-class self-policies (bidi +
-// ingress). The `egress`-only pod gets NO self-policy: it accepts no
-// ingress and the operator no longer restricts egress (ADR 0025). It
-// still appears in other pods' ingress.from peer lists.
+// TestIntegration_DirectionEnum_OneOfEach: one pod per direction yields a
+// single membership policy selecting the receivers (both, ingress; ADR 0021
+// addendum). The egress-only pod accepts no ingress and egress is never
+// restricted (ADR 0025), so nothing selects it.
 func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "dir")
@@ -759,9 +753,6 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	mustCreate(t, makePod(ns, "ingr", map[string]string{"kube-vnet/net.v": "ingress"}))
 	mustCreate(t, makePod(ns, "egr", map[string]string{"kube-vnet/net.v": "egress"}))
 
-	// Single merged self-policy selecting all receiver-capable members
-	// (ADR 0021 Addendum). Both `bidi` and `ingr` pods are covered; `egr`
-	// gets no self-policy.
 	eventually(t, 10*time.Second, func() error {
 		p, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		if err != nil {
@@ -811,8 +802,7 @@ func TestIntegration_DirectionEnum_UnknownValue_Degraded(t *testing.T) {
 }
 
 // TestIntegration_LongForm_InHome: a pod in the home namespace using the
-// prefixed form is a member, with a separate -prefixed-suffix policy
-// generated.
+// prefixed form is a member.
 func TestIntegration_LongForm_InHome(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "longform")
@@ -825,7 +815,6 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 	}))
 
 	eventually(t, 10*time.Second, func() error {
-		// The -prefixed policy is what matches this pod.
 		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
@@ -848,13 +837,9 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 	})
 }
 
-// TestIntegration_LongForm_BothInHome_Intersect: a pod in the home namespace
-// with both bare and prefixed forms for the same vnet (ADR 0022) — both
-// canonicalize to the same FQ VnetKey at stamp time (ADR 0033), and the
-// resolver intersects disagreements. Pod has bare=both + prefixed=ingress
-// → effective ingress (intersection of both ∩ ingress). The pod is a member
-// (with direction ingress); no Degraded condition fires. This replaces the
-// pre-ADR-0033 ConflictingDirections behavior.
+// TestIntegration_LongForm_BothInHome_Intersect: in the home namespace the
+// bare and prefixed forms name the same vnet (ADR 0033), so disagreeing
+// directions intersect: both ∩ ingress = ingress.
 func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "longform")
@@ -906,14 +891,9 @@ func TestIntegration_Baseline_DisabledAnnotationRemovesBaseline(t *testing.T) {
 	})
 }
 
-// TestIntegration_EmptyDirection_NoMember: a pod with `kube-vnet/net.X: ""`
-// is NOT a member — the empty string is a removed legacy alias, not a valid
-// direction (ADR 0030; the supported opt-out is `none`). The vnet membership
-// policy's podSelector matches `In [both, ingress]` — empty isn't in the
-// list — so no policy adds back ingress for this pod. At reconcile time the
-// resolution controller additionally surfaces the bad value as an
-// InvalidJoinLabelDirection Warning on the pod (not asserted here; Event
-// delivery is best-effort and covered by unit tests).
+// TestIntegration_EmptyDirection_NoMember: `kube-vnet/net.X: ""` is a removed
+// legacy alias, not a direction (ADR 0030), so the pod is not a member. The
+// InvalidJoinLabelDirection Warning it also produces is covered by unit tests.
 func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "pe-empty")
@@ -931,7 +911,7 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 		return err
 	})
 
-	// Vnet status should list only `real` as a member; `empty` should NOT
+	// Vnet status should list only `real` as a member; `empty` should not
 	// appear (its label parses as none, so it's not a joiner).
 	v := &vnetv1alpha1.VirtualNetwork{}
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
@@ -946,15 +926,10 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	}
 }
 
-// TestIntegration_MemberWithMalformedUserLabel_StaysMember pins the fix
-// for the diagnostic-scan-suppresses-membership bug found in the project
-// audit: a pod that is a valid member via a binding-driven system stamp,
-// but ALSO carries a malformed user-prefix label for the same vnet, was
-// dropped from members entirely (the diagnostic `continue` ran before
-// the membership check). If it was the sole member in its NS, no
-// membership policy was emitted and the stamped pod sat isolated under
-// the deny-all baseline. The diagnostic must be advisory: Degraded
-// reports the bad label AND the pod stays a member.
+// A pod that is a member through a binding's stamp but also carries a
+// malformed join label for the same vnet stays a member: the diagnostic is
+// advisory. It used to `continue` before the membership check, dropping the
+// pod and, if it was the only member, its membership policy too.
 func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "malformed")
@@ -972,7 +947,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
 		},
 	})
-	// The pod ALSO carries a malformed user label for the SAME vnet.
+	// The pod also carries a malformed user label for the same vnet.
 	// (No direction VAP in this suite, so the apiserver accepts it.)
 	mustCreate(t, makePod(ns, "p", map[string]string{
 		"app":             "p",
@@ -985,7 +960,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 		return err
 	})
 
-	// AND the vnet reports the malformed label as an invalid joiner.
+	// The vnet also reports the malformed label as an invalid joiner.
 	eventually(t, 10*time.Second, func() error {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
@@ -1008,7 +983,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 
 // TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership
 // pins the fix for the missing Namespace watch on the resolution
-// controller: annotating a namespace `kube-vnet/disabled=true` AFTER
+// controller: annotating a namespace `kube-vnet/disabled=true` after
 // pods were stamped must strip the kube-vnet.system/net.* stamps (and
 // with them, membership) promptly — not only on the next unrelated pod
 // event or informer resync.

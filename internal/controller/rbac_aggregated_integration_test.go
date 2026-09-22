@@ -241,7 +241,7 @@ func TestIntegration_RBAC_AggregationLabelsPresent(t *testing.T) {
 		}
 	}
 
-	// Cluster-baseline pair should NOT carry aggregation labels.
+	// Cluster-baseline pair should not carry aggregation labels.
 	for _, suffix := range []string{"clustervirtualnetworkbaselines-editor", "clustervirtualnetworkbaselines-viewer"} {
 		role := &rbacv1.ClusterRole{}
 		if err := testClient.Get(context.Background(), client.ObjectKey{Name: chartReleasePrefix + suffix}, role); err != nil {
