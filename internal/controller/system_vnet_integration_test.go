@@ -97,10 +97,10 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetCluster}, got); err != nil {
 			return err
 		}
-		if reason := conditionReasonOf(got, "Ready"); reason == ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Ready"); reason == ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("system vnet Ready reason is %q, want anything except %q", reason, ReasonHomeNamespaceExcluded)
 		}
-		if reason := conditionReasonOf(got, "Degraded"); reason == ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Degraded"); reason == ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("system vnet Degraded reason is %q, want anything except %q", reason, ReasonHomeNamespaceExcluded)
 		}
 		// Need at least one condition set to know the reconciler has touched it
@@ -117,18 +117,9 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "userv"}, got); err != nil {
 			return err
 		}
-		if reason := conditionReasonOf(got, "Degraded"); reason != ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Degraded"); reason != ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("user vnet Degraded reason is %q, want %q", reason, ReasonHomeNamespaceExcluded)
 		}
 		return nil
 	})
-}
-
-func conditionReasonOf(vnet *vnetv1alpha1.VirtualNetwork, t string) string {
-	for _, c := range vnet.Status.Conditions {
-		if c.Type == t {
-			return c.Reason
-		}
-	}
-	return ""
 }

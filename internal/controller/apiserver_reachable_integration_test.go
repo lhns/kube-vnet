@@ -12,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
@@ -45,31 +44,40 @@ func apiserverReachablePolicyNameFor(ns, name string) string {
 
 func waitForApiserverReachablePolicy(t *testing.T, ns, svcName string, timeout time.Duration) *networkingv1.NetworkPolicy {
 	t.Helper()
-	var pol networkingv1.NetworkPolicy
-	eventually(t, timeout, func() error {
-		return testClient.Get(context.Background(),
-			client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, svcName)}, &pol)
-	})
-	return &pol
+	return waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, svcName), timeout)
 }
 
 func waitForApiserverReachablePolicyAbsent(t *testing.T, ns, svcName string, timeout time.Duration) {
 	t.Helper()
-	eventually(t, timeout, func() error {
-		var pol networkingv1.NetworkPolicy
-		err := testClient.Get(context.Background(),
-			client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, svcName)}, &pol)
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		return errPolicyStillExists
-	})
+	waitForPolicyAbsent(t, ns, apiserverReachablePolicyNameFor(ns, svcName), timeout)
 }
 
-// ---
+// serviceWebhookClientConfig points a webhook at port 443 of Service ns/svc.
+func serviceWebhookClientConfig(ns, svc string) admissionregistrationv1.WebhookClientConfig {
+	port := int32(443)
+	return admissionregistrationv1.WebhookClientConfig{
+		Service: &admissionregistrationv1.ServiceReference{Namespace: ns, Name: svc, Port: &port},
+	}
+}
+
+// mustCreateValidatingWebhook creates a single-webhook
+// ValidatingWebhookConfiguration calling cc and deletes it on cleanup.
+func mustCreateValidatingWebhook(t *testing.T, name string, cc admissionregistrationv1.WebhookClientConfig) *admissionregistrationv1.ValidatingWebhookConfiguration {
+	t.Helper()
+	side := admissionregistrationv1.SideEffectClassNone
+	whc := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
+			Name:                    "test.example.com",
+			ClientConfig:            cc,
+			SideEffects:             &side,
+			AdmissionReviewVersions: []string{"v1"},
+		}},
+	}
+	mustCreate(t, whc)
+	t.Cleanup(func() { _ = testClient.Delete(context.Background(), whc) })
+	return whc
+}
 
 func TestIntegration_ApiserverReachable_ValidatingWHC_PolicyAppears(t *testing.T) {
 	ns := uniqueNS(t, "ar-vwhc")
@@ -78,25 +86,7 @@ func TestIntegration_ApiserverReachable_ValidatingWHC_PolicyAppears(t *testing.T
 	svc := makeWebhookService(ns, "webhook")
 	mustCreate(t, svc)
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: "ar-vwhc-" + ns},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "test.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "ar-vwhc-" + ns}})
-	})
+	mustCreateValidatingWebhook(t, "ar-vwhc-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
 	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 	if pol.Labels[LabelSourceKind] != LabelSourceKindApiserver {
@@ -155,10 +145,10 @@ func TestIntegration_ApiserverReachable_APIService_PolicyAppears(t *testing.T) {
 			Service: &apiregistrationv1.ServiceReference{
 				Namespace: ns, Name: "metrics", Port: &port443,
 			},
-			Group:                "example.com",
-			Version:              "v1beta1",
-			GroupPriorityMinimum: 1000,
-			VersionPriority:      15,
+			Group:                 "example.com",
+			Version:               "v1beta1",
+			GroupPriorityMinimum:  1000,
+			VersionPriority:       15,
 			InsecureSkipTLSVerify: true,
 		},
 	})
@@ -235,14 +225,7 @@ func TestIntegration_ApiserverReachable_NoEmissionWithoutDiscoveryOrAnnotation(t
 	// Bare Service, no annotation, no discovery resource.
 	mustCreate(t, makeWebhookService(ns, "bare"))
 
-	// Give the reconciler a moment to do whatever it's going to do.
-	time.Sleep(2 * time.Second)
-	var pol networkingv1.NetworkPolicy
-	err := testClient.Get(context.Background(),
-		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "bare")}, &pol)
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("policy should not exist; got err=%v pol=%+v", err, pol)
-	}
+	assertPolicyStaysAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "bare"), 2*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_DiscoveryDeleted_PolicySwept(t *testing.T) {
@@ -251,27 +234,10 @@ func TestIntegration_ApiserverReachable_DiscoveryDeleted_PolicySwept(t *testing.
 
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-delete-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "del.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
+	whc := mustCreateValidatingWebhook(t, "ar-delete-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 	waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 
-	// Now delete the WHC. Policy should disappear.
-	if err := testClient.Delete(context.Background(),
-		&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}}); err != nil {
+	if err := testClient.Delete(context.Background(), whc); err != nil {
 		t.Fatalf("delete WHC: %v", err)
 	}
 	waitForApiserverReachablePolicyAbsent(t, ns, "webhook", 10*time.Second)
@@ -283,40 +249,11 @@ func TestIntegration_ApiserverReachable_OptOut_ServiceAnnotation(t *testing.T) {
 
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-optout-svc-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "opt.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-optout-svc-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 	waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 
-	// Annotate the Service with opt-out. Policy should disappear.
-	eventually(t, 5*time.Second, func() error {
-		latest := &corev1.Service{}
-		if err := testClient.Get(context.Background(),
-			client.ObjectKey{Namespace: ns, Name: "webhook"}, latest); err != nil {
-			return err
-		}
-		if latest.Annotations == nil {
-			latest.Annotations = map[string]string{}
-		}
-		latest.Annotations[AnnotationExternalAllow] = "false"
-		return testClient.Update(context.Background(), latest)
+	updateService(t, ns, "webhook", func(s *corev1.Service) {
+		metav1.SetMetaDataAnnotation(&s.ObjectMeta, AnnotationExternalAllow, "false")
 	})
 	waitForApiserverReachablePolicyAbsent(t, ns, "webhook", 10*time.Second)
 }
@@ -327,26 +264,7 @@ func TestIntegration_ApiserverReachable_DriftCorrection(t *testing.T) {
 
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-drift-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "drift.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-drift-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 
 	// Delete the policy by hand. Operator should recreate it.
@@ -363,32 +281,9 @@ func TestIntegration_ApiserverReachable_URLOnlyWebhook_NoEmission(t *testing.T) 
 	mustCreate(t, makeWebhookService(ns, "would-not-be-target"))
 
 	url := "https://external.example.com/validate"
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-urlonly-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "url.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				URL: &url,
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-urlonly-"+ns, admissionregistrationv1.WebhookClientConfig{URL: &url})
 
-	// Wait, then assert nothing was emitted.
-	time.Sleep(2 * time.Second)
-	var pol networkingv1.NetworkPolicy
-	err := testClient.Get(context.Background(),
-		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "would-not-be-target")}, &pol)
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("URL-only webhook should not produce a policy; got err=%v pol=%+v", err, pol)
-	}
+	assertPolicyStaysAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "would-not-be-target"), 2*time.Second)
 }
 
 // makeWebhookPod returns a pause-image Pod matching the makeWebhookService
@@ -423,26 +318,7 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod(t *testi
 		corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250},
 	))
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-named-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "named.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-named-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
 	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
@@ -464,38 +340,13 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(
 	)
 	mustCreate(t, svc)
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-pending-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "pending.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-pending-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
-	// No pod yet → reconciler must NOT emit a policy with the wrong port.
-	// Sleep briefly to let the reconciler attempt, then assert absent.
-	time.Sleep(2 * time.Second)
-	var stale networkingv1.NetworkPolicy
-	err := testClient.Get(context.Background(),
-		client.ObjectKey{Namespace: ns, Name: apiserverReachablePolicyNameFor(ns, "webhook")}, &stale)
-	if !apierrors.IsNotFound(err) {
-		t.Errorf("policy should not yet exist (named port unresolvable); got err=%v pol=%+v", err, stale)
-	}
+	// No pod yet: the named port is unresolvable, and a policy on the wrong
+	// port would be worse than none.
+	assertPolicyStaysAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 2*time.Second)
 
-	// Pod-create watcher should fire on this and the policy should appear.
+	// The Pod watch re-enqueues the Service.
 	mustCreate(t, makeWebhookPod(ns, "webhook",
 		corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250},
 	))
@@ -528,26 +379,7 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 	// ExternalAllowReconciler pass takes the deletePolicyForService path.
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-coexist-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "coexist.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "webhook", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-coexist-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
 	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
 	originalUID := pol.UID
@@ -555,18 +387,8 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 	// Force several ExternalAllowReconciler passes via inert annotation
 	// flips on the Service (Service updates are its primary trigger).
 	for i := 0; i < 3; i++ {
-		iter := i
-		eventually(t, 5*time.Second, func() error {
-			latest := &corev1.Service{}
-			if err := testClient.Get(context.Background(),
-				client.ObjectKey{Namespace: ns, Name: "webhook"}, latest); err != nil {
-				return err
-			}
-			if latest.Annotations == nil {
-				latest.Annotations = map[string]string{}
-			}
-			latest.Annotations["test-trigger"] = fmt.Sprintf("pass-%d", iter)
-			return testClient.Update(context.Background(), latest)
+		updateService(t, ns, "webhook", func(s *corev1.Service) {
+			metav1.SetMetaDataAnnotation(&s.ObjectMeta, "test-trigger", fmt.Sprintf("pass-%d", i))
 		})
 		time.Sleep(1 * time.Second)
 	}
@@ -597,26 +419,7 @@ func TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookServic
 	svc.Spec.Type = corev1.ServiceTypeLoadBalancer
 	mustCreate(t, svc)
 
-	port443 := int32(443)
-	side := admissionregistrationv1.SideEffectClassNone
-	whcName := "ar-lbwh-" + ns
-	mustCreate(t, &admissionregistrationv1.ValidatingWebhookConfiguration{
-		ObjectMeta: metav1.ObjectMeta{Name: whcName},
-		Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-			Name: "lbwh.example.com",
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: ns, Name: "gateway", Port: &port443,
-				},
-			},
-			SideEffects:             &side,
-			AdmissionReviewVersions: []string{"v1"},
-		}},
-	})
-	t.Cleanup(func() {
-		_ = testClient.Delete(context.Background(),
-			&admissionregistrationv1.ValidatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: whcName}})
-	})
+	mustCreateValidatingWebhook(t, "ar-lbwh-"+ns, serviceWebhookClientConfig(ns, "gateway"))
 
 	apiserverPol := waitForApiserverReachablePolicy(t, ns, "gateway", 10*time.Second)
 	extSvcPol := waitForExternalAllowPolicy(t, ns, "gateway", 10*time.Second)
@@ -625,17 +428,8 @@ func TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookServic
 
 	// Trigger both reconcilers, then verify both policies survived
 	// untouched (stable UIDs).
-	eventually(t, 5*time.Second, func() error {
-		latest := &corev1.Service{}
-		if err := testClient.Get(context.Background(),
-			client.ObjectKey{Namespace: ns, Name: "gateway"}, latest); err != nil {
-			return err
-		}
-		if latest.Annotations == nil {
-			latest.Annotations = map[string]string{}
-		}
-		latest.Annotations["test-trigger"] = "coexist-check"
-		return testClient.Update(context.Background(), latest)
+	updateService(t, ns, "gateway", func(s *corev1.Service) {
+		metav1.SetMetaDataAnnotation(&s.ObjectMeta, "test-trigger", "coexist-check")
 	})
 	time.Sleep(2 * time.Second)
 

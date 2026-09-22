@@ -17,6 +17,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -295,7 +297,7 @@ func makePod(ns, name string, labels map[string]string) *corev1.Pod {
 	}
 }
 
-// findPolicy looks up the membership policy for (vnetName, ns).
+// findPolicy gets the NetworkPolicy ns/name.
 func findPolicy(ctx context.Context, ns, name string) (*networkingv1.NetworkPolicy, error) {
 	p := &networkingv1.NetworkPolicy{}
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, p); err != nil {
@@ -304,11 +306,79 @@ func findPolicy(ctx context.Context, ns, name string) (*networkingv1.NetworkPoli
 	return p, nil
 }
 
-func conditionStatusOf(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.ConditionStatus {
-	for _, c := range vnet.Status.Conditions {
-		if c.Type == t {
-			return c.Status
+// waitForPolicy polls until the NetworkPolicy ns/name exists and returns it.
+func waitForPolicy(t *testing.T, ns, name string, timeout time.Duration) *networkingv1.NetworkPolicy {
+	t.Helper()
+	pol := &networkingv1.NetworkPolicy{}
+	eventually(t, timeout, func() error {
+		return testClient.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, pol)
+	})
+	return pol
+}
+
+// waitForPolicyAbsent polls until the NetworkPolicy ns/name is gone.
+func waitForPolicyAbsent(t *testing.T, ns, name string, timeout time.Duration) {
+	t.Helper()
+	eventually(t, timeout, func() error {
+		_, err := findPolicy(context.Background(), ns, name)
+		if apierrors.IsNotFound(err) {
+			return nil
 		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("policy %s/%s still exists", ns, name)
+	})
+}
+
+// assertPolicyStaysAbsent waits out window, then fails if the NetworkPolicy
+// ns/name exists. "Nothing was created" has no event to poll for, so this is
+// the one place a fixed wait is correct.
+func assertPolicyStaysAbsent(t *testing.T, ns, name string, window time.Duration) {
+	t.Helper()
+	time.Sleep(window)
+	if _, err := findPolicy(context.Background(), ns, name); !apierrors.IsNotFound(err) {
+		t.Errorf("policy %s/%s should not exist: err=%v", ns, name, err)
+	}
+}
+
+// updateNamespace applies mutate to the latest namespace, retrying on conflict.
+func updateNamespace(t *testing.T, name string, mutate func(*corev1.Namespace)) {
+	t.Helper()
+	eventually(t, 5*time.Second, func() error {
+		ns := &corev1.Namespace{}
+		if err := testClient.Get(context.Background(), client.ObjectKey{Name: name}, ns); err != nil {
+			return err
+		}
+		mutate(ns)
+		return testClient.Update(context.Background(), ns)
+	})
+}
+
+// updateService applies mutate to the latest Service, retrying on conflict.
+func updateService(t *testing.T, ns, name string, mutate func(*corev1.Service)) {
+	t.Helper()
+	eventually(t, 5*time.Second, func() error {
+		svc := &corev1.Service{}
+		if err := testClient.Get(context.Background(), client.ObjectKey{Namespace: ns, Name: name}, svc); err != nil {
+			return err
+		}
+		mutate(svc)
+		return testClient.Update(context.Background(), svc)
+	})
+}
+
+func conditionStatusOf(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.ConditionStatus {
+	if c := meta.FindStatusCondition(vnet.Status.Conditions, t); c != nil {
+		return c.Status
 	}
 	return metav1.ConditionUnknown
+}
+
+// conditionReason returns the reason of condition t, or "" if it is not set.
+func conditionReason(conds []metav1.Condition, t string) string {
+	if c := meta.FindStatusCondition(conds, t); c != nil {
+		return c.Reason
+	}
+	return ""
 }

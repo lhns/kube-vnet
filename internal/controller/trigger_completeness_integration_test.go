@@ -75,18 +75,10 @@ func TestIntegration_Trigger_NamespaceLabelGrantsAccessLater(t *testing.T) {
 		t.Fatalf("pod stamped %q while its namespace was not yet permitted", got)
 	}
 
-	// Grant access by LABELLING the namespace. The pod is never touched.
-	ns := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: member}, ns); err != nil {
-		t.Fatalf("get ns: %v", err)
-	}
-	if ns.Labels == nil {
-		ns.Labels = map[string]string{}
-	}
-	ns.Labels["tier"] = "prod"
-	if err := testClient.Update(ctx, ns); err != nil {
-		t.Fatalf("update ns: %v", err)
-	}
+	// Grant access by labelling the namespace. The pod is never touched.
+	updateNamespace(t, member, func(n *corev1.Namespace) {
+		metav1.SetMetaDataLabel(&n.ObjectMeta, "tier", "prod")
+	})
 
 	eventually(t, 30*time.Second, func() error {
 		p := &corev1.Pod{}
@@ -117,14 +109,7 @@ func TestIntegration_Trigger_NamespaceAnnotationGrantIsTheControl(t *testing.T) 
 	sysLabel := "kube-vnet.system/net." + ns + ".c"
 	time.Sleep(settleQuiet)
 
-	n := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, n); err != nil {
-		t.Fatalf("get ns: %v", err)
-	}
-	delete(n.Annotations, "kube-vnet/disabled")
-	if err := testClient.Update(ctx, n); err != nil {
-		t.Fatalf("update ns: %v", err)
-	}
+	updateNamespace(t, ns, func(n *corev1.Namespace) { delete(n.Annotations, AnnotationDisabled) })
 
 	eventually(t, 30*time.Second, func() error {
 		p := &corev1.Pod{}
@@ -180,14 +165,7 @@ func TestIntegration_Trigger_HomeNamespaceReEnabledRecoversVnet(t *testing.T) {
 	// Required — see settleQuiet.
 	time.Sleep(settleQuiet)
 
-	n := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: home}, n); err != nil {
-		t.Fatalf("get ns: %v", err)
-	}
-	delete(n.Annotations, "kube-vnet/disabled")
-	if err := testClient.Update(ctx, n); err != nil {
-		t.Fatalf("update ns: %v", err)
-	}
+	updateNamespace(t, home, func(n *corev1.Namespace) { delete(n.Annotations, AnnotationDisabled) })
 
 	eventually(t, 30*time.Second, func() error {
 		v := &vnetv1alpha1.VirtualNetwork{}
@@ -280,40 +258,24 @@ func TestIntegration_Trigger_BindingNamespaceReEnabledRecoversStatus(t *testing.
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "b"}, b); err != nil {
 			return err
 		}
-		if bindingReadyReason(b) != ReasonBindingNamespaceExcluded {
-			return fmt.Errorf("reason = %q, want %q", bindingReadyReason(b), ReasonBindingNamespaceExcluded)
+		if conditionReason(b.Status.Conditions, "Ready") != ReasonBindingNamespaceExcluded {
+			return fmt.Errorf("reason = %q, want %q", conditionReason(b.Status.Conditions, "Ready"), ReasonBindingNamespaceExcluded)
 		}
 		return nil
 	})
 
 	time.Sleep(settleQuiet)
 
-	n := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, n); err != nil {
-		t.Fatalf("get ns: %v", err)
-	}
-	delete(n.Annotations, "kube-vnet/disabled")
-	if err := testClient.Update(ctx, n); err != nil {
-		t.Fatalf("update ns: %v", err)
-	}
+	updateNamespace(t, ns, func(n *corev1.Namespace) { delete(n.Annotations, AnnotationDisabled) })
 
 	eventually(t, 30*time.Second, func() error {
 		b := &vnetv1alpha1.VirtualNetworkBinding{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "b"}, b); err != nil {
 			return err
 		}
-		if r := bindingReadyReason(b); r == ReasonBindingNamespaceExcluded {
+		if r := conditionReason(b.Status.Conditions, "Ready"); r == ReasonBindingNamespaceExcluded {
 			return fmt.Errorf("binding still reports %q after its namespace was re-enabled", r)
 		}
 		return nil
 	})
-}
-
-func bindingReadyReason(b *vnetv1alpha1.VirtualNetworkBinding) string {
-	for _, c := range b.Status.Conditions {
-		if c.Type == "Ready" {
-			return c.Reason
-		}
-	}
-	return ""
 }

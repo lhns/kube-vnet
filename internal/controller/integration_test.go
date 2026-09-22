@@ -892,18 +892,9 @@ func TestIntegration_Baseline_DisabledAnnotationRemovesBaseline(t *testing.T) {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
 
-	// Add the disabled annotation.
-	current := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, current); err != nil {
-		t.Fatalf("get namespace: %v", err)
-	}
-	if current.Annotations == nil {
-		current.Annotations = map[string]string{}
-	}
-	current.Annotations["kube-vnet/disabled"] = "true"
-	if err := testClient.Update(ctx, current); err != nil {
-		t.Fatalf("annotate namespace: %v", err)
-	}
+	updateNamespace(t, ns, func(n *corev1.Namespace) {
+		metav1.SetMetaDataAnnotation(&n.ObjectMeta, AnnotationDisabled, "true")
+	})
 
 	// Baseline goes away.
 	eventually(t, 10*time.Second, func() error {
@@ -1045,17 +1036,8 @@ func TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership(t *tes
 		return err
 	})
 
-	// Disable the namespace mid-flight.
-	eventually(t, 5*time.Second, func() error {
-		nsObj := &corev1.Namespace{}
-		if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-			return err
-		}
-		if nsObj.Annotations == nil {
-			nsObj.Annotations = map[string]string{}
-		}
-		nsObj.Annotations[AnnotationDisabled] = "true"
-		return testClient.Update(ctx, nsObj)
+	updateNamespace(t, ns, func(n *corev1.Namespace) {
+		metav1.SetMetaDataAnnotation(&n.ObjectMeta, AnnotationDisabled, "true")
 	})
 
 	// The stamp must be stripped promptly (Namespace watch fires →
