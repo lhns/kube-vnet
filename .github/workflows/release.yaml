@@ -30,11 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0   # needed by `git describe` in compute-mode (currently unused, harmless)
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
 
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
