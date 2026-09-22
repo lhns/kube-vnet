@@ -4,10 +4,8 @@ package controller
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -15,48 +13,28 @@ import (
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
-	"k8s.io/apimachinery/pkg/util/yaml"
-	sigsyaml "sigs.k8s.io/yaml"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // TestChartRBAC_MatchesKubebuilder asserts the chart's ClusterRole rules
 // equal the kubebuilder-generated config/rbac/role.yaml after normalization.
 //
-// Why this test exists: the chart's ClusterRole is hand-written (it has to
-// be, because Helm-templated names like {{ include "fullname" . }} aren't
-// something controller-gen can emit). Stage A's bug — chart RBAC missing
-// pods/patch and virtualnetworks/create — went undetected because every
-// other test path runs against envtest as a system admin or installs via
-// kubectl apply -k config/default (which uses the kubebuilder-generated
-// rules). Real Helm installs never had their RBAC checked.
-//
-// The fix: compare the rules verb-for-verb every CI run. If a +kubebuilder:rbac
-// annotation changes (or someone hand-edits the chart template), this test
-// fails with a precise diff and the contributor knows to update the other
-// side.
-//
-// See ADR 0030 stage-A bug fix and the post-audit cleanup plan.
+// The chart's ClusterRole is hand-written, because controller-gen can't emit
+// Helm-templated names. When it once lacked pods/patch and
+// virtualnetworks/create nothing noticed: every other test path runs as an
+// envtest admin or installs config/default, which uses the generated rules.
+// See ADR 0030.
 func TestChartRBAC_MatchesKubebuilder(t *testing.T) {
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH; skipping chart-RBAC drift test")
-	}
-
-	// Render the chart's ClusterRole.
-	rendered, err := renderChart(t)
-	if err != nil {
-		t.Fatalf("helm template: %v", err)
-	}
+	// ingressIsolationLevel has no default (ADR 0031); any valid value renders.
+	rendered := helmTemplate(t, "testrelease", "--set", "operator.clusterBaseline.ingressIsolationLevel=namespace")
 	chartRules := extractClusterRoleRules(t, bytes.NewReader(rendered))
 
-	// Read and parse config/rbac/role.yaml.
 	roleYAML, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
 	if err != nil {
 		t.Fatalf("read config/rbac/role.yaml: %v", err)
 	}
 	kubebuilderRules := extractClusterRoleRules(t, bytes.NewReader(roleYAML))
 
-	// Normalize both: each rule's apiGroups/resources/verbs sorted; rules
-	// themselves sorted by (first apiGroup, first resource, first verb).
 	normalizeRules(chartRules)
 	normalizeRules(kubebuilderRules)
 
@@ -70,77 +48,36 @@ func TestChartRBAC_MatchesKubebuilder(t *testing.T) {
 	}
 }
 
-// renderChart runs `helm template` with the same args as the chart-manifests
-// dry-run test, returning the raw multi-document YAML.
-func renderChart(t *testing.T) ([]byte, error) {
-	t.Helper()
-	chartDir := filepath.Join("..", "..", "charts", "kube-vnet")
-	var stdout, stderr bytes.Buffer
-	// operator.clusterBaseline.ingressIsolationLevel has no default per ADR
-	// 0031; pass any valid value so the chart renders without erroring.
-	cmd := exec.Command("helm", "template", "testrelease", chartDir,
-		"--kube-version", "1.31.0",
-		"--set", "operator.clusterBaseline.ingressIsolationLevel=namespace")
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, errors.New(stderr.String())
-	}
-	return stdout.Bytes(), nil
-}
-
-// extractClusterRoleRules pulls every PolicyRule from every ClusterRole
-// document in a multi-document YAML stream. Aggregated end-user
-// ClusterRoles (ADR 0031 cleanup) are filtered out — they're identified by
-// any `rbac.authorization.k8s.io/aggregate-to-*` label OR by the
-// `-{editor,viewer}` name suffix that the chart uses for the unbound
-// cluster-baseline pair (which has no aggregation labels). Only the
-// operator's own ClusterRole, which `config/rbac/role.yaml` mirrors,
-// participates in this drift check.
+// extractClusterRoleRules collects the rules of every ClusterRole in a YAML
+// stream, except the ancillary ones config/rbac/role.yaml doesn't mirror.
 func extractClusterRoleRules(t *testing.T, in io.Reader) []rbacv1.PolicyRule {
 	t.Helper()
 	var rules []rbacv1.PolicyRule
-	dec := yaml.NewYAMLOrJSONDecoder(in, 4096)
-	for {
-		var raw map[string]interface{}
-		if err := dec.Decode(&raw); err != nil {
-			if errors.Is(err, io.EOF) {
-				return rules
-			}
-			t.Fatalf("decode YAML: %v", err)
-		}
-		if raw["kind"] != "ClusterRole" {
+	for _, obj := range decodeObjects(t, in) {
+		if obj.GetKind() != "ClusterRole" {
 			continue
 		}
-		// Re-encode this document and decode into rbacv1.ClusterRole — the
-		// safest path to PolicyRule structs without writing a YAML→Go bridge.
-		buf, err := sigsyaml.Marshal(raw)
-		if err != nil {
-			t.Fatalf("re-encode ClusterRole: %v", err)
-		}
 		var cr rbacv1.ClusterRole
-		if err := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(buf), 4096).Decode(&cr); err != nil {
-			t.Fatalf("decode ClusterRole: %v", err)
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &cr); err != nil {
+			t.Fatalf("convert ClusterRole %s: %v", obj.GetName(), err)
 		}
-		if isAncillaryClusterRole(&cr, raw) {
+		if isAncillaryClusterRole(&cr) {
 			continue
 		}
 		rules = append(rules, cr.Rules...)
 	}
+	return rules
 }
 
-// isAncillaryClusterRole returns true for chart ClusterRoles that aren't part
-// of the operator's own persistent permissions and therefore don't appear in
-// config/rbac/role.yaml. Three categories:
+// isAncillaryClusterRole reports chart ClusterRoles that are not the
+// operator's own permissions:
 //
-//  1. End-user aggregated roles (ADR 0031 RBAC PR): identified by an
-//     `rbac.authorization.k8s.io/aggregate-to-*` label or the
-//     `-editor`/`-viewer` name suffix.
-//  2. Helm hook-scoped roles (ADR 0036 pre-delete cleanup hook): identified
-//     by the `helm.sh/hook` annotation. They exist only for the duration of a
-//     hook run, get their permissions from their own narrow ClusterRole, and
-//     are deleted by `helm.sh/hook-delete-policy`. Independent lifecycle.
-func isAncillaryClusterRole(cr *rbacv1.ClusterRole, raw map[string]interface{}) bool {
+//  1. End-user roles (ADR 0031): an `rbac.authorization.k8s.io/aggregate-to-*`
+//     label, or the `-editor`/`-viewer` suffix (the cluster-baseline pair has
+//     no aggregation labels).
+//  2. Helm hook roles (ADR 0036 pre-delete cleanup): the `helm.sh/hook`
+//     annotation. They live only for the hook run.
+func isAncillaryClusterRole(cr *rbacv1.ClusterRole) bool {
 	for k := range cr.Labels {
 		if strings.HasPrefix(k, "rbac.authorization.k8s.io/aggregate-to-") {
 			return true
@@ -149,17 +86,8 @@ func isAncillaryClusterRole(cr *rbacv1.ClusterRole, raw map[string]interface{}) 
 	if strings.HasSuffix(cr.Name, "-editor") || strings.HasSuffix(cr.Name, "-viewer") {
 		return true
 	}
-	// Helm-hook annotations land in the raw map's metadata.annotations.
-	// `cr.Annotations` would also have them, but read from `raw` to stay
-	// future-proof against any annotation that rbacv1.ClusterRole strips.
-	if meta, ok := raw["metadata"].(map[string]interface{}); ok {
-		if anns, ok := meta["annotations"].(map[string]interface{}); ok {
-			if _, ok := anns["helm.sh/hook"]; ok {
-				return true
-			}
-		}
-	}
-	return false
+	_, hook := cr.Annotations["helm.sh/hook"]
+	return hook
 }
 
 // normalizeRules canonicalizes each rule (sort apiGroups/resources/verbs)
