@@ -1,33 +1,12 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-> **Amendment (2026-09-11) — the deferred webhook is no longer deferred.**
->
-> § "Mutating admission webhook for label stamping" deferred it as future opt-in work, noting *"if
-> real-world users need sub-second guarantees, a future opt-in webhook can be added."* They did: a
-> migration Job that does not retry failed on its first connection because it was not yet stamped.
-> [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented and opt-in via
-> `webhook.enabled`.
->
-> The "~100ms" figure quoted for the admission-to-stamp window was never measured. The field
-> bound is **<=1s** on kube-router v2.10.0, where a denial presents as an immediate RST rather
-> than a timeout. Treat ~100ms as a typical value, not a ceiling: it stretches under load, during
-> an operator restart, and with a slow apiserver.
+> **Amendment (2026-09-11) — the deferred webhook is implemented.** § "Mutating admission webhook for label stamping" deferred it until users needed sub-second guarantees. One did: a migration Job that does not retry failed its first connection because its pod was not yet stamped. [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented, opt-in via `webhook.enabled`. The "~100ms" admission-to-stamp window quoted below was never measured. The field bound is <=1s on kube-router v2.10.0, where a denial shows as an immediate RST rather than a timeout, and the window stretches under load, during an operator restart and with a slow apiserver.
 
-> **Amendment (2026-07-26) — the resolution controller watches a *fifth* input: `VirtualNetwork` itself.**
+> **Amendment (2026-07-26) — the resolution controller also watches `VirtualNetwork`.**
 >
-> "A new controller watches the four input sources" (below) was an incomplete list. A rule doesn't only come *from* a source — it **references a vnet**, so the existence of that vnet is itself an input to resolution. `filterPermittedRules` drops a rule whose vnet doesn't exist (`Permits` → NotFound), and `applyResolution` still writes the `resolved-generation` annotation. With no `VirtualNetwork` watch, nothing re-enqueued the pod when the vnet later appeared.
+> "A new controller watches the four input sources" missed one: every rule references a vnet, and `filterPermittedRules` drops a rule whose vnet doesn't exist. Nothing re-enqueued the pod when the vnet appeared later, and that was terminal, not a race. The pod watch is change-based (`LabelChanged`/`AnnotationChanged`/`GenerationChanged`), so informer resyncs (`old == new`) are filtered, and the VirtualNetworkReconciler's requeue only counts pods that are already stamped. A pod, Binding or Baseline applied before its vnet (ordinary GitOps ordering) left the pod unstamped and isolated by the baseline until it was edited or recreated. In the field, "rolling the pod fixed it" was the only fix.
 >
-> **That state was terminal, not a race.** The pod watch is change-based (`Or(LabelChanged, AnnotationChanged, GenerationChanged)`) and all three compare old-vs-new, so the informer resync — which delivers `old == new` — is filtered. The VirtualNetworkReconciler's periodic requeue doesn't help either: `discoverMembers` only counts pods that already carry the system stamp. A pod created before its vnet stayed unstamped, and therefore isolated by the deny-all baseline, until it was edited or recreated. Observed in the field as "rolling the pod fixed it" — which was the only available fix, not merely the fastest.
->
-> This is ordinary GitOps ordering (a HelmRelease rendering its Deployment before its VirtualNetwork), and it applies to **every** membership source, not just join labels: a Binding or Baseline applied before its target vnet gets stuck the same way.
->
-> `ResolutionReconciler` therefore also watches `VirtualNetwork`, mapping an event to the pods whose membership could name it (`vnetToAffectedPods`): the two statically-known join-label keys, plus pods reached via Bindings and Baselines whose `virtualNetworkRef` resolves to it. A ref with an **omitted** namespace means "the vnet of this name in the pod's own namespace", so that case is scoped to the vnet's own namespace instead of fanning out cluster-wide.
->
-> The watch carries `GenerationChangedPredicate`, which is load-bearing: `VirtualNetwork` has a status subresource, so `metadata.generation` bumps only on spec changes, while Create/Delete stay at the predicate's default `true`. Without it every membership **status** write would fan out to pods, recreating the self-feeding reconcile loop removed in `75c14a6`.
->
-> This is one instance of a general rule, since generalised in [ADR 0044](0044-trigger-sets-must-cover-read-sets.md): a reconciler's trigger set must cover its read set, because change-based predicates filter the informer resync and so make an unwatched input a *permanent* divergence rather than a slow one. ADR 0044 also replaced this amendment's per-source fan-out with the namespaces the vnet admits, which covers all four membership sources at once.
->
-> The "**No mutating admission webhook**" statement below still stands and is unchanged — [ADR 0034](0034-admission-webhook-for-pod-resolution.md) remains *Proposed*. Stamping happens asynchronously after admission; admission ordering has never been what determines membership.
+> `ResolutionReconciler` now watches `VirtualNetwork` and fans out to the pods in the namespaces the vnet admits. [ADR 0044](0044-trigger-sets-must-cover-read-sets.md) generalises this ("a reconciler's trigger set must cover its read set") and replaced this amendment's original per-source fan-out. The watch carries `GenerationChangedPredicate`: the CRD has a status subresource, so generation tracks spec only, and without the predicate every membership status write would fan out to pods and recreate the reconcile loop removed in `75c14a6`.
 
 Status: Accepted. Later changes:
 

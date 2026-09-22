@@ -90,25 +90,11 @@ The peer side is unchanged: ingress.from peers still narrow to initiator-capable
 
 Net policy count per (vnet, namespace, form) drops from up-to-2 (bidi + ingress) to exactly 1. Existing `-ingress`-suffixed policies left over from the pre-merge era are removed by the VirtualNetworkReconciler's `deleteStale` pass on the next reconcile. No user-facing migration is required; existing `=true` / `=both` / `=ingress` pod manifests keep working.
 
-The `Con` bullet above ("Up to 3× the policy count per namespace per vnet") and the related "policy-name suffixes (`-ingress` / `-egress`) being human-meaningful" mitigation are now obsolete; only the form-suffix (`-prefixed`) survives in self-policy names. Per-binding policies (`-b-<binding>`) are unaffected.
+The `Con` bullet above ("Up to 3× the policy count") and the `-ingress` / `-egress` suffix mitigation are obsolete.
 
 ## Addendum (2026-05-04) — empty-string value reinterpreted as `none`
 
-> **Superseded by the [2026-05-05 addendum](#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped) below.** That addendum drops `""` / `"true"` / `"false"` as legal values entirely; the compat table at the end of *this* addendum no longer reflects current behavior. Kept for history.
-
-The compat row above maps `""` (empty) to `both`, on the original "presence-only meant member" rule from before the direction enum existed. That rule no longer matches user expectations: every other value in the enum is explicit, and the VAP shipped alongside [ADR 0027](0027-pod-scoped-join-label-events.md) accepts `""` as a *syntactically* valid value (so old manifests aren't rejected at admission), but the parser now treats it as `none` — i.e. **not a member**.
-
-The legacy `"true"` alias still maps to `both`; only the empty string changed.
-
-This is a breaking change for any manifest that relied on `kube-vnet/net.X: ""` meaning "join with bidi default." Such manifests should set an explicit `=both` (or the legacy `=true`) to preserve membership. The CHANGELOG carries the breaking-change note.
-
-The compat table above should now read:
-
-| Legacy | Maps to |
-|---|---|
-| `"true"` | `both` |
-| `""` (empty) | `none` |
-| `"false"` | `none` |
+*Superseded by the 2026-05-05 addendum below; kept for history.* The compat row mapping `""` to `both` (the old "presence meant member" rule) was changed to `none`, a breaking change for manifests relying on `kube-vnet/net.X: ""` to join. The ADR 0027 VAP still accepted `""` syntactically so old manifests weren't rejected at admission. `"true"` still mapped to `both`.
 
 ## Addendum 2026-05-05 — Legacy `true`/`false`/empty aliases dropped
 

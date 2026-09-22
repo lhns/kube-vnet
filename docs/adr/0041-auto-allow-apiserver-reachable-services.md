@@ -1,31 +1,8 @@
-> **Amendment (2026-09-11) — kube-vnet now runs a webhook of its own, and it deliberately does
-> not rely on this mechanism.**
->
-> This ADR unblocks *other people's* apiserver-reached Services. [ADR
-> 0034](0034-admission-webhook-for-pod-resolution.md) gives kube-vnet its own webhook Service,
-> which looks like a bootstrap dependency: the component that grants the apiserver access would be
-> the component the apiserver cannot reach.
->
-> It is not one. `cmd/main.go` unconditionally appends the operator's release namespace to
-> `--disabled-namespaces`, so that namespace is never managed: it gets no deny-all baseline, and
-> this reconciler skips it at the `NSFilter.IsManaged` gate. There is nothing to unblock, and no
-> auto-allow policy is generated for the operator's own webhook.
->
-> The invariant that keeps this true is "the operator's namespace is never managed". Anything
-> that weakens it — making the self-exclusion conditional, say — would turn the webhook's
-> reachability into a self-referential dependency, and with the validating webhook's
-> `failurePolicy: Fail` that is a cluster that cannot create pods. Do not weaken it.
-
 # ADR 0041 — Auto-allow Services reached by the apiserver
 
-> **Amendment (2026-06-29, same-day follow-up)**: the initial implementation emitted policies scoped to the Service-side port rather than the pod-side targetPort. NetworkPolicy is enforced after kube-proxy DNATs to `pod:targetPort`, so a Service-port allow doesn't actually permit the apiserver's traffic — admission silently times out. Symptom on the user's cluster:
->
-> ```
-> kube-vnet.ext.apiserver.cert-manager-webhook-943e7fca   To Port: 443/TCP   ← wrong
-> kubectl apply -f certs.yaml → context deadline exceeded                    ← still broken
-> ```
->
-> Fixed by reusing `resolveTargetPort` from `external_allow_controller.go` (ADR 0038) — walks backing pods, finds the containerPort whose name matches the Service's `targetPort: <name>`, returns its number (10250 for cert-manager-webhook). Pod watcher added to re-trigger emission when a previously-missing backing pod appears. Builder now returns `(policy, error)`; caller emits a Pending Event + 30s requeue on `errNamedPortUnresolvable`. The original anti-test (`TestBuildApiserverReachablePolicy_NamedTargetPortFallback`) that enshrined the broken behavior was removed; replaced with three tests asserting the correct contract plus two integration tests for the cert-manager-shape and the Pod-create-unblocks-Pending flow.
+> **Amendment (2026-09-11) — kube-vnet's own webhook does not depend on this mechanism.** [ADR 0034](0034-admission-webhook-for-pod-resolution.md) gives kube-vnet a webhook Service of its own, which looks like a bootstrap dependency: the component that grants the apiserver access would be the one the apiserver can't reach. It isn't one. `cmd/main.go` always appends the operator's namespace (`POD_NAMESPACE`, which `--webhook-enabled` requires) to the disabled list, so that namespace gets no deny-all baseline, this reconciler skips it at the `NSFilter.IsManaged` gate, and no auto-allow is needed. The invariant is "the operator's namespace is never managed". Weakening it would make the webhook's reachability self-referential, and with the validating webhook's `failurePolicy: Fail` the cluster could no longer create pods.
+
+> **Amendment (2026-06-29, same-day follow-up)**: the first implementation scoped policies to the Service `port`, but NetworkPolicy is enforced after kube-proxy DNATs to `pod:targetPort`, so admission still timed out (seen as `kube-vnet.ext.apiserver.cert-manager-webhook-…  To Port: 443/TCP` and `context deadline exceeded`). Fixed by reusing `resolveTargetPort` from `external_allow_controller.go` ([ADR 0038](0038-auto-allow-externally-exposed-services.md)), which resolves a named `targetPort` through the backing pods' `containerPort`s (10250 for cert-manager-webhook). A Pod watch re-triggers emission when a missing backing pod appears; an unresolvable named port emits a Pending Event and requeues after 30s (`errNamedPortUnresolvable`). The test that enshrined the broken behaviour was replaced with tests of the correct contract, including integration tests for the cert-manager shape and the Pod-create-unblocks-Pending flow.
 
 **Status**: Accepted (2026-06-29)
 
