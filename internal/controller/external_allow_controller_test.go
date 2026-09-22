@@ -296,13 +296,10 @@ func TestIsExternallyExposed_TypeTable(t *testing.T) {
 }
 
 func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
-	// Replaces TestExternalAllowPolicyToService_DerivesFromLabel. The handler
-	// no longer parses LabelSource back into a Service name (that value is now
-	// length-bounded and no longer round-trips — ADR 0011 amended); it enqueues
-	// by owner reference instead. The same separation the old mapper enforced —
-	// don't act on the ApiserverReachableReconciler's or the HostPortReconciler's
-	// policies — now lives in the watch predicate, so it is asserted here.
-	pred := externalAllowPolicyPredicate()
+	// The watch enqueues by owner reference, so this predicate is what keeps
+	// the Service-source reconciler off the apiserver-reachable and host-port
+	// policies.
+	pred := externalAllowPolicyPredicate(LabelSourceKindService)
 
 	cases := []struct {
 		name string

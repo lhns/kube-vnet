@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,7 +13,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -32,28 +32,11 @@ import (
 // close, because external-traffic source IPs (node-SNAT after kube-proxy
 // or the original client IP) never match any namespaceSelector.
 //
-// The emitted policy is additive: it shares the namespace with kube-vnet's
-// baseline + membership policies, and NetworkPolicy union semantics mean
-// internal pod-to-pod isolation is preserved while the externally-exposed
-// targetPort becomes reachable from `ipBlock: 0.0.0.0/0`.
+// The policy is additive (NetworkPolicy union), so vnet isolation is
+// unchanged; only the exposed targetPorts open to `0.0.0.0/0`.
 //
-// Default-on. Opt-out via the `kube-vnet/external-allow=false` annotation
-// on the Service or on its Namespace.
-//
-// Watches:
-//   - corev1.Service                  primary trigger; ports/selector/type/annotations
-//   - corev1.Namespace                catches mid-flight kube-vnet/disabled or
-//     kube-vnet/external-allow flips
-//   - networkingv1.NetworkPolicy      drift correction (filtered by role label)
-//   - corev1.Pod (Create only)        unblocks named-targetPort resolution when a
-//     backing pod with the matching container-port
-//     name appears (closes the up-to-30s requeue
-//     latency for Service-before-Pod ordering)
-//
-// Note: hostPort container detection and hostNetwork pod warnings are
-// deliberately scoped out of v1; NetworkPolicy enforcement on host-network
-// pods is CNI-dependent (see ADR 0038 "out of scope") and per-pod hostPort
-// policies need a label-stamping design that's worth its own iteration.
+// Default-on. Opt out with `kube-vnet/external-allow=false` on the Service or
+// its Namespace.
 type ExternalAllowReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -74,12 +57,8 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Service gone. The owner-reference cascade on the apiserver
-			// side handles the policy delete in a real cluster — but
-			// (a) envtest doesn't run the GC controller, and (b) the
-			// owner-ref could be missing on a pre-existing policy from
-			// before this code shipped. Defensive: explicitly delete by
-			// computed name. Idempotent (NotFound on the policy is fine).
+			// Owner-ref GC deletes the policy in a real cluster; delete by
+			// label too, for when GC doesn't run (envtest).
 			return ctrl.Result{}, r.deletePolicyByServiceKey(ctx, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
@@ -102,8 +81,7 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 
-	// Resolve named targetPorts by listing pods in the NS. Pods are watched
-	// elsewhere so the cache is already warm; List() is cheap.
+	// Pods resolve named targetPorts.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
 		return ctrl.Result{}, err
@@ -119,14 +97,9 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	if desired == nil {
-		// Service isn't externally exposed (ClusterIP without externalIPs,
-		// headless, ExternalName, no selector). Clear any stale policy and exit.
-		//
-		// One sub-case is silently confusing: a Service IS externally typed
-		// (LB/NodePort/ClusterIP+externalIPs) but has no spec.selector
-		// (manually-managed Endpoints — the `kubernetes` Service in default,
-		// or a Service abstracting an external database). Surface a Skipped
-		// Event so `kubectl describe svc` explains the gap.
+		// Not externally exposed, or no selector to mirror. An exposed
+		// Service without a selector (manually-managed Endpoints) gets an
+		// Event, since its missing policy is otherwise unexplained.
 		if isExternallyExposed(svc) && len(svc.Spec.Selector) == 0 {
 			r.Recorder.Eventf(svc, nil, corev1.EventTypeNormal, "Skipped", "Reconcile",
 				"external-allow skipped: Service has no spec.selector (manually-managed Endpoints); cannot derive a podSelector. Add a selector or write your own NetworkPolicy.")
@@ -134,8 +107,8 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 
-	// Owner-reference so apiserver GC handles cascade-delete when the
-	// Service is deleted, even if the operator is briefly down.
+	// Owner ref, so GC deletes the policy with the Service even while the
+	// operator is down.
 	if err := controllerutil.SetControllerReference(svc, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -147,15 +120,9 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, err
 	}
 
-	// Self-heal: sweep stale external-allow policies for THIS Service.
-	// Uses the owner-reference rather than LabelSource because the latter
-	// has changed format twice (pre-ADR-0039 bare name → svc-prefixed),
-	// and owner-refs are stable across labeling changes. Filter still
-	// includes role=external-allow to bound the List() to the relevant
-	// candidates; the owner-ref check inside the sweep does the per-
-	// Service narrowing, and claimedByOtherSourceKind exempts the
-	// ApiserverReachableReconciler's policies (same owner, same role,
-	// different source-kind) from OUR sweep.
+	// Sweep this Service's stale policies by owner ref, which also catches
+	// legacy names and labels. claimedByOtherSourceKind spares the
+	// apiserver-reachable policy on the same Service.
 	keep := map[client.ObjectKey]bool{
 		{Namespace: svc.Namespace, Name: desired.Name}: true,
 	}
@@ -172,36 +139,19 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-// claimedByOtherSourceKind reports whether an external-allow policy
-// belongs to a DIFFERENT reconciler family than the Service-source one.
-// The ApiserverReachableReconciler (ADR 0041) also sets the Service as
-// controller-owner and stamps role=external-allow — only the source-kind
-// label distinguishes its policies from ours. Policies with source-kind
-// set to anything but `svc` are another family's; policies with NO
-// source-kind label are pre-ADR-0039/0040 legacy Service-source policies
-// that we must still sweep for the rename migration.
-//
-// Without this exemption, every reconcile of a not-externally-exposed
-// Service (e.g. a plain ClusterIP webhook backend like
-// cert-manager-webhook) deleted the apiserver-reachable policy for the
-// same Service — the ApiserverReachableReconciler's drift watch then
-// recreated it, in a permanent delete/recreate loop with windows where
-// the apiserver→webhook allow was absent.
+// claimedByOtherSourceKind reports whether an external-allow policy belongs
+// to another reconciler. The apiserver-reachable policy has the same owner
+// and role as ours and differs only by source-kind; sweeping it would start a
+// delete/recreate loop with that reconciler, leaving windows where the
+// apiserver cannot reach the webhook. Policies with no source-kind label
+// predate ADR 0039/0040 and are ours to sweep.
 func claimedByOtherSourceKind(p *networkingv1.NetworkPolicy) bool {
 	sk, ok := p.Labels[LabelSourceKind]
 	return ok && sk != LabelSourceKindService
 }
 
-// deletePolicyForService removes every Service-source external-allow
-// policy owned by this Service. Uses the owner-ref-based sweeper with
-// an empty keep set — handles both current (`ext.svc.<name>`) and
-// legacy (`external-<name>`) name formats because both carry the same
-// OwnerReference back to the Service. The apiserver-reachable policy for
-// the same Service (also Service-owned, also role=external-allow) is
-// exempted via claimedByOtherSourceKind — it belongs to the
-// ApiserverReachableReconciler and is cleaned up on ITS terms (discovery
-// resource removed / annotation opt-out), not because the Service
-// stopped being externally exposed.
+// deletePolicyForService removes every Service-source external-allow policy
+// owned by this Service, current and legacy names alike.
 func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
 	return sweepStalePoliciesByOwner(ctx, r.Client,
 		inNamespacePolicyLabels(svc.Namespace, map[string]string{
@@ -213,14 +163,9 @@ func (r *ExternalAllowReconciler) deletePolicyForService(ctx context.Context, sv
 	)
 }
 
-// deletePolicyByServiceKey is used on the Service-NotFound path where we
-// don't have the Service object (or its UID). Without UID we can't
-// owner-ref-match strictly, but the label-based filter on LabelSource
-// catches the current-format policy directly, and any legacy-format
-// policy will already have been cascade-deleted by apiserver GC when
-// the Service was deleted (the OwnerReference's UID match triggered
-// the cascade). So this path is the no-UID fallback and only handles
-// current-format policies.
+// deletePolicyByServiceKey handles the Service-NotFound path: with no UID to
+// match owner refs against, it deletes by LabelSource. Legacy-format policies
+// are left to owner-ref GC.
 func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
 	return sweepStalePolicies(ctx, r.Client,
 		inNamespacePolicyLabels(namespace, map[string]string{
@@ -239,15 +184,13 @@ func (r *ExternalAllowReconciler) deletePolicyByServiceKey(ctx context.Context, 
 //	(nil, nil)                          — Service isn't externally exposed; no policy
 //	(nil, errNamedPortUnresolvable)     — named targetPort cannot be resolved yet
 //
-// Multi-port Services that contain ONE unresolvable named targetPort return
-// the error rather than partial emission — a partial policy creates a
-// confusing "this port works, that one doesn't" state. Full requeue.
+// One unresolvable named targetPort fails the whole Service rather than
+// emitting a partial policy where some ports work and others don't.
 func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*networkingv1.NetworkPolicy, error) {
 	if !isExternallyExposed(svc) {
 		return nil, nil
 	}
 	if len(svc.Spec.Selector) == 0 {
-		// Headless / manually-managed Endpoints. No podSelector to mirror.
 		return nil, nil
 	}
 
@@ -281,16 +224,12 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 				LabelK8sManagedBy: LabelManagedByValue,
 				LabelRole:         LabelRoleExternalAllow,
 				LabelSourceKind:   LabelSourceKindService,
-				// Symmetric with host-source's `host-<port>-<proto>`:
-				// `svc-<name>`. Kind is also carried explicitly in
-				// LabelSourceKind above; the prefix here is for readability
-				// when staring at `kubectl get netpol -o yaml`.
-				LabelSource: SourceLabelValue("svc-", svc.Namespace, svc.Name),
+				LabelSource:       SourceLabelValue("svc-", svc.Namespace, svc.Name),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
-				MatchLabels: cloneStringMap(svc.Spec.Selector),
+				MatchLabels: maps.Clone(svc.Spec.Selector),
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
@@ -324,7 +263,7 @@ func isExternallyExposed(svc *corev1.Service) bool {
 	case corev1.ServiceTypeLoadBalancer, corev1.ServiceTypeNodePort:
 		return true
 	case corev1.ServiceTypeClusterIP, "":
-		// "" is the legacy default (treated as ClusterIP by the apiserver).
+		// "" defaults to ClusterIP.
 		return len(svc.Spec.ExternalIPs) > 0
 	}
 	return false
@@ -371,9 +310,7 @@ func resolveTargetPort(sp corev1.ServicePort, selector map[string]string, pods [
 }
 
 // labelsMatchSelector returns true if `labels` contains every key/value pair
-// in `selector`. Empty selector returns false — Services without a selector
-// aren't externally-exposed in the sense we care about (no podSelector to
-// mirror; we never reach this function for them).
+// in `selector`. An empty selector matches nothing.
 func labelsMatchSelector(labels, selector map[string]string) bool {
 	if len(selector) == 0 {
 		return false
@@ -386,21 +323,17 @@ func labelsMatchSelector(labels, selector map[string]string) bool {
 	return true
 }
 
-// externalAllowPolicyName returns a deterministic policy name for a
-// Service-source external-allow policy. Per ADR 0039 the shape is
-// `kube-vnet.ext.svc.<svcName>-<8hex>`, total ≤63 chars (Kubernetes name
-// limit). The hash makes truncated names unique by the full <ns>/<name>.
-//
-// "ext" is the kind (external-allow); "svc" distinguishes Service-source
-// policies from the future hostPort-source `kube-vnet.ext.host.*` shape
-// (per ADR 0040). The Service name appears literally — a Service named
-// `external-foo` produces `kube-vnet.ext.svc.external-foo-<hash>`, which
-// looks redundant but is structurally fine. The policy is in the
-// Service's NS only (no cross-NS replication), so no NS-in-name is
-// needed; cross-NS name collisions are impossible (NetworkPolicy is
-// namespaced).
+// externalAllowPolicyName returns the Service-source policy name,
+// `kube-vnet.ext.svc.<svcName>-<8hex>` (ADR 0039).
 func externalAllowPolicyName(svc *corev1.Service) string {
-	const prefix = "kube-vnet." + PolicyKindExternal + "." + PolicySourceKindService + "."
+	return servicePolicyName(PolicySourceKindService, svc)
+}
+
+// servicePolicyName returns `kube-vnet.ext.<sourceKind>.<svcName>-<8hex>`,
+// truncating the Service name to stay within the 63-char name limit. The hash
+// is over <ns>/<name>, so truncated names stay unique.
+func servicePolicyName(sourceKind string, svc *corev1.Service) string {
+	prefix := "kube-vnet." + PolicyKindExternal + "." + sourceKind + "."
 	const hashLen = 8
 	const maxNameLen = 63
 	maxBase := maxNameLen - len(prefix) - 1 - hashLen
@@ -412,124 +345,87 @@ func externalAllowPolicyName(svc *corev1.Service) string {
 	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 
-func cloneStringMap(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-// externalAllowPolicyPredicate bounds the NetworkPolicy watch to policies this
-// reconciler owns.
-//
-// The source-kind check mirrors apiserverPolPredicate and is load-bearing: the
-// ApiserverReachableReconciler's policies carry the SAME owner (the Service) and
-// the same role, differing only by source-kind. Since the handler enqueues by
-// owner reference rather than by parsing LabelSource (which is now
-// length-bounded and no longer round-trips to a name — ADR 0011 amended), this
-// predicate is what keeps the two reconcilers from fighting over each other's
-// policies. The map func it replaced did that filtering inline.
-//
-// HostPort policies need no exclusion: they carry no Service owner, so an
-// owner-ref handler never resolves them to a request at all.
-func externalAllowPolicyPredicate() predicate.Predicate {
+// externalAllowPolicyPredicate bounds a NetworkPolicy watch to managed
+// external-allow policies of one source kind. The Service-source and
+// apiserver-reachable policies share an owner (the Service) and a role, and
+// both watches enqueue by owner reference, so the source-kind check is what
+// keeps those two reconcilers off each other's policies.
+func externalAllowPolicyPredicate(sourceKind string) predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		l := obj.GetLabels()
 		return l[LabelManagedBy] == LabelManagedByValue &&
 			l[LabelRole] == LabelRoleExternalAllow &&
-			l[LabelSourceKind] == LabelSourceKindService
+			l[LabelSourceKind] == sourceKind
 	})
 }
 
+// podCreateOnly passes pod creates only: a new pod is the only event that can
+// unblock a previously-unresolvable named targetPort. Updates can't add a
+// container port name without recreating the pod, and deletes only remove
+// candidates. Without this watch the pending case recovers only on the 30s
+// requeue.
+var podCreateOnly = predicate.Funcs{
+	CreateFunc:  func(event.CreateEvent) bool { return true },
+	UpdateFunc:  func(event.UpdateEvent) bool { return false },
+	DeleteFunc:  func(event.DeleteEvent) bool { return false },
+	GenericFunc: func(event.GenericEvent) bool { return false },
+}
+
 func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Re-enqueue the source Service when an external-allow policy event
-	// fires (delete = drift correction; user-edit-then-update = SSA reapply).
-	extPolPredicate := externalAllowPolicyPredicate()
-
-	// Pod creates only — a new pod is the only event that can unblock a
-	// previously-unresolvable named targetPort. Pod updates/deletes never
-	// help: updates can't add a container port name without recreating the
-	// pod, and deletes remove a (possibly-resolving) endpoint without
-	// adding new ones. Without this watcher, the named-port pending case
-	// recovers only on the 30s requeue.
-	podCreateOnly := predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		UpdateFunc:  func(event.UpdateEvent) bool { return false },
-		DeleteFunc:  func(event.DeleteEvent) bool { return false },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("external-allow").
 		For(&corev1.Service{}).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			// Owner-ref rather than parsing LabelSource: that value is now
-			// length-bounded (SourceLabelValue), so it no longer round-trips to a
-			// Service name. Owner-refs are set on every generated policy, are
-			// stable across label-format changes, and extPolPredicate still bounds
-			// the watch. See ADR 0011 (amended).
+			// By owner ref: LabelSource is length-bounded and doesn't
+			// round-trip to a Service name (ADR 0011).
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
 				&corev1.Service{}, handler.OnlyControllerOwner()),
-			builder.WithPredicates(extPolPredicate),
+			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindService)),
 		).
 		Watches(
 			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToServices),
+			handler.EnqueueRequestsFromMapFunc(namespaceToServices(r.Client)),
 		).
 		Watches(
 			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.podToServicesWithNamedPorts),
+			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
 			builder.WithPredicates(podCreateOnly),
 		).
 		Complete(r)
 }
 
-// namespaceToServices enqueues every Service in a namespace when the NS
-// changes. Catches the "annotated kube-vnet/external-allow=false mid-flight"
-// case where no Service event fires but the existing policies should go
-// away. List is bounded to one NS — cheap.
-func (r *ExternalAllowReconciler) namespaceToServices(ctx context.Context, obj client.Object) []reconcile.Request {
-	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetName())); err != nil {
-		return nil
+// namespaceToServices enqueues every Service in a namespace when it changes,
+// so a Namespace-level opt-out reaches Services that saw no event.
+func namespaceToServices(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return servicesInNamespace(ctx, c, obj.GetName(), nil)
 	}
-	out := make([]reconcile.Request, 0, len(svcs.Items))
-	for i := range svcs.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
-		})
-	}
-	return out
 }
 
-// podToServicesWithNamedPorts enqueues every Service in the new pod's
-// namespace that has at least one named (string-typed) targetPort. Those
-// are the only Services whose policy emission might have been blocked
-// waiting for this pod's container-port names; numeric-targetPort Services
-// don't depend on Pod state at all. Bounded by NS size.
-func (r *ExternalAllowReconciler) podToServicesWithNamedPorts(ctx context.Context, obj client.Object) []reconcile.Request {
+// podToServicesWithNamedPorts enqueues the Services in the pod's namespace
+// that use a named targetPort, the only ones whose emission can be waiting on
+// a pod.
+func podToServicesWithNamedPorts(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return servicesInNamespace(ctx, c, obj.GetNamespace(), hasNamedTargetPort)
+	}
+}
+
+// servicesInNamespace returns a request per Service in ns that passes keep
+// (every Service if keep is nil).
+func servicesInNamespace(ctx context.Context, c client.Reader, ns string, keep func(*corev1.Service) bool) []reconcile.Request {
 	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := c.List(ctx, &svcs, client.InNamespace(ns)); err != nil {
 		return nil
 	}
-	out := make([]reconcile.Request, 0)
+	var out []reconcile.Request
 	for i := range svcs.Items {
-		if !hasNamedTargetPort(&svcs.Items[i]) {
+		if keep != nil && !keep(&svcs.Items[i]) {
 			continue
 		}
 		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
+			NamespacedName: client.ObjectKeyFromObject(&svcs.Items[i]),
 		})
 	}
 	return out

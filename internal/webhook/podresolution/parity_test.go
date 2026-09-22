@@ -155,7 +155,7 @@ func TestWebhookAndReconcilerAgree(t *testing.T) {
 				t.Errorf("webhook stamped %v, want %v", viaWebhook, tc.want)
 			}
 			if !reflect.DeepEqual(viaController, viaWebhook) {
-				t.Errorf("PATHS DISAGREE: reconciler %v, webhook %v. The admission and "+
+				t.Errorf("paths disagree: reconciler %v, webhook %v. The admission and "+
 					"controller paths must resolve identically, or a pod's membership "+
 					"depends on which one reached it first", viaController, viaWebhook)
 			}

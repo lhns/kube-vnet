@@ -3,6 +3,7 @@ package podresolution
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -15,38 +16,28 @@ import (
 )
 
 // Validator enforces that the `kube-vnet.system/*` labels on a pod are the
-// ones resolution actually produces.
+// ones resolution produces.
 //
-// It replaces the pods rule of the system-labels ValidatingAdmissionPolicy,
-// which could not survive the Mutator. A mutating webhook's patch is
-// attributed to the *original requester*, never to the operator's
-// ServiceAccount, so the VAP's username exemption does not cover it: with
-// the Mutator running, that policy would reject every pod creation in a
-// managed namespace. (ADR 0034's "VAP exemption" section assumed otherwise
-// and is wrong.)
+// It replaces the pods rule of the system-labels ValidatingAdmissionPolicy.
+// The Mutator's patch is attributed to the requesting user, not the operator,
+// so the VAP's username exemption would reject every pod the Mutator stamps.
+// Unlike CEL, this handler can recompute resolution, so instead of "only the
+// operator may touch these labels" it checks that a stamp matches resolution.
+// It runs with `failurePolicy: Fail`, so forgery stays impossible while the
+// operator is down.
 //
-// CEL cannot recompute resolution, so the VAP could only enforce "nobody
-// but the operator may touch these labels". This handler can recompute, so
-// it enforces the stronger property directly — a forged stamp that
-// disagrees with resolution is rejected, and one that agrees is by
-// definition the correct value. It runs with `failurePolicy: Fail`, keeping
-// the policy's posture that forgery is impossible even while the operator
-// is unreachable.
+// Only the delta is policed; enforcing the full set would deny an unrelated
+// edit on a pod whose stamps are mid-reconcile. Both rules accept the
+// Mutator's output:
 //
-// Only the *delta* is policed. A label the request did not touch is the
-// reconciler's problem, not the requester's: enforcing the full set would
-// deny an innocent `kubectl annotate` on a pod whose stamps happen to be
-// mid-reconcile. Two rules, both satisfied by the Mutator's own output:
+//  1. a managed label the request adds or changes must equal the resolved
+//     value;
+//  2. a managed label the request removes must no longer be resolved, which
+//     still lets the Mutator prune a stamp whose join label the same request
+//     removed.
 //
-//  1. a managed label this request adds or changes must equal the resolved
-//     value — blocks forging membership;
-//  2. a managed label this request removes must no longer be resolved —
-//     blocks stripping a still-valid stamp, while still allowing the
-//     Mutator to prune a stamp whose join label the same request removed.
-//
-// Annotations are deliberately not policed, matching the VAP. Forging
-// `resolved-generation` alone buys nothing: membership also requires a
-// stamp, and stamps can no longer be forged.
+// Annotations are not policed, matching the VAP: a forged
+// `resolved-generation` grants nothing without a stamp.
 type Validator struct {
 	Resolver *controller.Resolver
 	Reader   client.Reader
@@ -77,18 +68,15 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 	}
 	newManaged := managedLabels(pod)
 
-	// Nothing to police. Checked before the namespace lookup and the
-	// resolve so the overwhelmingly common case — a pod nobody is trying
-	// to forge stamps on — costs one map scan.
-	if equalLabels(oldManaged, newManaged) {
+	// Checked first so the common case skips the namespace lookup and the
+	// resolve.
+	if maps.Equal(oldManaged, newManaged) {
 		return admission.Allowed("no change to kube-vnet.system labels")
 	}
 
 	desired := map[string]string{}
-	managed, err := v.namespaceManaged(ctx, req.Namespace)
+	managed, err := namespaceManaged(ctx, v.Reader, v.NSFilter, req.Namespace)
 	if err != nil {
-		// failurePolicy: Fail — an unreachable operator blocks the write
-		// rather than letting an unverifiable stamp through.
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 	if managed {
@@ -97,12 +85,12 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 			return admission.Errored(http.StatusInternalServerError, err)
 		}
 	}
-	// An unmanaged namespace resolves to no stamps at all, so any label
-	// added there is by definition unresolved and gets rejected below.
+	// An unmanaged namespace resolves to nothing, so any stamp added there is
+	// rejected below.
 
 	var bad []string
 	for k, val := range newManaged {
-		if oldManaged[k] == val {
+		if old, had := oldManaged[k]; had && old == val {
 			continue // untouched by this request
 		}
 		want, ok := desired[k]
@@ -132,11 +120,6 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 	return admission.Allowed("kube-vnet.system labels match resolved membership")
 }
 
-func (v *Validator) namespaceManaged(ctx context.Context, name string) (bool, error) {
-	m := &Mutator{Reader: v.Reader, NSFilter: v.NSFilter}
-	return m.namespaceManaged(ctx, name)
-}
-
 func managedLabels(pod *corev1.Pod) map[string]string {
 	out := map[string]string{}
 	for k, v := range pod.Labels {
@@ -145,16 +128,4 @@ func managedLabels(pod *corev1.Pod) map[string]string {
 		}
 	}
 	return out
-}
-
-func equalLabels(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
