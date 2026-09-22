@@ -15,31 +15,29 @@ jobs:
         with:
           go-version: '1.26'
           cache: true
+      # Before the tests: some unit tests render the chart with helm.
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.3
       - name: go vet
         run: go vet ./...
       - name: go build
         run: go build ./...
       - name: go test (unit)
         run: go test ./... -count=1
-      - uses: azure/setup-helm@v5
-        with:
-          version: v3.16.3
       - name: verify generated code is up to date
         run: |
-          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.16.5
-          $(go env GOPATH)/bin/controller-gen object paths="./api/v1alpha1/..."
-          $(go env GOPATH)/bin/controller-gen crd paths="./api/v1alpha1/..." output:crd:dir=config/crd/bases
-          $(go env GOPATH)/bin/controller-gen rbac:roleName=kube-vnet-manager paths="./internal/controller/..." output:rbac:dir=config/rbac
-          # Re-render the chart-derived kustomize VAPs (Stage D / ADR 0030).
-          make render-kustomize-vaps
           python3 -c "import yaml" 2>/dev/null || pip install --quiet pyyaml
-          # Re-render the chart's CRD templates. They are a second copy of the
-          # CRDs; a stale copy breaks `helm install` (the seeded CVNB fails
-          # validation against an outdated schema) and only e2e would catch it.
-          make chart-crds
-          # Re-generate the downstream CRD JSON schemas (kubeconform, ADR 0043).
-          make schemas
+          # Deepcopy, CRDs, RBAC, the chart's CRD templates, the CRD JSON
+          # schemas and the chart-derived kustomize VAPs.
+          make generate manifests render-kustomize-vaps
           git diff --exit-code
+          # git diff does not see a newly generated (untracked) file, such as
+          # the chart template or schema for a new CRD.
+          untracked=$(git status --porcelain --untracked-files=all)
+          if [ -n "$untracked" ]; then
+            echo "generated files not committed:"; echo "$untracked"; exit 1
+          fi
 
   integration:
     runs-on: ubuntu-latest
@@ -127,3 +125,13 @@ jobs:
             --set operator.clusterBaseline.memberships.cluster=default-egress \
             --set podMonitor.enabled=true \
             --set metricsService.enabled=true > /dev/null
+      - name: helm template (admission webhook, each certSource)
+        run: |
+          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=true > /dev/null
+          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=true \
+            --set webhook.certSource=cert-manager \
+            --set webhook.certManager.issuerRef.name=ci-issuer > /dev/null
