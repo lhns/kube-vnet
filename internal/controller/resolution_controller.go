@@ -217,25 +217,12 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 
 // desiredHostPortStamps returns the `kube-vnet.system/host-port.<port>.<proto>`
 // keys for every hostPort the pod declares (ADR 0040), for the
-// HostPortReconciler to select on. Empty for hostNetwork pods, where
-// NetworkPolicy enforcement is CNI-dependent.
+// HostPortReconciler to select on. Uses the same key set as that reconciler,
+// so hostNetwork pods get none.
 func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 	out := map[string]bool{}
-	if pod.Spec.HostNetwork {
-		return out
-	}
-	for _, c := range pod.Spec.Containers {
-		for _, cp := range c.Ports {
-			if cp.HostPort == 0 {
-				continue
-			}
-			proto := cp.Protocol
-			if proto == "" {
-				proto = corev1.ProtocolTCP
-			}
-			stamp := LabelSystemHostPortPrefix + fmt.Sprintf("%d.%s", cp.HostPort, strings.ToLower(string(proto)))
-			out[stamp] = true
-		}
+	for key := range desiredHostPortKeys([]corev1.Pod{*pod}) {
+		out[LabelSystemHostPortPrefix+key.String()] = true
 	}
 	return out
 }
