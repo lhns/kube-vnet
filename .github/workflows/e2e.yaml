@@ -110,13 +110,15 @@ jobs:
           # missing the tests below would pass for the wrong reason.
           kubectl get mutatingwebhookconfiguration kube-vnet-controller-pod-resolution
           kubectl get validatingwebhookconfiguration kube-vnet-controller-pod-resolution
-          # The system-labels policy must NOT cover pods here: with the mutator
-          # running it would reject every pod creation in a managed namespace.
-          if kubectl get validatingadmissionpolicy \
+          # The system-labels policy must leave pods in the webhook's scope
+          # alone: with the mutator running it would reject every pod creation
+          # in a managed namespace. Its match condition limits it to the pods
+          # the webhook excludes.
+          if ! kubectl get validatingadmissionpolicy \
                kube-vnet-controller-system-labels-protected \
-               -o jsonpath='{.spec.matchConstraints.resourceRules[*].resources}' \
-               | tr ' ' '\n' | grep -qx '\["pods"\]'; then
-            echo "FAIL: the system-labels VAP still covers pods while the webhook is enabled."
+               -o jsonpath='{.spec.matchConditions[*].name}' \
+               | tr ' ' '\n' | grep -qx 'pod-outside-webhook-scope'; then
+            echo "FAIL: the system-labels VAP covers all pods while the webhook is enabled."
             exit 1
           fi
 

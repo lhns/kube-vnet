@@ -27,22 +27,10 @@ spec:
   failurePolicy: Fail
   matchConstraints:
     resourceRules:
-      {{- /*
-      Pods are covered here ONLY while the admission webhook is disabled.
-      A mutating webhook's patch is attributed to the requester, not to the
-      operator's ServiceAccount, so the username exemption below does not
-      cover it — with the webhook running, this rule would reject every pod
-      creation in a managed namespace. The validating webhook enforces the
-      stronger property in its place: system labels must equal what
-      resolution produces, which CEL cannot check because it cannot resolve.
-      See ADR 0034.
-      */}}
-      {{- if not .Values.webhook.enabled }}
       - apiGroups:   [""]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
         resources:   ["pods"]
-      {{- end }}
       - apiGroups:   ["networking.k8s.io"]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
@@ -51,6 +39,40 @@ spec:
         apiVersions: ["v1alpha1"]
         operations:  ["CREATE", "UPDATE"]
         resources:   ["virtualnetworks"]
+  {{- if .Values.webhook.enabled }}
+  {{- /*
+  With the admission webhook on, pods it admits are left to the validating
+  webhook (ADR 0034). This policy would reject every pod creation there: the
+  mutator's stamps are attributed to the requester, not to the operator's
+  ServiceAccount, so the username exemption below does not cover them. The
+  validating webhook enforces the stronger property instead (stamps must
+  equal what resolution produces, which CEL cannot compute).
+
+  Pods the webhooks' selectors exclude (kube-vnet.webhookSelectors) are
+  still policed here, so no namespace is left without either check. A pod
+  is excluded by its namespace, or by carrying the chart's
+  app.kubernetes.io/name label; on UPDATE the webhook is skipped only when
+  both the old and the new pod carry it.
+  */}}
+  {{- $nameKey := quote "app.kubernetes.io/name" }}
+  {{- $name := include "kube-vnet.name" . | quote }}
+  matchConditions:
+    - name: pod-outside-webhook-scope
+      expression: |
+        request.resource.resource != "pods" ||
+        request.namespace in {{ include "kube-vnet.webhookExcludedNamespaces" . }} ||
+        (
+          {{ $nameKey }} in object.metadata.?labels.orValue({}) &&
+          object.metadata.labels[{{ $nameKey }}] == {{ $name }} &&
+          (
+            oldObject == null ||
+            (
+              {{ $nameKey }} in oldObject.metadata.?labels.orValue({}) &&
+              oldObject.metadata.labels[{{ $nameKey }}] == {{ $name }}
+            )
+          )
+        )
+  {{- end }}
   variables:
     # The system-label prefix kube-vnet.system/ is reserved for operator output.
     - name: systemPrefix

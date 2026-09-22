@@ -10,18 +10,18 @@ Two handlers, deliberately asymmetric:
     than over-permissive, and the reconciler stamps it moments later.
 
   * VALIDATING, failurePolicy: Fail — enforces that those labels are the ones
-    resolution actually produces. It replaces the pods rule of the
-    system-labels VAP, which cannot survive the mutator: a mutating webhook's
-    patch is attributed to the REQUESTER, never to the operator's
-    ServiceAccount, so the VAP's username exemption would reject every pod
-    creation in a managed namespace. Fail preserves that VAP's posture — a
+    resolution actually produces. For the pods it sees, it replaces the
+    pods rule of the system-labels VAP, which cannot survive the mutator: a
+    mutating webhook's patch is attributed to the REQUESTER, never to the
+    operator's ServiceAccount, so the VAP's username exemption would reject
+    every pod creation in a managed namespace. Fail preserves that VAP's posture — a
     forged stamp is impossible even while the operator is unreachable — at
     the cost of blocking pod creation in managed namespaces during an
     operator outage. That trade is deliberate; see values.yaml.
 
 Both configurations carry identical selectors. A pod the mutator skips but
 the validator judges would be evaluated against a resolution the mutator
-never applied.
+never applied. The pods the selectors exclude stay under the VAP.
 */}}
 {{- if .Values.webhook.enabled }}
 {{- $fullname := include "kube-vnet.fullname" . }}
