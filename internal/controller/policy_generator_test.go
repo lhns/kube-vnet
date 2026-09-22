@@ -276,15 +276,6 @@ func TestPolicyNames_KindPrefix(t *testing.T) {
 	}
 }
 
-func TestJoinLabelKey(t *testing.T) {
-	if got := JoinLabelKey("kube-vnet/", "platform", "payments", "platform"); got != "kube-vnet/net.payments" {
-		t.Errorf("same-ns: %s", got)
-	}
-	if got := JoinLabelKey("kube-vnet/", "platform", "payments", "webapp"); got != "kube-vnet/net.platform.payments" {
-		t.Errorf("foreign: %s", got)
-	}
-}
-
 func TestParseDirection(t *testing.T) {
 	type tc struct {
 		in   string

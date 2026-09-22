@@ -69,13 +69,6 @@ func NewNamespaceFilter(excluded []string) *NamespaceFilter {
 	return &NamespaceFilter{Excluded: set}
 }
 
-// IsManagedName returns false if the namespace name is in the operator-level
-// exclusion list. Use IsManaged when you have the Namespace object (it
-// additionally honors the per-namespace annotation).
-func (f *NamespaceFilter) IsManagedName(name string) bool {
-	return !f.Excluded[name]
-}
-
 // IsManaged returns false if the namespace is in the operator-level excluded
 // list or carries the AnnotationDisabled annotation set to "true".
 func (f *NamespaceFilter) IsManaged(ns *corev1.Namespace) bool {

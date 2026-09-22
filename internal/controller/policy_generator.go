@@ -101,12 +101,6 @@ const (
 	// (k8s >=1.22) — used for namespaceSelector matching.
 	NamespaceMetadataNameLabel = "kubernetes.io/metadata.name"
 
-	// DNSAppLabelKey/Value match the standard CoreDNS pod label.
-	DNSAppLabelKey   = "k8s-app"
-	DNSAppLabelValue = "kube-dns"
-	// KubeSystemNamespace is the well-known namespace housing CoreDNS.
-	KubeSystemNamespace = "kube-system"
-
 	// DefaultLabelPrefix is the default label key prefix for the join labels and
 	// operator-internal labels. Configurable at runtime.
 	DefaultLabelPrefix = "kube-vnet/"
@@ -118,7 +112,6 @@ const (
 	// NetworkPolicy carries one of these as the second dot-segment of its
 	// name, making the kind visible at a glance instead of implicit in
 	// segment count. Format: `kube-vnet.<kind>.<identity>-<8hex>`.
-	PolicyKindBaseline   = "base"
 	PolicyKindMembership = "mem"
 	PolicyKindExternal   = "ext"
 
@@ -257,21 +250,6 @@ type GenerateOutput struct {
 	Policies []networkingv1.NetworkPolicy
 }
 
-// JoinLabelKey returns the label key a pod sets to join the given VirtualNetwork
-// from inPodNS. For pods in the home namespace the bare form
-// "<prefix>net.<vnet>" works. The prefixed form
-// "<prefix>net.<homeNS>.<vnet>" works in any namespace including the home one.
-//
-// This is the user-facing input scheme (per ADR 0022 — both forms are
-// accepted on inputs). The resolution controller normalizes both to the
-// canonical FQ form on the operator-output side; see SystemLabelKey.
-func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
-	if inPodNS == homeNS {
-		return prefix + "net." + vnet
-	}
-	return prefix + "net." + homeNS + "." + vnet
-}
-
 // SystemLabelKey returns the canonical operator-stamped label key for a
 // vnet. Per ADR 0033, the form is `kube-vnet.system/net.<homeNS>.<vnet>`;
 // per the ADR 0033 Amendment, the cluster system vnet collapses to bare
@@ -389,11 +367,6 @@ func hasReceiver(byDir map[Direction][]string) bool {
 func hasInitiator(byDir map[Direction][]string) bool {
 	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionEgress]) > 0
 }
-
-// dirHasIngress reports whether a binding's direction should produce a
-// self-policy. Bindings with `egress` or `none` direction get no self-
-// policy (they accept no ingress).
-func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == DirectionIngress }
 
 // Generate returns the desired NetworkPolicy set for a VirtualNetwork.
 //

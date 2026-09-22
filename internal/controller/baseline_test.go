@@ -42,11 +42,8 @@ func TestDesiredBaseline_DenyAll(t *testing.T) {
 
 func TestNamespaceFilter(t *testing.T) {
 	f := NewNamespaceFilter([]string{"kube-system", "kube-public"})
-	if f.IsManagedName("kube-system") {
+	if f.IsManaged(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}}) {
 		t.Errorf("kube-system should be excluded")
-	}
-	if !f.IsManagedName("platform") {
-		t.Errorf("platform should be managed")
 	}
 	if !f.IsManaged(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "platform"}}) {
 		t.Errorf("plain platform should be managed")
