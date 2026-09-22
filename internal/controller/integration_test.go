@@ -52,9 +52,8 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	})
 }
 
-// TestIntegration_Baseline_LandsForManagedNamespace verifies the deny-all
-// baseline is installed in every managed namespace (ADR 0030: uniform
-// baseline shape, no per-namespace mode).
+// The deny-all baseline lands in every managed namespace (ADR 0030) and
+// restricts ingress only, never egress (ADR 0025).
 func TestIntegration_Baseline_LandsForManagedNamespace(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "managed-baseline")
@@ -64,9 +63,11 @@ func TestIntegration_Baseline_LandsForManagedNamespace(t *testing.T) {
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
-	// Deny-all baseline: Ingress only, no allow rules (ADR 0030).
 	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress], got %v", bp.Spec.PolicyTypes)
+	}
+	if len(bp.Spec.Egress) != 0 {
+		t.Errorf("baseline egress should be empty, got %+v", bp.Spec.Egress)
 	}
 }
 
@@ -739,30 +740,6 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
-// ----- baseline-shape tests ----------------------------------------------
-
-// TestIntegration_Baseline_NeverRestrictsEgress: the baseline never has
-// Egress in policyTypes (ADR 0025); the deny-all only applies to ingress.
-func TestIntegration_Baseline_NeverRestrictsEgress(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "no-egress")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-	for _, t2 := range bp.Spec.PolicyTypes {
-		if t2 == networkingv1.PolicyTypeEgress {
-			t.Errorf("baseline must not have Egress in policyTypes (ADR 0025)")
-		}
-	}
-	if len(bp.Spec.Egress) != 0 {
-		t.Errorf("baseline egress should be empty, got %+v", bp.Spec.Egress)
-	}
-}
-
-// ----- direction modes + long-form-in-home tests ---------------------------
-
 // TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
 // direction values produce two direction-class self-policies (bidi +
 // ingress). The `egress`-only pod gets NO self-policy: it accepts no
@@ -899,63 +876,12 @@ func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 	})
 }
 
-// ----- --default-deny-everywhere flag tests ---------------------------------
-
-// touchNamespace forces a reconcile of the namespace by issuing a no-op label
-// update. Needed because in tests we may flip the flag *after* a namespace was
-// created and the watch already fired without our flag being on.
-func touchNamespace(t *testing.T, name string) {
-	t.Helper()
-	ns := &corev1.Namespace{}
-	if err := testClient.Get(context.Background(), client.ObjectKey{Name: name}, ns); err != nil {
-		t.Fatalf("get namespace %s: %v", name, err)
-	}
-	if ns.Labels == nil {
-		ns.Labels = map[string]string{}
-	}
-	ns.Labels["kube-vnet-test/touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
-	if err := testClient.Update(context.Background(), ns); err != nil {
-		t.Fatalf("touch namespace %s: %v", name, err)
-	}
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere: flag on, fresh
-// namespace with no vnet → baseline appears.
-func TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "ddaon")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	touchNamespace(t, ns)
-
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped: flag on,
-// namespace annotated kube-vnet/disabled=true → no baseline.
-func TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "ddadis")
-	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
-	touchNamespace(t, ns)
-
-	time.Sleep(2 * time.Second)
-	bp := &networkingv1.NetworkPolicy{}
-	err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("baseline should not exist in disabled ns even with flag on: err=%v", err)
-	}
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff: flag on,
-// baseline present, then the disabled annotation gets added → baseline removed.
-func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing.T) {
+// Adding kube-vnet/disabled to a namespace that already has a baseline
+// removes it.
+func TestIntegration_Baseline_DisabledAnnotationRemovesBaseline(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "ddaflip")
 	mustCreate(t, makeNamespace(ns, nil, nil))
-	touchNamespace(t, ns)
 
 	// Baseline appears.
 	bp := &networkingv1.NetworkPolicy{}
