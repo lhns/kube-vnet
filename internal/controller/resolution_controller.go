@@ -240,16 +240,19 @@ func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 	return out
 }
 
-// stripStampedLabels removes the operator-managed labels and the
-// resolved-generation annotation from a pod in a disabled namespace.
+// stripStampedLabels removes the operator-managed labels and the resolution
+// annotations from a pod in a disabled namespace.
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	patched := pod.DeepCopy()
 	// Empty desired-set → syncManagedLabels removes every managed label.
 	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, nil)
-	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] == "" {
+	_, hasGen := pod.Annotations[AnnotationResolvedGeneration]
+	_, hasBy := pod.Annotations[AnnotationResolvedBy]
+	if !labelsChanged && !hasGen && !hasBy {
 		return ctrl.Result{}, nil
 	}
 	delete(patched.Annotations, AnnotationResolvedGeneration)
+	delete(patched.Annotations, AnnotationResolvedBy)
 	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
 		return ctrl.Result{}, err
 	}
