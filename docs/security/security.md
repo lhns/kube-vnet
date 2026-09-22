@@ -12,13 +12,14 @@ For the durability/AdminNetworkPolicy story specifically, see [ADR 0019](../adr/
 
 ### Scope: kube-vnet only restricts ingress
 
-The kube-vnet baseline carries `policyTypes: [Ingress]` only. Egress is unrestricted by kube-vnet (membership policies grant egress allows to vnet peers, but generic egress — DNS, the apiserver, the public internet, other namespaces — is not blocked by the operator). This is deliberate — see [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) — but it means you must size the threat model accordingly.
+Every policy kube-vnet emits is `policyTypes: [Ingress]`. Egress — DNS, the apiserver, the public internet, other namespaces — is not restricted. This is deliberate ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)); size your threat model accordingly.
 
 ### What kube-vnet defends against
 
 - **Accidentally-too-open ingress.** The default-allow Kubernetes posture for ingress is the bug; kube-vnet flips it to membership-based ingress allow with the uniform ingress-deny baseline `kube-vnet.base` (how much of it bites is set by the [baseline tier](../getting-started/concepts.md#the-deny-all-baseline) — the `pod`/`namespace`/`cluster` presets and their per-namespace overrides).
-- **Drift on operator-managed `NetworkPolicy` resources** (deletion, hand-edit). The watch + reconcile loop restores the desired state within seconds and emits a `PolicyRestored` Event for visibility.
-- **Misconfiguration via wrong namespace.** Pods that try to join a vnet from a non-permitted namespace appear as `InvalidJoiners` on the vnet's `Degraded` condition rather than silently failing.
+- **Drift on operator-managed `NetworkPolicy` resources** (deletion, hand-edit). The watch + reconcile loop restores the desired state within seconds; re-created membership policies also emit a `PolicyRestored` Event.
+- **Misconfiguration via wrong namespace.** Pods that try to join a vnet from a non-permitted namespace get a `VirtualNetworkNotJoinable` event and appear as `InvalidJoiners` on the vnet's `Degraded` condition rather than silently failing.
+- **Forged membership.** The `kube-vnet.system/*` labels the policies select on are admission-protected: by a `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30, and for pods by the validating webhook when `webhook.enabled=true`.
 - **Cross-namespace surprise.** `allowedNamespaces` is explicit; foreign namespaces don't get to join unless the vnet says so.
 
 ### What kube-vnet does NOT defend against
@@ -27,7 +28,7 @@ Be clear-eyed about these. None of them are bugs in kube-vnet; they're either ou
 
 - **Egress exfiltration / lateral probing from a compromised pod.** kube-vnet's deny-all baseline restricts *ingress* only ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md)); pods can still initiate outbound traffic to anywhere they can route — other namespaces, the cluster control plane, the public internet. The vnet abstraction defends against unauthorized inbound; protecting against outbound exfiltration / lateral probing is a separate concern that needs separate tooling (a per-workload user-managed `NetworkPolicy` with `policyTypes: [Egress]`, a CNI egress firewall like Calico GlobalNetworkPolicy or Cilium FQDN policy, a NAT-gateway egress allowlist, or a service-mesh egress proxy).
 - **Cluster admin compromise.** Anyone with cluster-admin (or with permissions to delete VirtualNetworks, edit the operator's RBAC, or stop the operator Deployment) can defeat kube-vnet entirely.
-- **Namespace owner deleting the deny baseline.** A user with `delete networkpolicy` RBAC in their namespace can `kubectl delete networkpolicy kube-vnet.base`. The operator restores it within seconds (drift correction; see [`architecture.md`](../internals/architecture.md#drift-correction-loop)) and emits a `PolicyRestored` Warning Event, but during the window between deletion and restore, traffic that the policy would have denied is allowed. For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` — see [ADR 0019](../adr/0019-baseline-durability.md).
+- **Namespace owner deleting the deny baseline.** A user with `delete networkpolicy` RBAC in their namespace can `kubectl delete networkpolicy kube-vnet.base`. The operator restores it within seconds (drift correction; see [`architecture.md`](../internals/architecture.md#drift-correction)), without an Event; during the window, traffic the policy would have denied is allowed. For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` — see [ADR 0019](../adr/0019-baseline-durability.md).
 - **CNI bypass.** kube-vnet generates `NetworkPolicy` resources; the CNI is what enforces them. If your CNI doesn't enforce `NetworkPolicy` (or if a pod manages to bypass the CNI — e.g. host-network pods), kube-vnet's policies have no effect.
 - **Layer 7 / DNS / mTLS-identity policy.** kube-vnet emits L3/L4 `NetworkPolicy`. Anything HTTP-method-aware, hostname-aware, or identity-aware is out of scope; that's a service-mesh or CNI-extension responsibility.
 - **In-pod traffic.** Containers within a single pod share a network namespace and are not policy-able by Kubernetes.
@@ -41,48 +42,38 @@ For workloads where outbound restriction matters, write a user-managed `NetworkP
 
 ## RBAC inventory
 
-The operator runs as `ServiceAccount/kube-vnet-controller` in the operator's namespace. Two role bindings:
+The operator runs as its own ServiceAccount in the release namespace (`<release>` in the chart, `kube-vnet-controller` in the kustomize install). The ClusterRole is generated from the `+kubebuilder:rbac` markers into `config/rbac/role.yaml`; the chart's copy is drift-tested against it.
 
-### Cluster-scoped: `ClusterRole/kube-vnet-manager` + `ClusterRoleBinding`
-
-| API group | Resource | Verbs | Why it's needed |
-|---|---|---|---|
-| `kube-vnet.lhns.de` | `virtualnetworks` | get, list, watch | Primary watch — the operator reconciles VirtualNetworks. |
-| `kube-vnet.lhns.de` | `virtualnetworks/status` | get, update, patch | Writes Ready / Degraded conditions, member list, generated-policy refs. |
-| `kube-vnet.lhns.de` | `virtualnetworks/finalizers` | update | Standard kubebuilder pattern; not currently used at runtime but kept for forward compatibility. |
-| `networking.k8s.io` | `networkpolicies` | get, list, watch, create, update, patch, delete | The operator's primary output. Cluster-wide because `Cluster`-extent vnets generate policies in foreign namespaces. |
-| `""` (core) | `pods` | get, list, watch | Membership discovery: which pods carry a join label. |
-| `""` (core) | `namespaces` | get, list, watch | Honoring `kube-vnet/disabled` annotation and `allowedNamespaces.selector` matching. |
-| `""` (core) | `pods` | patch | Resolution controller stamps `kube-vnet.system/net.<vnet>=<dir>` labels on managed pods (ADR 0030). |
-| `kube-vnet.lhns.de` | `virtualnetworkbindings` | get, list, watch | Watch for the `VirtualNetworkBinding` reconciler; binding-selected pods are folded into the regular membership policies via stamped system labels (no per-binding policy — ADR 0033). |
-| `kube-vnet.lhns.de` | `virtualnetworkbindings/status` | get, update, patch | Writes the binding's `Ready` condition, `attachedPods`, `observedGeneration`. |
-| `""` (core) | `events` | create, patch | Emitting Events on condition transitions and on errors (Recorder). |
-
-### Namespace-scoped: `Role/kube-vnet-leader-election` + `RoleBinding` (in the operator's namespace only)
+### Cluster-scoped ClusterRole + ClusterRoleBinding
 
 | API group | Resource | Verbs | Why |
 |---|---|---|---|
-| `coordination.k8s.io` | `leases` | get, list, watch, create, update, patch, delete | Leader election. The lease object is `kube-vnet.lhns.de` in the operator's namespace. |
-| `""` (core) | `events` | create, patch | controller-runtime emits leader-election events on the lease. |
+| `networking.k8s.io` | `networkpolicies` | create, delete, get, list, patch, update, watch | The operator's output: baselines, membership and auto-allow policies in every managed namespace. |
+| `""` | `pods` | get, list, watch, patch, update | Resolution stamps `kube-vnet.system/*` labels and annotations; membership and hostPort discovery. |
+| `""` | `namespaces`, `services` | get, list, watch | Managed/disabled state, `allowedNamespaces.selector`, opt-out annotations; auto-allow triggers. |
+| `""`, `events.k8s.io` | `events` | create, patch | [Events](../reference/metrics-and-events.md#kubernetes-events). |
+| `kube-vnet.lhns.de` | `virtualnetworks` | create, delete, get, list, patch, update, watch | Reconciling vnets; creating and removing the `namespace` / `cluster` system vnets. |
+| `kube-vnet.lhns.de` | `virtualnetworkbindings`, `virtualnetworkbaselines`, `clustervirtualnetworkbaselines` | get, list, watch | Resolution inputs. |
+| `kube-vnet.lhns.de` | `*/status` of all four CRDs | get, patch, update | Status writes (today only vnets and bindings are written). |
+| `kube-vnet.lhns.de` | `virtualnetworks/finalizers`, `virtualnetworkbindings/finalizers` | update | kubebuilder convention; no finalizers are set today. |
+| `admissionregistration.k8s.io` | `validatingwebhookconfigurations`, `mutatingwebhookconfigurations` | get, list, watch | `ext.apiserver` discovery. |
+| `apiregistration.k8s.io` | `apiservices` | get, list, watch | `ext.apiserver` discovery. |
+| `apiextensions.k8s.io` | `customresourcedefinitions` | get, list, watch | `ext.apiserver` discovery (conversion webhooks). |
 
-There are **no** cluster-wide write permissions on `events` (the cluster-wide ClusterRole only grants events create/patch in the namespaces where it runs operations — k8s scopes Event RBAC by the involved-object's namespace).
+### Namespace-scoped Role + RoleBinding (operator namespace only)
+
+| API group | Resource | Verbs | Why |
+|---|---|---|---|
+| `coordination.k8s.io` | `leases` | get, list, watch, create, update, patch, delete | Leader election. The lease object is `kube-vnet.lhns.de`. |
+| `""` | `events` | create, patch | controller-runtime emits leader-election events. |
+
+### Uninstall hook (chart only, transient)
+
+The `pre-delete` cleanup Job runs as `<release>-cleanup` with a ClusterRole granting `networkpolicies` list/delete/deletecollection, `deployments` get/delete and `pods` get/list/watch, cluster-wide. It exists only during `helm uninstall` ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md), [threat model F-01](threat-model.md#7-findings-register)).
 
 ### What this means for blast radius
 
-The operator can:
-
-- **Read** every Pod, every Namespace, every VirtualNetwork in the cluster.
-- **Create / modify / delete** any `NetworkPolicy` in any namespace.
-- **Update** the leader-election lease in its own namespace.
-- **Emit Events** on the resources it operates on.
-
-It **cannot**:
-
-- Read or write Secrets, ConfigMaps, ServiceAccounts, Roles, etc.
-- Create / modify Pods, Namespaces, or any other resource.
-- Read or write `VirtualNetwork.spec` (only `.status` is writable).
-
-If the operator is compromised, the worst-case impact is: it can rewrite or delete every `NetworkPolicy` in the cluster, and read every Pod/Namespace label. It cannot exfiltrate secrets or pivot to other resources.
+The operator can create, modify, or delete any `NetworkPolicy` and relabel any Pod — together a total isolation bypass if its token is stolen ([threat model F-10](threat-model.md#7-findings-register)). It cannot read Secrets or ConfigMaps, cannot create or delete Pods, and cannot write Namespaces, RBAC, or anything outside the table above.
 
 ### Who can write what
 
@@ -97,7 +88,7 @@ The chart ships ClusterRoles aggregated into the upstream `admin`/`edit`/`view` 
 
 A matching `*-viewer` ClusterRole per CRD aggregates into `view` (or, for the cluster baseline, ships unbound).
 
-The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP from ADR 0031 prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet.system/managed-by=kube-vnet`.
+The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP (Kubernetes ≥ 1.30) prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet.system/managed-by=kube-vnet`.
 
 To skip the chart-shipped end-user RBAC entirely (managing it externally via Argo, GitOps, etc.), set `rbac.aggregate=false`.
 
@@ -105,33 +96,11 @@ To skip the chart-shipped end-user RBAC entirely (managing it externally via Arg
 
 ## Supply chain
 
-### Container image signing (cosign keyless)
+### Image and chart signing (cosign keyless)
 
-Every released image is signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless, using the GitHub OIDC token as the signing identity. No long-lived keys to rotate.
+Released images and the OCI Helm chart are signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless, using the GitHub OIDC token — no long-lived keys. The signing identity is the release workflow: `https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/<tag>`. A successful verify proves the artifact was built and pushed by that workflow; if it fails, do not deploy.
 
-The signing identity is the release workflow itself: `https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/<tag>`.
-
-Verification:
-
-The exact, copy-pasteable verify commands (image, chart, SBOM attestations) are maintained in one place: [`install.md` (Verifying signatures)](../getting-started/install.md#verifying-signatures). The identity to pin:
-
-```bash
-cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
-```
-
-A successful verify proves the image was built and pushed by the release workflow on this repository, by a GitHub-authenticated commit. If the verify fails, do not deploy.
-
-### Helm chart signing
-
-The chart is also signed and published as an OCI artifact. Same verification pattern:
-
-```bash
-cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
-  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
-```
+Verify commands: [`install.md` § Verifying signatures](../getting-started/install.md#verifying-signatures).
 
 ### SBOMs
 
@@ -185,11 +154,12 @@ These are configured both in `config/manager/manager.yaml` (the Kustomize instal
 
 ### Network
 
-- The operator container exposes two ports:
+- The operator container exposes:
   - `:8080` — Prometheus metrics. Not exposed via a Service by default; opt in with `metricsService.enabled=true` or `podMonitor.enabled=true`.
-  - `:8081` — health/readiness probes. Cluster-internal.
+  - `:8081` — health/readiness probes.
+  - `:9443` — only with `webhook.enabled=true`: the admission webhook server, reached by the apiserver through the `<release>-webhook` Service (TLS; certificate from the chart or cert-manager).
 - It makes egress only to the apiserver (and to CoreDNS for resolution).
-- It does not need any inbound connectivity from outside the cluster.
+- The release namespace is disabled for the operator itself, so no kube-vnet policy restricts ingress to it.
 
 ### Identity / authentication
 
@@ -203,7 +173,7 @@ These are configured both in `config/manager/manager.yaml` (the Kustomize instal
 
 ### Can the operator be locked down further by removing some permissions?
 
-Not without losing functionality. Each line in the RBAC inventory above maps to a feature. The most-asked-about removal is `networkpolicies` cluster-wide write — but that's required for `Cluster`-extent vnets to install policies in foreign namespaces, and trimming it to namespace-scoped would require the operator to be installed per-namespace, which defeats the design.
+Not without losing functionality. Each line in the RBAC inventory above maps to a feature. The most-asked-about removal is `networkpolicies` cluster-wide write — but the baseline goes into every managed namespace and cross-namespace vnets put membership policies into foreign namespaces; scoping it per namespace would mean one operator per namespace, which defeats the design.
 
 ### Can a namespace owner permanently disable kube-vnet for their namespace?
 
@@ -233,7 +203,7 @@ The proper Kubernetes-native answer is `policy.networking.k8s.io/v1 AdminNetwork
 - **Distinct API group** — ANP RBAC is granted separately from `NetworkPolicy` RBAC, so cluster admins can grant NP wide while keeping ANP locked down.
 - **Higher precedence** — an ANP `Deny` overrides any matching NP `Allow`. The deny baseline becomes a hard guarantee, not a reconciliation race.
 
-Adoption is deferred for now (CNI support is still maturing across the ecosystem; the API itself is `v1alpha1`/`v1beta1` depending on version). The current drift-correction defense plus `PolicyRestored` events is sufficient for the dominant threat (accidental deletion or unaware tooling). When ANP support is broad enough, the deny baseline migrates to a single cluster-scoped ANP; per-vnet allow policies stay as `NetworkPolicy`.
+Adoption is deferred for now (CNI support is still maturing across the ecosystem; the API itself is `v1alpha1`/`v1beta1` depending on version). Drift correction is sufficient for the dominant threat (accidental deletion or unaware tooling). When ANP support is broad enough, the deny baseline migrates to a single cluster-scoped ANP; per-vnet allow policies stay as `NetworkPolicy`.
 
 Full discussion: [ADR 0019](../adr/0019-baseline-durability.md).
 
@@ -241,4 +211,4 @@ Full discussion: [ADR 0019](../adr/0019-baseline-durability.md).
 
 ## Reporting a vulnerability
 
-The repo lives at https://github.com/lhns/kube-vnet. Use GitHub's private security advisory mechanism (the **Security** tab → **Report a vulnerability**) if you find a credible vulnerability. For public, low-severity issues, a normal GitHub Issue is fine.
+See [`SECURITY.md`](../../SECURITY.md): report privately through GitHub's security advisories, not in a public issue.
