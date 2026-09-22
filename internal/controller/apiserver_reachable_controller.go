@@ -43,32 +43,24 @@ import (
 //	CustomResourceDefinition        spec.conversion.webhook.clientConfig.service
 //	corev1.Service                  annotation kube-vnet/apiserver-reachable=true
 //
-// The emitted policy is additive: it shares the namespace with kube-vnet's
-// baseline + membership policies and the ADR 0038 / 0040 external-allow
-// policies, composing via NetworkPolicy union semantics. Pod-to-pod
-// isolation through vnet membership keeps working; the apiserver gets a
-// narrow path to the webhook's targetPort.
+// The policy is additive (NetworkPolicy union), so vnet isolation is
+// unchanged; the apiserver only gains a path to the webhook's targetPort.
 //
-// Default-on. Opt-out via the same `kube-vnet/external-allow=false`
-// annotation ADR 0038 uses, on the Service or on its Namespace — single
-// vocabulary across the auto-allow family.
+// Default-on. Opt out with `kube-vnet/external-allow=false` on the Service or
+// its Namespace, the same annotation as ADR 0038.
 type ApiserverReachableReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
 	Recorder events.EventRecorder
 
-	// SourceCIDR is the CIDR the emitted policy's `from: ipBlock` uses.
-	// Default `0.0.0.0/0` matches the cluster's no-NetworkPolicy baseline
-	// (the same posture pods have today before kube-vnet is installed).
-	// Admins set this to their control-plane subnet for tighter narrowing.
+	// SourceCIDR is the emitted policy's `from: ipBlock`. Empty means
+	// `0.0.0.0/0`; admins can narrow it to their control-plane subnet.
 	SourceCIDR string
 }
 
-// serviceRef identifies a single Service + port the apiserver reaches.
-// Multiple discovery resources can produce the same ref (deduped at the
-// reconciler); a single discovery resource can produce multiple refs (e.g.
-// a ValidatingWHC with N webhooks on different ports of the same Service).
+// serviceRef identifies a Service port the apiserver reaches. Refs are not
+// unique: several webhooks can name the same Service and port.
 type serviceRef struct {
 	Namespace string
 	Name      string
@@ -86,11 +78,8 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Service is gone. The apiserver-GC cascade on the Service
-			// owner-reference handles the policy delete in a real cluster,
-			// but envtest doesn't run the GC controller — explicit
-			// label-based delete handles that case + any pre-existing
-			// policy from before this code shipped.
+			// Owner-ref GC deletes the policy in a real cluster; delete by
+			// label too, for when GC doesn't run (envtest).
 			return ctrl.Result{}, r.deletePolicyByServiceKey(ctx, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
@@ -104,10 +93,7 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Three opt-out gates, same shape as ExternalAllowReconciler: NS in
-	// --disabled-namespaces or annotated kube-vnet/disabled=true; NS or
-	// Service annotated kube-vnet/external-allow=false. Single annotation
-	// across the auto-allow family so users don't learn two opt-outs.
+	// Same opt-out gates as ExternalAllowReconciler.
 	if !r.NSFilter.IsManaged(ns) ||
 		ExternalAllowOptedOut(ns.Annotations) ||
 		ExternalAllowOptedOut(svc.Annotations) {
@@ -115,7 +101,7 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// Headless / ExternalName / selector-less Services have no podSelector
-	// for us to mirror. Skip cleanly.
+	// to mirror.
 	if svc.Spec.ClusterIP == corev1.ClusterIPNone || len(svc.Spec.Selector) == 0 {
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
@@ -125,15 +111,12 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 	if len(ports) == 0 {
-		// No discovery resource references this Service, and no annotation
-		// opts it in. Clean up any stale policy.
+		// Nothing references this Service and it hasn't opted in.
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 
-	// Named targetPorts (e.g. `targetPort: https` in cert-manager-webhook's
-	// Service) need pod-side resolution: walk pods matching the Service
-	// selector to find the containerPort whose name matches. Same machinery
-	// as ADR 0038 — `resolveTargetPort` lives in external_allow_controller.go.
+	// Pods resolve named targetPorts (e.g. cert-manager-webhook's
+	// `targetPort: https`).
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
 		return ctrl.Result{}, err
@@ -160,7 +143,7 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Self-heal: sweep stale apiserver-reachable policies for THIS Service.
+	// Sweep this Service's stale apiserver-reachable policies.
 	keep := map[client.ObjectKey]bool{
 		{Namespace: svc.Namespace, Name: desired.Name}: true,
 	}
@@ -223,10 +206,8 @@ func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Contex
 		}
 	}
 
-	// Annotation escape hatch — Service opts itself in for every
-	// Service port. Treats the annotation as "expose all my ports" rather
-	// than per-port; users who want per-port use the existing single-
-	// Service hand-written NetworkPolicy escape path.
+	// The opt-in annotation covers every Service port; per-port control
+	// means writing the NetworkPolicy by hand.
 	if ApiserverReachableOptedIn(svc.Annotations) {
 		for _, sp := range svc.Spec.Ports {
 			portSet[sp.Port] = struct{}{}
@@ -237,8 +218,8 @@ func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Contex
 }
 
 // extractValidatingWebhookRefs returns the Service refs declared in a
-// ValidatingWebhookConfiguration. URL-only `clientConfig.url` entries are
-// skipped — they're out-of-cluster and don't need NetworkPolicy emission.
+// ValidatingWebhookConfiguration. URL-only entries are out-of-cluster and
+// skipped.
 func extractValidatingWebhookRefs(cfg *admissionregistrationv1.ValidatingWebhookConfiguration) []serviceRef {
 	if cfg == nil {
 		return nil
@@ -254,8 +235,8 @@ func extractValidatingWebhookRefs(cfg *admissionregistrationv1.ValidatingWebhook
 	return out
 }
 
-// extractMutatingWebhookRefs is the symmetric extractor for
-// MutatingWebhookConfiguration. Same field shape; different Go type.
+// extractMutatingWebhookRefs is extractValidatingWebhookRefs for
+// MutatingWebhookConfiguration.
 func extractMutatingWebhookRefs(cfg *admissionregistrationv1.MutatingWebhookConfiguration) []serviceRef {
 	if cfg == nil {
 		return nil
@@ -272,8 +253,7 @@ func extractMutatingWebhookRefs(cfg *admissionregistrationv1.MutatingWebhookConf
 }
 
 // extractAPIServiceRefs returns the Service ref declared in an APIService.
-// `spec.service: nil` means a local APIService (the apiserver itself hosts
-// the API; no aggregation target) — skipped.
+// Local APIServices (`spec.service: nil`) are served by the apiserver itself.
 func extractAPIServiceRefs(api *apiregistrationv1.APIService) []serviceRef {
 	if api == nil || api.Spec.Service == nil {
 		return nil
@@ -282,9 +262,8 @@ func extractAPIServiceRefs(api *apiregistrationv1.APIService) []serviceRef {
 	return []serviceRef{newServiceRef(s.Namespace, s.Name, s.Port)}
 }
 
-// extractCRDConversionRefs returns the Service ref declared in a CRD's
-// conversion-webhook config. Skipped if conversion isn't configured or
-// uses strategy `None` or `webhook` but with URL-only clientConfig.
+// extractCRDConversionRefs returns the Service ref of a CRD's conversion
+// webhook, if it has one.
 func extractCRDConversionRefs(crd *apiextensionsv1.CustomResourceDefinition) []serviceRef {
 	if crd == nil || crd.Spec.Conversion == nil {
 		return nil
@@ -311,29 +290,17 @@ func newServiceRef(namespace, name string, port *int32) serviceRef {
 }
 
 // buildApiserverReachablePolicy constructs the desired NetworkPolicy for a
-// Service whose discovery resources reference the given ports. `ports`
-// must be non-empty and pre-sorted; ingress.ports[i] mirrors that order
-// for stable diffs.
+// Service reached on the given ports, which must be non-empty and sorted so
+// the output is stable.
 //
-// Why pods are an input: NetworkPolicy is enforced after kube-proxy DNATs
-// the apiserver's `Service:port` connection to `pod:targetPort`. The
-// kernel sees the POD-side port. So we MUST emit the resolved pod-side
-// targetPort, not the Service-side port — including resolving the
-// `targetPort: <name>` (named string) form to its containerPort number
-// by walking the backing pods. Reuses `resolveTargetPort` from
-// external_allow_controller.go, which has handled this since ADR 0038.
+// NetworkPolicy is enforced after kube-proxy DNATs Service:port to
+// pod:targetPort, so the policy must allow the pod-side port, including
+// named targetPorts resolved from the backing pods. If any is unresolvable it
+// returns errNamedPortUnresolvable rather than a partial policy, as ADR 0038
+// does.
 //
-// Returns errNamedPortUnresolvable if any referenced Service port maps
-// to a named targetPort whose backing pod isn't running yet (or doesn't
-// declare a matching containerPort name). Caller treats this as a
-// transient state — emits a Pending Event and requeues. Multi-port
-// Services with one unresolvable port return the error rather than
-// partial emission, matching ADR 0038's all-or-nothing behavior.
-//
-// If the Service spec doesn't declare the discovery-referenced port at
-// all (rare: webhook config out of sync with the Service), the policy
-// emits the discovery port directly as a safe passthrough. Avoids
-// dropping admission silently while the user reconciles their config.
+// A discovery port the Service doesn't declare (webhook config out of sync
+// with the Service) is emitted as-is rather than dropped.
 func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, ports []int32, sourceCIDR string) (*networkingv1.NetworkPolicy, error) {
 	if sourceCIDR == "" {
 		sourceCIDR = "0.0.0.0/0"
@@ -349,16 +316,10 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 			}
 			targetPort = tp
 		} else {
-			// Service spec doesn't declare the discovery port at all —
-			// pass it through. kube-proxy will fail to DNAT this
-			// connection anyway, but emitting the policy is the
-			// right thing to do (drops a `kubectl describe svc`
-			// breadcrumb for the user).
 			targetPort = port
 		}
 
-		// Default protocol: TCP. Webhook + APIService traffic is always
-		// HTTPS over TCP per spec.
+		// The apiserver always dials HTTPS over TCP.
 		proto := corev1.ProtocolTCP
 		portVal := intstr.FromInt32(targetPort)
 		policyPorts = append(policyPorts, networkingv1.NetworkPolicyPort{
@@ -399,9 +360,7 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 	}, nil
 }
 
-// findServicePort returns the spec.ports entry whose Port matches the
-// discovery-referenced port. The second value is false if no entry
-// declares that port (webhook config out of sync with the Service).
+// findServicePort returns the spec.ports entry with the given Port.
 func findServicePort(svc *corev1.Service, port int32) (corev1.ServicePort, bool) {
 	for _, sp := range svc.Spec.Ports {
 		if sp.Port == port {
@@ -418,7 +377,7 @@ func apiserverReachablePolicyName(svc *corev1.Service) string {
 }
 
 // deletePolicyForService removes every apiserver-reachable policy owned
-// by this Service. Mirrors ExternalAllowReconciler.deletePolicyForService.
+// by this Service.
 func (r *ApiserverReachableReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
 	return sweepStalePoliciesByOwner(ctx, r.Client,
 		inNamespacePolicyLabels(svc.Namespace, map[string]string{
@@ -431,11 +390,8 @@ func (r *ApiserverReachableReconciler) deletePolicyForService(ctx context.Contex
 	)
 }
 
-// deletePolicyByServiceKey handles the Service-NotFound path. Without the
-// Service object we can't owner-ref-match, but the LabelSource is stable
-// at `apiserver-<svcName>` for the current format. Apiserver GC handles
-// owner-ref-bound policies separately when the Service is deleted in a
-// real cluster.
+// deletePolicyByServiceKey handles the Service-NotFound path: with no UID to
+// match owner refs against, it deletes by LabelSource.
 func (r *ApiserverReachableReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
 	return sweepStalePolicies(ctx, r.Client,
 		inNamespacePolicyLabels(namespace, map[string]string{
@@ -453,9 +409,8 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		For(&corev1.Service{}).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			// Owner-ref rather than parsing LabelSource: that value is now
-			// length-bounded (SourceLabelValue), so it no longer round-trips to a
-			// Service name. See ADR 0011 (amended).
+			// By owner ref: LabelSource is length-bounded and doesn't
+			// round-trip to a Service name (ADR 0011).
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
 				&corev1.Service{}, handler.OnlyControllerOwner()),
 			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindApiserver)),
@@ -490,8 +445,7 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 // validatingWebhookToServices / mutatingWebhookToServices / apiServiceToServices /
 // crdConversionToServices map an event on a cluster-scoped discovery resource
-// to reconcile requests for the Services they reference. Each only needs to
-// enqueue the Services directly referenced — extractor-driven.
+// to requests for the Services it references.
 
 func validatingWebhookToServices(_ context.Context, obj client.Object) []reconcile.Request {
 	cfg, ok := obj.(*admissionregistrationv1.ValidatingWebhookConfiguration)
@@ -525,9 +479,7 @@ func crdConversionToServices(_ context.Context, obj client.Object) []reconcile.R
 	return refsToRequests(extractCRDConversionRefs(crd))
 }
 
-// refsToRequests dedupes a ref list to one Request per (NS, Name). Used
-// by the discovery-resource mappers — multiple webhooks in one config
-// can reference the same Service; we only need to reconcile it once.
+// refsToRequests dedupes refs to one request per Service.
 func refsToRequests(refs []serviceRef) []reconcile.Request {
 	seen := map[types.NamespacedName]struct{}{}
 	out := make([]reconcile.Request, 0, len(refs))

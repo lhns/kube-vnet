@@ -26,26 +26,15 @@ import (
 )
 
 // HostPortReconciler emits external-allow NetworkPolicies for pods that
-// declare `hostPort` on a container port. Per ADR 0040 — Service-fronted
-// exposures (LB/NodePort/ClusterIP+externalIPs) are handled by the
-// ExternalAllowReconciler; hostPort is the orthogonal "pod is bound
-// directly to a node IP at a specific port" pathway, which NetworkPolicy's
-// label-based podSelector can't reference without operator-stamped labels.
+// declare `hostPort` (ADR 0040). NetworkPolicy can only select those pods by
+// label, so ResolutionReconciler stamps
+// `kube-vnet.system/host-port.<port>.<proto>=true` on them and this
+// reconciler emits one policy per (namespace, port, protocol) selecting that
+// stamp. Keying on the port rather than the pod means rollouts, which replace
+// pods, cause no policy churn.
 //
-// Per-(NS, port, protocol) model:
-//   - ResolutionReconciler stamps `kube-vnet.system/host-port.<port>.<proto>=true`
-//     on every pod declaring that (port, protocol).
-//   - HostPortReconciler emits one NetworkPolicy per unique (NS, port, proto)
-//     triple seen in the cluster. The policy's podSelector matches the stamp.
-//
-// Pod identity is ephemeral — Deployment pods are recreated on every
-// rollout with new names. Keying policies on (port, protocol) instead of
-// on pod name means a new pod inheriting the same hostPort is matched by
-// the existing policy automatically; no policy churn on pod replacement.
-//
-// Same opt-out gates as ExternalAllowReconciler: `kube-vnet/disabled=true`
-// or `kube-vnet/external-allow=false` on the Namespace deletes all
-// host-port policies in that NS on the next reconcile.
+// Opting a Namespace out (`kube-vnet/disabled=true` or
+// `kube-vnet/external-allow=false`) deletes its host-port policies.
 type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -78,21 +67,18 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	// Same gates as the Service-source path: NS disabled, NS opt-out, etc.
-	// (Pod-level external-allow=false isn't a thing — opt-out is NS-wide for
-	// hostPort because the policies are per-NS, not per-pod.)
+	// Opt-out is Namespace-wide only: the policies are per namespace, not
+	// per pod.
 	if !r.NSFilter.IsManaged(ns) || ExternalAllowOptedOut(ns.Annotations) {
 		return ctrl.Result{}, r.deleteAllInNamespace(ctx, ns.Name)
 	}
 
-	// Collect the desired (port, proto) set by walking every pod in the NS.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(ns.Name)); err != nil {
 		return ctrl.Result{}, err
 	}
 	desired := desiredHostPortKeys(pods.Items)
 
-	// SSA-apply the desired set.
 	for key := range desired {
 		pol := buildHostPortPolicy(ns.Name, key)
 		pol.SetResourceVersion("")
@@ -103,9 +89,8 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	// Self-heal: sweep any host-source external-allow policies in this NS
-	// whose (port, protocol) isn't in the desired set. Filter to
-	// LabelSourceKind=host so svc-source policies stay untouched.
+	// Sweep host-source policies whose (port, protocol) is no longer
+	// declared.
 	keep := make(map[client.ObjectKey]bool, len(desired))
 	for key := range desired {
 		keep[client.ObjectKey{Namespace: ns.Name, Name: hostPortPolicyName(ns.Name, key)}] = true
@@ -122,9 +107,8 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, nil
 }
 
-// deleteAllInNamespace removes every operator-emitted host-source
-// external-allow policy in the NS. Called when the NS opts out.
-// Empty `keep` set passed to the shared sweeper.
+// deleteAllInNamespace removes every host-source external-allow policy in
+// the namespace.
 func (r *HostPortReconciler) deleteAllInNamespace(ctx context.Context, ns string) error {
 	return sweepStalePolicies(ctx, r.Client,
 		inNamespacePolicyLabels(ns, map[string]string{
@@ -141,9 +125,8 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
 	out := map[hostPortKey]bool{}
 	for _, p := range pods {
 		if p.Spec.HostNetwork {
-			// Per ADR 0040 out-of-scope: hostNetwork pods bypass Pod-IP
-			// NetworkPolicy enforcement on most CNIs; emitting a policy
-			// for them is unreliable.
+			// Out of scope (ADR 0040): most CNIs don't enforce
+			// NetworkPolicy on hostNetwork pods.
 			continue
 		}
 		for _, c := range p.Spec.Containers {
@@ -162,10 +145,9 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
 	return out
 }
 
-// buildHostPortPolicy constructs the desired NetworkPolicy for one
-// (NS, port, protocol) triple. Selects pods stamped with
-// `kube-vnet.system/host-port.<port>.<proto>=true` and allows
-// `ipBlock: 0.0.0.0/0` on that port.
+// buildHostPortPolicy constructs the policy for one (namespace, port,
+// protocol): pods carrying the matching host-port stamp accept that port
+// from `0.0.0.0/0`.
 func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy {
 	stamp := LabelSystemHostPortPrefix + key.String()
 	portIS := intstr.FromInt32(key.port)
@@ -205,9 +187,8 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 	}
 }
 
-// hostPortPolicyName returns the deterministic policy name for a
-// (NS, port, protocol) triple. Per ADR 0039/0040: the shape is
-// `kube-vnet.ext.host.<port>.<proto>-<8hex>`.
+// hostPortPolicyName returns `kube-vnet.ext.host.<port>.<proto>-<8hex>`
+// (ADR 0039/0040).
 func hostPortPolicyName(ns string, key hostPortKey) string {
 	const prefix = "kube-vnet." + PolicyKindExternal + "." + PolicySourceKindHostPort + "."
 	const hashLen = 8
@@ -217,18 +198,13 @@ func hostPortPolicyName(ns string, key hostPortKey) string {
 }
 
 func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Pod creates/updates/deletes that touch hostPort declarations need to
-	// re-trigger the NS reconcile. Filter to only pods that *currently*
-	// declare any hostPort — avoids enqueuing on every pod heartbeat.
-	hostPortPodPredicate := HostPortChangedPredicate()
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("host-port").
 		For(&corev1.Namespace{}).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(objectNamespace),
-			builder.WithPredicates(hostPortPodPredicate),
+			builder.WithPredicates(HostPortChangedPredicate()),
 		).
 		Watches(
 			&networkingv1.NetworkPolicy{},
@@ -238,15 +214,9 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// HostPortChangedPredicate fires only when a pod's *derived hostPort key set*
-// changes — the set that actually determines the emitted policy.
-//
-// The previous predicate asked "does this pod declare any hostPort?", a
-// membership test, so every status update of a hostPort pod (restart counts,
-// readiness, podIP) enqueued its namespace, and a port swap (8080 -> 9090) was
-// indistinguishable from no change on the boolean. Deriving both sides through
-// desiredHostPortKeys keeps this exact: it also skips hostNetwork pods, which
-// are out of scope per ADR 0040, so those never enqueue at all.
+// HostPortChangedPredicate fires only when a pod's derived hostPort key set
+// changes, so status updates on hostPort pods don't enqueue their namespace.
+// Deriving through desiredHostPortKeys also ignores hostNetwork pods.
 func HostPortChangedPredicate() predicate.Predicate {
 	keysOf := func(obj client.Object) map[hostPortKey]bool {
 		pod, ok := obj.(*corev1.Pod)

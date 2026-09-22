@@ -351,15 +351,9 @@ func TestBuildApiserverReachablePolicy_MultiplePorts(t *testing.T) {
 	}
 }
 
-// TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod —
-// the cert-manager case: Service uses `targetPort: webhook-tls`, the
-// backing Pod exposes containerPort 10250 named webhook-tls, and the
-// emitted policy MUST use 10250 (not the Service-side 443).
-//
-// Pre-fix, this returned 443 — admission requests were DNAT'd to pod-port
-// 10250 but the policy only allowed 443, so the apiserver-to-webhook
-// connection silently timed out. Regression test for the user-reported
-// bug after ADR 0041 shipped.
+// The cert-manager case: `targetPort: webhook-tls` backed by containerPort
+// 10250. The policy must allow 10250, not the Service-side 443, or admission
+// requests DNAT'd to the pod time out.
 func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
@@ -381,11 +375,8 @@ func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod(t *testing
 	}
 }
 
-// TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError —
-// no backing pod yet, or no matching containerPort name. Returns the
-// sentinel error so the caller emits a Pending event and requeues.
-// Without this contract the policy would silently emit with the wrong
-// port (the original ADR 0041 bug).
+// No backing pod yet, or no matching containerPort name: the sentinel error
+// makes the caller requeue instead of emitting the wrong port.
 func TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
@@ -412,10 +403,7 @@ func TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError(t
 	}
 }
 
-// TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods
-// covers the edge case where the namespace has many pods but only one
-// matches both the Service selector AND has the matching containerPort
-// name. resolveTargetPort iterates and finds it.
+// Only one of several pods matches both the selector and the port name.
 func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods(t *testing.T) {
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
