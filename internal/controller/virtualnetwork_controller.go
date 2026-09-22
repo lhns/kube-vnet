@@ -945,10 +945,7 @@ func (r *VirtualNetworkReconciler) bindingToVNet(_ context.Context, obj client.O
 	if !ok || b.Spec.VirtualNetworkRef.Name == "" {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Namespace: b.Spec.VirtualNetworkRef.Namespace,
-		Name:      b.Spec.VirtualNetworkRef.Name,
-	}}}
+	return []reconcile.Request{{NamespacedName: bindingTarget(b, r.OperatorNamespace)}}
 }
 
 // policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork

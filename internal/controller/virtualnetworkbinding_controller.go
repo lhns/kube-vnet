@@ -22,13 +22,13 @@ import (
 
 // Condition reasons surfaced on VirtualNetworkBinding.status.conditions.
 const (
-	ReasonBindingPodsAttached       = "PodsAttached"
-	ReasonBindingNoPodsMatch        = "NoPodsMatch"
-	ReasonBindingVNetNotFound       = "VirtualNetworkNotFound"
+	ReasonBindingPodsAttached        = "PodsAttached"
+	ReasonBindingNoPodsMatch         = "NoPodsMatch"
+	ReasonBindingVNetNotFound        = "VirtualNetworkNotFound"
 	ReasonBindingNamespaceNotAllowed = "NamespaceNotAllowed"
-	ReasonBindingNamespaceExcluded  = "NamespaceExcluded"
-	ReasonBindingUnknownDirection   = "UnknownDirection"
-	ReasonBindingInvalidSelector    = "InvalidSelector"
+	ReasonBindingNamespaceExcluded   = "NamespaceExcluded"
+	ReasonBindingUnknownDirection    = "UnknownDirection"
+	ReasonBindingInvalidSelector     = "InvalidSelector"
 )
 
 // VirtualNetworkBindingReconciler maintains the binding's own status. The
@@ -39,6 +39,9 @@ type VirtualNetworkBindingReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 	NSFilter *NamespaceFilter
+	// OperatorNamespace is where the `cluster` system vnet lives; a ref to it
+	// that omits the namespace resolves there.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
@@ -83,10 +86,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Locate target VirtualNetwork.
 	vnet := &vnetv1alpha1.VirtualNetwork{}
-	vnetKey := client.ObjectKey{
-		Namespace: b.Spec.VirtualNetworkRef.Namespace,
-		Name:      b.Spec.VirtualNetworkRef.Name,
-	}
+	vnetKey := bindingTarget(b, r.OperatorNamespace)
 	if err := r.Get(ctx, vnetKey, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
 			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotFound,
@@ -235,11 +235,26 @@ func (r *VirtualNetworkBindingReconciler) vnetToBindings(ctx context.Context, ob
 	out := []reconcile.Request{}
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
-		if b.Spec.VirtualNetworkRef.Name == v.Name && b.Spec.VirtualNetworkRef.Namespace == v.Namespace {
+		if bindingTarget(b, r.OperatorNamespace) == client.ObjectKeyFromObject(v) {
 			out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: b.Namespace, Name: b.Name,
 			}})
 		}
 	}
 	return out
+}
+
+// bindingTarget returns the VirtualNetwork a binding refers to, inferring an
+// omitted ref namespace as canonicalVnetKey does: the binding's own namespace,
+// or operatorNS for the `cluster` singleton.
+func bindingTarget(b *vnetv1alpha1.VirtualNetworkBinding, operatorNS string) client.ObjectKey {
+	ref := b.Spec.VirtualNetworkRef
+	ns := ref.Namespace
+	if ns == "" {
+		ns = b.Namespace
+		if ref.Name == SystemVnetCluster {
+			ns = operatorNS
+		}
+	}
+	return client.ObjectKey{Namespace: ns, Name: ref.Name}
 }

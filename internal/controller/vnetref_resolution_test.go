@@ -7,6 +7,8 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
@@ -276,6 +278,73 @@ func TestBareJoinLabelHint(t *testing.T) {
 			}
 			if !strings.Contains(got, tc.labelKey) {
 				t.Fatalf("hint %q should quote the offending label %q", got, tc.labelKey)
+			}
+		})
+	}
+}
+
+// A binding's omitted virtualNetworkRef.namespace is inferred exactly as
+// resolution infers it: the binding's own namespace, or the operator's
+// namespace for `cluster`. The binding's status and both binding<->vnet
+// mappers must agree, or a binding that resolution honors reports
+// VirtualNetworkNotFound.
+func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
+	const opNS = "kube-vnet-system"
+	binding := func(name, vnet string) *vnetv1alpha1.VirtualNetworkBinding {
+		return &vnetv1alpha1.VirtualNetworkBinding{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "webapp", Name: name},
+			Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+				VirtualNetworkRef: ref(vnet, ""),
+				PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+			},
+		}
+	}
+	local := binding("to-local", "payments")
+	cluster := binding("to-cluster", SystemVnetCluster)
+	paymentsVnet := mkVnet("payments", "webapp", nil)
+	clusterVnet := mkVnet(SystemVnetCluster, opNS, &vnetv1alpha1.NamespaceSelector{All: true})
+
+	c := fake.NewClientBuilder().
+		WithScheme(schemeForPermits(t)).
+		WithObjects(
+			mkNamespace("webapp", nil), paymentsVnet, clusterVnet, local, cluster,
+			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+				Namespace: "webapp", Name: "web-0", Labels: map[string]string{"app": "web"},
+			}},
+		).
+		WithStatusSubresource(&vnetv1alpha1.VirtualNetworkBinding{}).
+		Build()
+	br := &VirtualNetworkBindingReconciler{Client: c, NSFilter: NewNamespaceFilter(nil), OperatorNamespace: opNS}
+	vr := &VirtualNetworkReconciler{Client: c, NSFilter: NewNamespaceFilter(nil), OperatorNamespace: opNS}
+
+	for _, tc := range []struct {
+		b    *vnetv1alpha1.VirtualNetworkBinding
+		vnet *vnetv1alpha1.VirtualNetwork
+	}{{local, paymentsVnet}, {cluster, clusterVnet}} {
+		t.Run(tc.b.Name, func(t *testing.T) {
+			ctx := context.Background()
+			key := types.NamespacedName{Namespace: tc.b.Namespace, Name: tc.b.Name}
+			if _, err := br.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			var got vnetv1alpha1.VirtualNetworkBinding
+			if err := c.Get(ctx, key, &got); err != nil {
+				t.Fatalf("get binding: %v", err)
+			}
+			if len(got.Status.Conditions) != 1 || got.Status.Conditions[0].Reason != ReasonBindingPodsAttached {
+				t.Errorf("conditions = %+v, want Ready reason %s", got.Status.Conditions, ReasonBindingPodsAttached)
+			}
+
+			wantVnet := types.NamespacedName{Namespace: tc.vnet.Namespace, Name: tc.vnet.Name}
+			if reqs := vr.bindingToVNet(ctx, tc.b); len(reqs) != 1 || reqs[0].NamespacedName != wantVnet {
+				t.Errorf("bindingToVNet = %v, want [%v]", reqs, wantVnet)
+			}
+			found := false
+			for _, req := range br.vnetToBindings(ctx, tc.vnet) {
+				found = found || req.NamespacedName == key
+			}
+			if !found {
+				t.Errorf("vnetToBindings(%v) did not enqueue %v", wantVnet, key)
 			}
 		})
 	}
