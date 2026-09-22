@@ -133,11 +133,17 @@ jobs:
       # ------ Helm chart ----------------------------------------------------
 
       - name: render release.yaml
+        env:
+          VERSION: ${{ steps.mode.outputs.version }}
         run: |
           kubectl_version=v1.31.0
           curl -sLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
           chmod +x kubectl
-          ./kubectl kustomize config/default > release.yaml
+          # Pin the image this run pushed; config/manager uses :latest.
+          ./kubectl kustomize config/default \
+            | sed "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${VERSION}|" \
+            > release.yaml
+          grep -q "image: ghcr.io/lhns/kube-vnet:${VERSION}$" release.yaml
 
       - name: package & push Helm chart
         id: helm_push
