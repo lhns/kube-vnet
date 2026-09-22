@@ -57,7 +57,7 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 	// The namespace is the authority on whether we touch this pod at all.
 	// The webhook configuration also carries a namespaceSelector, but that
 	// cannot express --disabled-namespaces, so the check is repeated here.
-	managed, err := m.namespaceManaged(ctx, req.Namespace)
+	managed, err := namespaceManaged(ctx, m.Reader, m.NSFilter, req.Namespace)
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
@@ -109,18 +109,18 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 
 // namespaceManaged reads the Namespace from cache and applies the same
 // filter the reconcilers use.
-func (m *Mutator) namespaceManaged(ctx context.Context, name string) (bool, error) {
+func namespaceManaged(ctx context.Context, reader client.Reader, filter *controller.NamespaceFilter, name string) (bool, error) {
 	if name == "" {
 		return false, nil
 	}
 	ns := &corev1.Namespace{}
-	if err := m.Reader.Get(ctx, client.ObjectKey{Name: name}, ns); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Name: name}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("read namespace %q: %w", name, err)
 	}
-	return m.NSFilter.IsManaged(ns), nil
+	return filter.IsManaged(ns), nil
 }
 
 // applyDesiredPreservingUnknown writes the resolved labels onto pod and

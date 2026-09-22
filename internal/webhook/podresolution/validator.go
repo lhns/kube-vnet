@@ -3,6 +3,7 @@ package podresolution
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -80,12 +81,12 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 	// Nothing to police. Checked before the namespace lookup and the
 	// resolve so the overwhelmingly common case — a pod nobody is trying
 	// to forge stamps on — costs one map scan.
-	if equalLabels(oldManaged, newManaged) {
+	if maps.Equal(oldManaged, newManaged) {
 		return admission.Allowed("no change to kube-vnet.system labels")
 	}
 
 	desired := map[string]string{}
-	managed, err := v.namespaceManaged(ctx, req.Namespace)
+	managed, err := namespaceManaged(ctx, v.Reader, v.NSFilter, req.Namespace)
 	if err != nil {
 		// failurePolicy: Fail — an unreachable operator blocks the write
 		// rather than letting an unverifiable stamp through.
@@ -132,11 +133,6 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 	return admission.Allowed("kube-vnet.system labels match resolved membership")
 }
 
-func (v *Validator) namespaceManaged(ctx context.Context, name string) (bool, error) {
-	m := &Mutator{Reader: v.Reader, NSFilter: v.NSFilter}
-	return m.namespaceManaged(ctx, name)
-}
-
 func managedLabels(pod *corev1.Pod) map[string]string {
 	out := map[string]string{}
 	for k, v := range pod.Labels {
@@ -145,16 +141,4 @@ func managedLabels(pod *corev1.Pod) map[string]string {
 		}
 	}
 	return out
-}
-
-func equalLabels(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
 }
