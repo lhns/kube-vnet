@@ -7,8 +7,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -125,7 +123,6 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-
 // ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
 // baseline/binding/label rule names a vnet the pod's namespace cannot join.
 // It is deliberately uniform across system and user vnets (ADR 0043): the
@@ -179,7 +176,6 @@ func bareJoinLabelHint(labelKey, suffix string) string {
 		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
 }
 
-
 // CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
 // or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
 // cluster-singleton exception per ADR 0033 (Amendment):
@@ -208,11 +204,6 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 	return scopeNS + "." + suffix
 }
 
-
-func selectorFromLabelSelector(s *metav1.LabelSelector) (labels.Selector, error) {
-	return metav1.LabelSelectorAsSelector(s)
-}
-
 // applyResolution computes the desired kube-vnet.system/net.* +
 // kube-vnet.system/host-port.* label set, diffs it against the pod's
 // current labels, and patches if needed.
@@ -229,7 +220,7 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 	// kube-vnet.system/net.* membership family and the new
 	// kube-vnet.system/host-port.* exposure family (ADR 0040).
 	patched := pod.DeepCopy()
-	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, desired)
+	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, desired)
 	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] != "" {
 		// Already in sync and the resolved-generation annotation is set —
 		// no API write needed.
@@ -244,13 +235,6 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 	// churn the 0.7.x work removed.
 	patched.Annotations[AnnotationResolvedBy] = ResolvedByController
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
-}
-
-// isResolutionManagedLabel returns true for the two label families the
-// resolution controller stamps on pods.
-func isResolutionManagedLabel(k string) bool {
-	return strings.HasPrefix(k, LabelSystemNetPrefix) ||
-		strings.HasPrefix(k, LabelSystemHostPortPrefix)
 }
 
 // desiredHostPortStamps returns the set of host-port label keys this pod
@@ -283,7 +267,7 @@ func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	patched := pod.DeepCopy()
 	// Empty desired-set → syncManagedLabels removes every managed label.
-	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, nil)
+	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, nil)
 	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] == "" {
 		return ctrl.Result{}, nil
 	}

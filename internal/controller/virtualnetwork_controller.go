@@ -124,13 +124,13 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
 			clearMembers(req.Namespace, req.Name)
-			return ctrl.Result{}, r.cleanupForDeleted(ctx, req.Namespace, req.Name)
+			return ctrl.Result{}, r.deleteMembershipPolicies(ctx, req.Namespace, req.Name, nil)
 		}
 		return ctrl.Result{}, err
 	}
 	if !vnet.DeletionTimestamp.IsZero() {
 		clearMembers(vnet.Namespace, vnet.Name)
-		return ctrl.Result{}, r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
+		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
 	}
 
 	// Snapshot prior condition states so we can emit events on transitions,
@@ -172,7 +172,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		// Clean up any policies that may exist from a previous reconcile.
-		_ = r.cleanupForDeleted(ctx, vnet.Namespace, vnet.Name)
+		_ = r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
 		return ctrl.Result{}, nil
 	}
 
@@ -186,11 +186,11 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		MembersByNS: members,
 	})
 
-	desiredKeys := make(map[string]bool, len(out.Policies))
+	desiredKeys := make(map[client.ObjectKey]bool, len(out.Policies))
 	policyRefs := make([]vnetv1alpha1.PolicyRef, 0, len(out.Policies))
 	for i := range out.Policies {
 		p := &out.Policies[i]
-		desiredKeys[p.Namespace+"/"+p.Name] = true
+		desiredKeys[client.ObjectKeyFromObject(p)] = true
 		restored, err := r.applyPolicyAndDetectRestore(ctx, p)
 		if err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
@@ -209,11 +209,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
 
-	// Baseline lifecycle is owned by NamespaceReconciler (ADR 0023, kept under
-	// ADR 0030). Per ADR 0030 + ADR 0035 the baseline is uniformly deny-all
-	// selecting every pod; the vnet reconciler doesn't touch it.
-
-	if err := r.deleteStale(ctx, vnet, desiredKeys); err != nil {
+	if err := r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, desiredKeys); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -241,13 +237,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	totalMembers := 0
 	for _, byDir := range members {
-		seen := map[string]struct{}{}
-		for _, pods := range byDir {
-			for _, p := range pods {
-				seen[p] = struct{}{}
-			}
-		}
-		totalMembers += len(seen)
+		totalMembers += len(uniquePods(byDir))
 	}
 	setMembers(vnet.Namespace, vnet.Name, totalMembers)
 
@@ -434,12 +424,6 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		members[p.Namespace][dir] = append(members[p.Namespace][dir], p.Name)
 	}
 
-	// Sort pod lists for deterministic output (used by status.members display).
-	for ns := range members {
-		for dir := range members[ns] {
-			sort.Strings(members[ns][dir])
-		}
-	}
 	return members, invalid, nil
 }
 
@@ -476,59 +460,36 @@ func (r *VirtualNetworkReconciler) applyPolicyAndDetectRestore(
 	return wasAbsent, nil
 }
 
-// deleteStale removes operator-managed membership policies for this vnet
-// that aren't in the desired set. Baseline lifecycle is owned by
-// NamespaceReconciler (ADR 0023).
-func (r *VirtualNetworkReconciler) deleteStale(
-	ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, desired map[string]bool,
+// deleteMembershipPolicies deletes the vnet's membership policies, in every
+// namespace, except those in keep (nil deletes all). The baseline belongs to
+// NamespaceReconciler and is never touched here.
+func (r *VirtualNetworkReconciler) deleteMembershipPolicies(
+	ctx context.Context, homeNS, name string, keep map[client.ObjectKey]bool,
 ) error {
-	netID := vnet.Namespace + "." + vnet.Name
-	var existing networkingv1.NetworkPolicyList
-	if err := r.List(ctx, &existing, client.MatchingLabels{
+	return sweepStalePolicies(ctx, r.Client, []client.ListOption{client.MatchingLabels{
 		LabelManagedBy: LabelManagedByValue,
-		LabelNetwork:   netID,
-	}); err != nil {
-		return err
-	}
-	for i := range existing.Items {
-		p := &existing.Items[i]
-		if desired[p.Namespace+"/"+p.Name] {
-			continue
-		}
-		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
+		LabelNetwork:   homeNS + "." + name,
+	}}, keep)
 }
 
-// cleanupForDeleted removes all operator-managed membership policies for a
-// deleted VirtualNetwork. The baseline is owned by NamespaceReconciler
-// independently and isn't tied to any specific vnet's lifecycle; we don't
-// touch it here. See ADR 0023 (decoupling) and ADR 0030 (current shape).
-func (r *VirtualNetworkReconciler) cleanupForDeleted(ctx context.Context, ns, name string) error {
-	netID := ns + "." + name
-	var policies networkingv1.NetworkPolicyList
-	if err := r.List(ctx, &policies, client.MatchingLabels{
-		LabelManagedBy: LabelManagedByValue,
-		LabelNetwork:   netID,
-	}); err != nil {
-		return err
-	}
-	for i := range policies.Items {
-		p := &policies.Items[i]
-		if err := r.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-			return err
+// uniquePods flattens a direction → pods map into a sorted, deduplicated list.
+func uniquePods(byDir map[Direction][]string) []string {
+	seen := map[string]struct{}{}
+	for _, pods := range byDir {
+		for _, p := range pods {
+			seen[p] = struct{}{}
 		}
 	}
-	return nil
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
-// updateStatus writes status fields via the subresource.
-//
-// `members` is namespace → direction → pods (canonical post-ADR-0033 shape).
-// For status display we collapse to a flat per-namespace pod list
-// (deduplicated; pods listed under multiple directions count once).
+// updateStatus writes status fields via the subresource, flattening members
+// to one pod list per namespace.
 func (r *VirtualNetworkReconciler) updateStatus(
 	ctx context.Context,
 	vnet *vnetv1alpha1.VirtualNetwork,
@@ -538,18 +499,7 @@ func (r *VirtualNetworkReconciler) updateStatus(
 ) error {
 	out := make([]vnetv1alpha1.NamespaceMembers, 0, len(members))
 	for ns, byDir := range members {
-		seen := map[string]struct{}{}
-		for _, pods := range byDir {
-			for _, p := range pods {
-				seen[p] = struct{}{}
-			}
-		}
-		pods := make([]string, 0, len(seen))
-		for p := range seen {
-			pods = append(pods, p)
-		}
-		sort.Strings(pods)
-		out = append(out, vnetv1alpha1.NamespaceMembers{Namespace: ns, Pods: pods})
+		out = append(out, vnetv1alpha1.NamespaceMembers{Namespace: ns, Pods: uniquePods(byDir)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Namespace < out[j].Namespace })
 
@@ -614,29 +564,31 @@ func (r *VirtualNetworkReconciler) emitTransitionEvents(
 
 // setReady upserts the Ready condition.
 func setReady(vnet *vnetv1alpha1.VirtualNetwork, status metav1.ConditionStatus, reason, msg string) {
-	upsertCondition(vnet, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
+	upsertCondition(&vnet.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
 
 // setDegraded upserts the Degraded condition.
 func setDegraded(vnet *vnetv1alpha1.VirtualNetwork, status metav1.ConditionStatus, reason, msg string) {
-	upsertCondition(vnet, metav1.Condition{Type: "Degraded", Status: status, Reason: reason, Message: msg})
+	upsertCondition(&vnet.Status.Conditions, metav1.Condition{Type: "Degraded", Status: status, Reason: reason, Message: msg})
 }
 
-func upsertCondition(vnet *vnetv1alpha1.VirtualNetwork, c metav1.Condition) {
+// upsertCondition replaces or appends c, keeping the existing
+// LastTransitionTime unless the status flips.
+func upsertCondition(conds *[]metav1.Condition, c metav1.Condition) {
 	now := metav1.Now()
-	for i, existing := range vnet.Status.Conditions {
+	for i, existing := range *conds {
 		if existing.Type == c.Type {
 			if existing.Status != c.Status {
 				c.LastTransitionTime = now
 			} else {
 				c.LastTransitionTime = existing.LastTransitionTime
 			}
-			vnet.Status.Conditions[i] = c
+			(*conds)[i] = c
 			return
 		}
 	}
 	c.LastTransitionTime = now
-	vnet.Status.Conditions = append(vnet.Status.Conditions, c)
+	*conds = append(*conds, c)
 }
 
 func conditionStatus(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.ConditionStatus {

@@ -97,7 +97,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	// Check vnet's allowedNamespaces permits this binding's namespace.
-	allowed, err := nsPermits(ctx, r.Client, vnet, b.Namespace)
+	allowed, err := PermitsForVnet(ctx, r.Client, vnet, b.Namespace)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -147,34 +147,7 @@ func (r *VirtualNetworkBindingReconciler) writeStatus(
 }
 
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {
-	upsertBindingCondition(b, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
-}
-
-func upsertBindingCondition(b *vnetv1alpha1.VirtualNetworkBinding, c metav1.Condition) {
-	now := metav1.Now()
-	for i, existing := range b.Status.Conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = now
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			b.Status.Conditions[i] = c
-			return
-		}
-	}
-	c.LastTransitionTime = now
-	b.Status.Conditions = append(b.Status.Conditions, c)
-}
-
-// nsPermits routes the binding's allowedNamespaces decision through the
-// shared PermitsForVnet helper — the single source of truth in
-// permits.go. This was previously a hand-rolled reimplementation that
-// was missing the cluster-vnet short-circuit and agreed with the shared
-// logic only via the `AllowedNamespaces{All:true}` coupling on the
-// cluster system vnet.
-func nsPermits(ctx context.Context, c client.Client, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	return PermitsForVnet(ctx, c, vnet, ns)
+	upsertCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
 
 func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -185,7 +158,7 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 			handler.EnqueueRequestsFromMapFunc(r.vnetToBindings),
 		).
 		// This reconcile also reads pods (status.attachedPods) and its own
-		// namespace (IsManaged, plus the labels nsPermits may match on), and
+		// namespace (IsManaged, plus the labels PermitsForVnet may match on), and
 		// watched neither — so with no requeue either, the status froze at
 		// whatever was true when the binding was last reconciled. Both mappings
 		// are trivial because a binding only ever selects pods in its own

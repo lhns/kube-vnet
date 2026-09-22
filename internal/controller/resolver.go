@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -265,7 +266,7 @@ func (r *Resolver) bindingRules(ctx context.Context, pod *corev1.Pod) ([]Resolut
 	var out []ResolutionRule
 	for i := range vnbs.Items {
 		b := &vnbs.Items[i]
-		podSel, err := selectorFromLabelSelector(&b.Spec.PodSelector)
+		podSel, err := metav1.LabelSelectorAsSelector(&b.Spec.PodSelector)
 		if err != nil {
 			// Malformed selector on the binding itself: a per-object
 			// data problem, not a transient error. Skip the binding;
@@ -323,9 +324,8 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			continue
 		}
 		suffix := strings.TrimPrefix(k, userNetPrefix)
-		key := canonicalKeyFromPodLabelSuffix(suffix, pod.Namespace)
 		out = append(out, ResolutionRule{
-			Vnet:      key,
+			Vnet:      VnetKey(CanonicalSuffix(suffix, pod.Namespace)),
 			Direction: dir,
 			Source:    "<pod-label>",
 			// No Ref: a join label carries no namespace field to be wrong
@@ -336,12 +336,6 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 		})
 	}
 	return out
-}
-
-// canonicalKeyFromPodLabelSuffix translates a pod-label suffix (the part
-// after `kube-vnet/net.`) into the canonical FQ VnetKey via CanonicalSuffix.
-func canonicalKeyFromPodLabelSuffix(suffix, podNS string) VnetKey {
-	return VnetKey(CanonicalSuffix(suffix, podNS))
 }
 
 // canonicalVnetKey turns a vnet reference into the VnetKey to check
@@ -377,7 +371,8 @@ func canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey 
 // two families the resolver owns on pods: `kube-vnet.system/net.*` membership
 // stamps and `kube-vnet.system/host-port.*` exposure stamps.
 func IsResolutionManagedLabel(k string) bool {
-	return isResolutionManagedLabel(k)
+	return strings.HasPrefix(k, LabelSystemNetPrefix) ||
+		strings.HasPrefix(k, LabelSystemHostPortPrefix)
 }
 
 // ServiceAccountUsername renders the apiserver username for a ServiceAccount.

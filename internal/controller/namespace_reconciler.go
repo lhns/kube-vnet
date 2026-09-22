@@ -64,27 +64,14 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	// Disabled namespaces get no kube-vnet objects at all — bypass
-	// DesiredBaseline (which now always returns a non-nil policy) and sweep
-	// any leftovers.
+	baselines := inNamespacePolicyLabels(ns.Name, map[string]string{LabelRole: LabelRoleBaseline})
+
+	// Disabled namespaces get no baseline: sweep any leftover.
 	if !r.NSFilter.IsManaged(ns) {
-		var existing networkingv1.NetworkPolicyList
-		if err := r.List(ctx, &existing,
-			client.InNamespace(ns.Name),
-			client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleBaseline},
-		); err != nil {
-			return ctrl.Result{}, err
-		}
-		for i := range existing.Items {
-			if err := r.Delete(ctx, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, nil)
 	}
 
 	desired := DesiredBaseline(ns.Name)
-
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
@@ -93,19 +80,10 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Self-heal: any baseline-labeled policy in this NS whose name doesn't
-	// match the desired one (legacy `kube-vnet` literals, renamed baselines,
-	// orphans from a previous reconciler version) gets swept by name.
-	keep := map[client.ObjectKey]bool{
-		{Namespace: ns.Name, Name: BaselinePolicyName}: true,
-	}
-	if err := sweepStalePolicies(ctx, r.Client,
-		inNamespacePolicyLabels(ns.Name, map[string]string{LabelRole: LabelRoleBaseline}),
-		keep,
-	); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	// Sweep baseline-labelled policies under any other name (e.g. from an
+	// older naming scheme).
+	keep := map[client.ObjectKey]bool{client.ObjectKeyFromObject(desired): true}
+	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, keep)
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
