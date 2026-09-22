@@ -143,9 +143,7 @@ scrape_configs:
 
 ### Sample alerting rules
 
-The four recommended alert rules (apply errors, reconcile error rate, slow reconcile, repeated PolicyRestored) live with the metric definitions in [`../reference/metrics-and-events.md` (Sample alert rules)](../reference/metrics-and-events.md#sample-alert-rules) - one canonical copy, kept in sync with the metrics they reference.
-
-(The `kube_events` series above is from `kube-state-metrics`. If you're not running it, watch `kubectl get events --field-selector reason=PolicyRestored -A` instead.)
+Four starter rules (apply errors, reconcile error rate, slow reconcile, repeated `PolicyRestored`) are in [metrics-and-events § sample alert rules](../reference/metrics-and-events.md#sample-alert-rules). The `PolicyRestored` rule needs `kube-state-metrics`; without it, watch `kubectl get events --field-selector reason=PolicyRestored -A`.
 
 ### Logs
 

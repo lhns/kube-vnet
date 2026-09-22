@@ -184,7 +184,7 @@ Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md) and [ADR 
 
 **Egress is unrestricted by the baseline.** Membership policies are ingress-only; generic egress (DNS, the apiserver, the public internet, other namespaces) is not restricted by kube-vnet. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [`recipes.md`](../guides/recipes.md).
 
-The baseline `NetworkPolicy` is named `kube-vnet.base` (per [ADR 0039](../adr/0039-uniform-kind-prefixed-policy-naming.md)) and labeled `kube-vnet.system/managed-by=kube-vnet, kube-vnet.system/role=baseline`.
+The baseline `NetworkPolicy` is named `kube-vnet.base` ([ADR 0039](../adr/0039-uniform-kind-prefixed-policy-naming.md)), labeled `kube-vnet.system/role=baseline`, and owned by the `NamespaceReconciler` — independent of any vnet.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -207,9 +207,7 @@ The former `--elide-baseline-for` exemption was removed by [ADR 0035](../adr/003
 
 A singleton `ClusterVirtualNetworkBaseline` named `default` declares membership every pod inherits, with per-vnet override-permission encoded in the eight-value `Direction` enum (bare = enforced, `default-*` = override-permitted by lower tiers). The chart seeds this CR from `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}` — pick a preset (`pod` / `namespace` / `cluster`) or supply an explicit memberships map. Per-namespace overrides go in a `VirtualNetworkBaseline` named `default` in the namespace; per-pod overrides go in a `VirtualNetworkBinding` (must select specific pods) or via the `kube-vnet/net.<vnet>=<dir>` label. Conflicts within a tier (or across siblings at the pod tier) resolve via intersection (fail-closed). See ADR 0031.
 
-### Baseline ownership
 
-The baseline lifecycle is owned by the **`NamespaceReconciler`**, which watches namespaces and applies the deny-all baseline to every managed namespace. The `VirtualNetworkReconciler` only writes membership policies; it never touches the baseline.
 
 ### Disabling the operator for a namespace
 
@@ -295,15 +293,9 @@ This is why the operator can't do its job from a single cluster-scoped policy: s
 
 ## Drift correction
 
-The operator watches every `NetworkPolicy` carrying `kube-vnet.system/managed-by=kube-vnet`. If one is edited or deleted out-of-band:
+The operator watches the objects it owns. If one of its `NetworkPolicy`s is edited or deleted out-of-band, the owning reconciler re-applies it with server-side apply and forced field ownership; a re-created membership policy also emits a `Warning PolicyRestored` Event on its vnet. Per-family details: [architecture § drift correction](../internals/architecture.md#drift-correction).
 
-- A membership policy's `kube-vnet.system/network` label maps the event back to the owning VirtualNetwork, and the reconciler re-applies the desired spec via server-side apply with field manager `kube-vnet`. If the policy had been deleted, a `Warning PolicyRestored` Event is emitted on the vnet.
-- A baseline (`role=baseline`) event re-enqueues its namespace, and the `NamespaceReconciler` re-applies it (no event).
-- Auto-allow policies are restored by their own reconcilers.
-
-Server-side apply is used with `client.ForceOwnership`, so the operator reliably reclaims field ownership on its own resources. See [ADR 0009](../adr/0009-server-side-apply-with-field-manager.md) and [ADR 0019](../adr/0019-baseline-durability.md).
-
-**What drift correction does *not* do:** it can't prevent the deletion in the first place. There is a sub-second-to-a-few-seconds window where the policy is gone and traffic that the policy would have denied is allowed. Drift correction is a best-effort defense against accidental deletion, unaware tooling, and most non-malicious cases. For hard-guarantee namespace-RBAC-resistant deny rules, the proper Kubernetes tool is `AdminNetworkPolicy` — tracked in ADR 0019 as the future direction.
+Drift correction can't prevent the deletion: for a sub-second to few-second window the policy is gone and traffic it would have denied is allowed. It defends against accidents and unaware tooling, not a namespace owner determined to open a hole. The hard-guarantee tool is `AdminNetworkPolicy` ([ADR 0019](../adr/0019-baseline-durability.md)).
 
 ---
 
@@ -314,11 +306,7 @@ Each VirtualNetwork carries two conditions in `status.conditions`:
 - **`Ready`** — true when the desired NetworkPolicy set has been applied. False when something is preventing reconciliation (apply error, invalid name, home namespace excluded).
 - **`Degraded`** — true when a pod's join label for this vnet can't be honored (unknown direction value, namespace not permitted, or namespace disabled), or with `Ready=False` on an invalid name or excluded home namespace.
 
-Each `VirtualNetworkBinding` similarly carries a `Ready` condition with reasons `PodsAttached`, `NoPodsMatch`, `VirtualNetworkNotFound`, `NamespaceNotAllowed`, `NamespaceExcluded`, `UnknownDirection`, or `InvalidSelector`.
-
-Both conditions follow the standard `metav1.Condition` shape: `type`, `status`, `reason`, `message`, `lastTransitionTime`. Tools that consume this pattern (`kubectl wait --for=condition=Ready`, dashboards, event aggregators) work out of the box.
-
-Transitions also emit Kubernetes Events. See [ADR 0012](../adr/0012-status-conditions-ready-and-degraded.md) and [ADR 0016](../adr/0016-emit-events-on-condition-transitions.md), and the full reason taxonomy in [`reference/api.md`](../reference/api.md).
+Each `VirtualNetworkBinding` carries a `Ready` condition too. All are standard `metav1.Condition`s, so `kubectl wait --for=condition=Ready` works. Transitions also emit Kubernetes Events ([ADR 0012](../adr/0012-status-conditions-ready-and-degraded.md), [ADR 0016](../adr/0016-emit-events-on-condition-transitions.md)). Every reason: [`reference/api.md`](../reference/api.md).
 
 ---
 

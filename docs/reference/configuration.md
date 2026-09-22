@@ -96,7 +96,7 @@ Off by default. When enabled, pods are stamped with their `kube-vnet.system/net.
 
 ### `dnsCarveout.*` (CoreDNS ingress carve-out — ADR 0042)
 
-A chart-shipped `NetworkPolicy` (not operator-managed) that keeps CoreDNS reachable on `:53` when its namespace is managed by kube-vnet. Without it, removing `kube-system` from `disabledNamespaces` would apply the deny-all baseline to CoreDNS and break cluster DNS. DNS needs *universal* reachability (every pod, plus hostNetwork clients on the node IP), so it's a raw `ipBlock: 0.0.0.0/0` policy — the same shape the auto-allow families use — not a vnet binding.
+A chart-shipped `NetworkPolicy`, `kube-vnet-coredns-allow`, that keeps CoreDNS reachable on `:53` from `0.0.0.0/0` when its namespace is managed. Why and when: [recipes § managing kube-system](../guides/recipes.md#managing-kube-system-and-keeping-dns-alive).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -148,7 +148,7 @@ See [`security.md`](../security/security.md#who-can-write-what) for the trust-mo
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`../operations.md`](../guides/operations.md#resource-sizing) for sizing guidance. |
+| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`operations.md`](../guides/operations.md#resource-sizing) for sizing guidance. |
 | `livenessProbe.initialDelaySeconds` | int | `15` | Standard. |
 | `livenessProbe.periodSeconds` | int | `20` | Standard. |
 | `readinessProbe.initialDelaySeconds` | int | `5` | Standard. |
@@ -195,7 +195,7 @@ A few of the defaults aren't obvious; here's why.
 
 ### Why `replicaCount: 1`?
 
-kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. The exception is `webhook.enabled=true`: pod admission then depends on the operator, so run at least 2. See [`../operations.md`](../guides/operations.md#deployment-topology).
+kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. The exception is `webhook.enabled=true`: pod admission then depends on the operator, so run at least 2. See [`operations.md`](../guides/operations.md#deployment-topology).
 
 ### Why `--leader-elect=true` in the chart but `false` in the binary?
 
@@ -205,10 +205,10 @@ In the chart, so scaling is a one-line change. In the binary, so `make run` does
 
 `kube-system` holds cluster-critical pods (CoreDNS, the metrics server, the apiserver aggregator) where a deny-all baseline actually bites, so the operator stays out of it entirely by default (no baseline, no system vnets, no resolution stamping). `kube-public` and `kube-node-lease` hold no pods, so managing them is inert — they are *not* disabled by default (ADR 0042 narrowed the set from all three to just `kube-system`).
 
-To enroll `kube-system` (e.g. to segment DNS or bring its pods into vnets), remove it from this list. When you do, the chart automatically renders the CoreDNS carve-out (`dnsCarveout`, above) so cluster DNS keeps working — otherwise the deny-all baseline would break it. Everything else in `kube-system` is already covered: hostNetwork pods are skipped, and metrics-server is reached via the `ext.apiserver` family. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
+To enroll `kube-system`, remove it from the list; the chart then renders the CoreDNS carve-out. See [recipes § managing kube-system](../guides/recipes.md#managing-kube-system-and-keeping-dns-alive) and [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
 
 The operator's own namespace is implicitly added to `disabledNamespaces` so that a misconfigured `allowedNamespaces.all: true` vnet can't accidentally lock the operator out of itself.
 
 ### Why such small `resources.requests`?
 
-Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`../operations.md` § Resource sizing](../guides/operations.md#resource-sizing) for when to bump.
+Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`operations.md` § Resource sizing](../guides/operations.md#resource-sizing) for when to bump.

@@ -197,33 +197,11 @@ You've used the first; the other two cover cases where you can't (or shouldn't) 
 
 When several sources disagree about the same pod and vnet, resolution is **fail-closed**: within a tier, directions intersect; across tiers, a lower tier may override only values the upper tier marked `default-*`. Full rules: [concepts § direction modes](concepts.md#direction-modes-on-the-join-label).
 
-## 8. Directions
+## 8. Directions and cross-namespace networks
 
-The label/binding/baseline *value* declares which way traffic flows for that pod on that network:
+The value (`both`, `ingress`, `egress`, `none`; baselines also `default-*`) sets which way traffic flows — see [concepts § direction modes](concepts.md#direction-modes-on-the-join-label). To let pods from other namespaces join, set `spec.allowedNamespaces` on the vnet ([samples 02–04](../../config/samples/)); it grants join *eligibility*, not access — see [concepts § cross-namespace reach](concepts.md#cross-namespace-reach-allowednamespaces).
 
-| Value | Meaning | Legal on |
-|---|---|---|
-| `both` | accept ingress from members AND initiate to members | pod label, binding, baseline |
-| `ingress` | accept only (e.g. a read-only API) | pod label, binding, baseline |
-| `egress` | initiate only (e.g. a metrics shipper) | pod label, binding, baseline |
-| `none` | not a member; also cancels inherited memberships | pod label, binding, baseline |
-| `default-both` / `default-ingress` / `default-egress` / `default-none` | same as the bare value, but **overridable** by lower tiers | baselines only |
-
-## 9. Cross-namespace networks
-
-By default only pods in the vnet's own namespace may join. `spec.allowedNamespaces` widens that — it is **join eligibility, not blanket access**; pods in allowed namespaces still need a membership:
-
-```yaml
-spec:
-  allowedNamespaces:
-    names: [webapp, monitoring]          # explicit list        (sample 02)
-    # selector: { matchLabels: { tier: prod } }   # by NS label (sample 03)
-    # all: true                                   # any namespace (sample 04)
-```
-
-Multiple matchers union; the home namespace is always included. See [concepts § cross-namespace reach](concepts.md#cross-namespace-reach-allowednamespaces).
-
-## 10. What the operator handles without you asking
+## 9. What the operator handles without you asking
 
 The deny-all baseline would break three kinds of legitimate traffic that never match a pod-selector rule — so the operator detects and allows them automatically ([full guide](../guides/auto-allow.md)):
 
@@ -235,7 +213,7 @@ Each emits a visible, labeled `kube-vnet.ext.*` policy you can inspect, and each
 
 Also automatic: **drift correction** (hand-edits to operator-managed policies are reverted), **cleanup** (deleting a vnet removes every policy it generated), and **hands-off namespaces** (`kube-vnet/disabled=true` annotation or `operator.disabledNamespaces`).
 
-## 11. Clean up the demo
+## 10. Clean up the demo
 
 ```bash
 kubectl delete namespace demo
