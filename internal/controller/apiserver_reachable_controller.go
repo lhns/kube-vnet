@@ -2,10 +2,9 @@ package controller
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -23,10 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -185,61 +182,48 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 // Service's own annotation, returning the sorted unique set of ports
 // reached for this Service. Returns nil if nothing references this Service.
 func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Context, svc *corev1.Service) ([]int32, error) {
-	portSet := map[int32]struct{}{}
+	var refs []serviceRef
 
-	// 1. ValidatingWebhookConfigurations
 	var vwhcs admissionregistrationv1.ValidatingWebhookConfigurationList
 	if err := r.List(ctx, &vwhcs); err != nil {
 		return nil, err
 	}
 	for i := range vwhcs.Items {
-		for _, ref := range extractValidatingWebhookRefs(&vwhcs.Items[i]) {
-			if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
-				portSet[ref.Port] = struct{}{}
-			}
-		}
+		refs = append(refs, extractValidatingWebhookRefs(&vwhcs.Items[i])...)
 	}
 
-	// 2. MutatingWebhookConfigurations
 	var mwhcs admissionregistrationv1.MutatingWebhookConfigurationList
 	if err := r.List(ctx, &mwhcs); err != nil {
 		return nil, err
 	}
 	for i := range mwhcs.Items {
-		for _, ref := range extractMutatingWebhookRefs(&mwhcs.Items[i]) {
-			if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
-				portSet[ref.Port] = struct{}{}
-			}
-		}
+		refs = append(refs, extractMutatingWebhookRefs(&mwhcs.Items[i])...)
 	}
 
-	// 3. APIServices
 	var apisvcs apiregistrationv1.APIServiceList
 	if err := r.List(ctx, &apisvcs); err != nil {
 		return nil, err
 	}
 	for i := range apisvcs.Items {
-		for _, ref := range extractAPIServiceRefs(&apisvcs.Items[i]) {
-			if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
-				portSet[ref.Port] = struct{}{}
-			}
-		}
+		refs = append(refs, extractAPIServiceRefs(&apisvcs.Items[i])...)
 	}
 
-	// 4. CustomResourceDefinitions (conversion webhook)
 	var crds apiextensionsv1.CustomResourceDefinitionList
 	if err := r.List(ctx, &crds); err != nil {
 		return nil, err
 	}
 	for i := range crds.Items {
-		for _, ref := range extractCRDConversionRefs(&crds.Items[i]) {
-			if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
-				portSet[ref.Port] = struct{}{}
-			}
+		refs = append(refs, extractCRDConversionRefs(&crds.Items[i])...)
+	}
+
+	portSet := map[int32]struct{}{}
+	for _, ref := range refs {
+		if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
+			portSet[ref.Port] = struct{}{}
 		}
 	}
 
-	// 5. Annotation escape hatch — Service opts itself in for every
+	// Annotation escape hatch — Service opts itself in for every
 	// Service port. Treats the annotation as "expose all my ports" rather
 	// than per-port; users who want per-port use the existing single-
 	// Service hand-written NetworkPolicy escape path.
@@ -249,15 +233,7 @@ func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Contex
 		}
 	}
 
-	if len(portSet) == 0 {
-		return nil, nil
-	}
-	ports := make([]int32, 0, len(portSet))
-	for p := range portSet {
-		ports = append(ports, p)
-	}
-	sort.Slice(ports, func(i, j int) bool { return ports[i] < ports[j] })
-	return ports, nil
+	return slices.Sorted(maps.Keys(portSet)), nil
 }
 
 // extractValidatingWebhookRefs returns the Service refs declared in a
@@ -273,11 +249,7 @@ func extractValidatingWebhookRefs(cfg *admissionregistrationv1.ValidatingWebhook
 			continue
 		}
 		s := wh.ClientConfig.Service
-		out = append(out, serviceRef{
-			Namespace: s.Namespace,
-			Name:      s.Name,
-			Port:      derefPortOr443(s.Port),
-		})
+		out = append(out, newServiceRef(s.Namespace, s.Name, s.Port))
 	}
 	return out
 }
@@ -294,11 +266,7 @@ func extractMutatingWebhookRefs(cfg *admissionregistrationv1.MutatingWebhookConf
 			continue
 		}
 		s := wh.ClientConfig.Service
-		out = append(out, serviceRef{
-			Namespace: s.Namespace,
-			Name:      s.Name,
-			Port:      derefPortOr443(s.Port),
-		})
+		out = append(out, newServiceRef(s.Namespace, s.Name, s.Port))
 	}
 	return out
 }
@@ -311,11 +279,7 @@ func extractAPIServiceRefs(api *apiregistrationv1.APIService) []serviceRef {
 		return nil
 	}
 	s := api.Spec.Service
-	return []serviceRef{{
-		Namespace: s.Namespace,
-		Name:      s.Name,
-		Port:      derefPortOr443(s.Port),
-	}}
+	return []serviceRef{newServiceRef(s.Namespace, s.Name, s.Port)}
 }
 
 // extractCRDConversionRefs returns the Service ref declared in a CRD's
@@ -333,21 +297,17 @@ func extractCRDConversionRefs(crd *apiextensionsv1.CustomResourceDefinition) []s
 		return nil
 	}
 	s := conv.Webhook.ClientConfig.Service
-	return []serviceRef{{
-		Namespace: s.Namespace,
-		Name:      s.Name,
-		Port:      derefPortOr443(s.Port),
-	}}
+	return []serviceRef{newServiceRef(s.Namespace, s.Name, s.Port)}
 }
 
-// derefPortOr443 returns the int32 port from a *int32 pointer (admission-
-// registration and APIService all use *int32 here), defaulting to 443 per
-// the Kubernetes API spec when unset.
-func derefPortOr443(p *int32) int32 {
-	if p == nil || *p == 0 {
-		return 443
+// newServiceRef builds a serviceRef, defaulting an unset port to 443 per the
+// Kubernetes API spec.
+func newServiceRef(namespace, name string, port *int32) serviceRef {
+	p := int32(443)
+	if port != nil && *port != 0 {
+		p = *port
 	}
-	return *p
+	return serviceRef{Namespace: namespace, Name: name, Port: p}
 }
 
 // buildApiserverReachablePolicy constructs the desired NetworkPolicy for a
@@ -400,9 +360,10 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 		// Default protocol: TCP. Webhook + APIService traffic is always
 		// HTTPS over TCP per spec.
 		proto := corev1.ProtocolTCP
+		portVal := intstr.FromInt32(targetPort)
 		policyPorts = append(policyPorts, networkingv1.NetworkPolicyPort{
 			Protocol: &proto,
-			Port:     ptrIntOrString(intstr.FromInt32(targetPort)),
+			Port:     &portVal,
 		})
 	}
 	return &networkingv1.NetworkPolicy{
@@ -423,7 +384,7 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
-				MatchLabels: cloneStringMap(svc.Spec.Selector),
+				MatchLabels: maps.Clone(svc.Spec.Selector),
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
@@ -450,25 +411,10 @@ func findServicePort(svc *corev1.Service, port int32) (corev1.ServicePort, bool)
 	return corev1.ServicePort{}, false
 }
 
-func ptrIntOrString(v intstr.IntOrString) *intstr.IntOrString {
-	return &v
-}
-
-// apiserverReachablePolicyName returns a deterministic policy name per
-// ADR 0039: `kube-vnet.ext.apiserver.<svcName>-<8hex>`, total ≤63 chars.
-// The hash is over <ns>/<name>; cross-NS collisions on a truncated base
-// are made unique by NS in the hash.
+// apiserverReachablePolicyName returns
+// `kube-vnet.ext.apiserver.<svcName>-<8hex>` (ADR 0039).
 func apiserverReachablePolicyName(svc *corev1.Service) string {
-	const prefix = "kube-vnet." + PolicyKindExternal + "." + PolicySourceKindApiserver + "."
-	const hashLen = 8
-	const maxNameLen = 63
-	maxBase := maxNameLen - len(prefix) - 1 - hashLen
-	base := svc.Name
-	if len(base) > maxBase {
-		base = base[:maxBase]
-	}
-	h := sha256.Sum256([]byte(svc.Namespace + "/" + svc.Name))
-	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
+	return servicePolicyName(PolicySourceKindApiserver, svc)
 }
 
 // deletePolicyForService removes every apiserver-reachable policy owned
@@ -502,27 +448,6 @@ func (r *ApiserverReachableReconciler) deletePolicyByServiceKey(ctx context.Cont
 }
 
 func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Re-enqueue the source Service when our apiserver-reachable policy
-	// is touched (delete = drift correction; user-edit-then-update =
-	// SSA reapply). Filter by the source-kind label so this watch doesn't
-	// fight with the ExternalAllowReconciler's policy watch.
-	apiserverPolPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		l := obj.GetLabels()
-		return l[LabelManagedBy] == LabelManagedByValue &&
-			l[LabelRole] == LabelRoleExternalAllow &&
-			l[LabelSourceKind] == LabelSourceKindApiserver
-	})
-
-	// Pod creates only — a new pod is the only event that can unblock a
-	// previously-unresolvable named targetPort. Mirrors the same predicate
-	// in ExternalAllowReconciler (ADR 0038).
-	podCreateOnly := predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		UpdateFunc:  func(event.UpdateEvent) bool { return false },
-		DeleteFunc:  func(event.DeleteEvent) bool { return false },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("apiserver-reachable").
 		For(&corev1.Service{}).
@@ -533,15 +458,15 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			// Service name. See ADR 0011 (amended).
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
 				&corev1.Service{}, handler.OnlyControllerOwner()),
-			builder.WithPredicates(apiserverPolPredicate),
+			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindApiserver)),
 		).
 		Watches(
 			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToServices),
+			handler.EnqueueRequestsFromMapFunc(namespaceToServices(r.Client)),
 		).
 		Watches(
 			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.podToServicesWithNamedPorts),
+			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
 			builder.WithPredicates(podCreateOnly),
 		).
 		Watches(
@@ -561,54 +486,6 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 			handler.EnqueueRequestsFromMapFunc(crdConversionToServices),
 		).
 		Complete(r)
-}
-
-// podToServicesWithNamedPorts enqueues every Service in the new pod's
-// namespace that uses any named (string-typed) targetPort — those are
-// the only Services whose policy emission might have been blocked
-// waiting for this pod's containerPort names. Numeric-targetPort
-// Services don't depend on Pod state at all. Bounded by NS size.
-//
-// Mirrors ExternalAllowReconciler.podToServicesWithNamedPorts; reuses
-// the same `hasNamedTargetPort` helper from external_allow_controller.go.
-func (r *ApiserverReachableReconciler) podToServicesWithNamedPorts(ctx context.Context, obj client.Object) []reconcile.Request {
-	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetNamespace())); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0)
-	for i := range svcs.Items {
-		if !hasNamedTargetPort(&svcs.Items[i]) {
-			continue
-		}
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
-		})
-	}
-	return out
-}
-
-// namespaceToServices enqueues every Service in the namespace that
-// changed. Catches mid-flight kube-vnet/external-allow=false flips
-// where no Service event fires but existing policies should go away.
-func (r *ApiserverReachableReconciler) namespaceToServices(ctx context.Context, obj client.Object) []reconcile.Request {
-	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetName())); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(svcs.Items))
-	for i := range svcs.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
-		})
-	}
-	return out
 }
 
 // validatingWebhookToServices / mutatingWebhookToServices / apiServiceToServices /

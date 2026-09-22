@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"maps"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -12,7 +13,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -290,7 +290,7 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{
-				MatchLabels: cloneStringMap(svc.Spec.Selector),
+				MatchLabels: maps.Clone(svc.Spec.Selector),
 			},
 			Ingress: []networkingv1.NetworkPolicyIngressRule{
 				{
@@ -386,21 +386,17 @@ func labelsMatchSelector(labels, selector map[string]string) bool {
 	return true
 }
 
-// externalAllowPolicyName returns a deterministic policy name for a
-// Service-source external-allow policy. Per ADR 0039 the shape is
-// `kube-vnet.ext.svc.<svcName>-<8hex>`, total ≤63 chars (Kubernetes name
-// limit). The hash makes truncated names unique by the full <ns>/<name>.
-//
-// "ext" is the kind (external-allow); "svc" distinguishes Service-source
-// policies from the future hostPort-source `kube-vnet.ext.host.*` shape
-// (per ADR 0040). The Service name appears literally — a Service named
-// `external-foo` produces `kube-vnet.ext.svc.external-foo-<hash>`, which
-// looks redundant but is structurally fine. The policy is in the
-// Service's NS only (no cross-NS replication), so no NS-in-name is
-// needed; cross-NS name collisions are impossible (NetworkPolicy is
-// namespaced).
+// externalAllowPolicyName returns the Service-source policy name,
+// `kube-vnet.ext.svc.<svcName>-<8hex>` (ADR 0039).
 func externalAllowPolicyName(svc *corev1.Service) string {
-	const prefix = "kube-vnet." + PolicyKindExternal + "." + PolicySourceKindService + "."
+	return servicePolicyName(PolicySourceKindService, svc)
+}
+
+// servicePolicyName returns `kube-vnet.ext.<sourceKind>.<svcName>-<8hex>`,
+// truncating the Service name to stay within the 63-char name limit. The hash
+// is over <ns>/<name>, so truncated names stay unique.
+func servicePolicyName(sourceKind string, svc *corev1.Service) string {
+	prefix := "kube-vnet." + PolicyKindExternal + "." + sourceKind + "."
 	const hashLen = 8
 	const maxNameLen = 63
 	maxBase := maxNameLen - len(prefix) - 1 - hashLen
@@ -412,57 +408,33 @@ func externalAllowPolicyName(svc *corev1.Service) string {
 	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 
-func cloneStringMap(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-// externalAllowPolicyPredicate bounds the NetworkPolicy watch to policies this
-// reconciler owns.
-//
-// The source-kind check mirrors apiserverPolPredicate and is load-bearing: the
-// ApiserverReachableReconciler's policies carry the SAME owner (the Service) and
-// the same role, differing only by source-kind. Since the handler enqueues by
-// owner reference rather than by parsing LabelSource (which is now
-// length-bounded and no longer round-trips to a name — ADR 0011 amended), this
-// predicate is what keeps the two reconcilers from fighting over each other's
-// policies. The map func it replaced did that filtering inline.
-//
-// HostPort policies need no exclusion: they carry no Service owner, so an
-// owner-ref handler never resolves them to a request at all.
-func externalAllowPolicyPredicate() predicate.Predicate {
+// externalAllowPolicyPredicate bounds a NetworkPolicy watch to managed
+// external-allow policies of one source kind. The Service-source and
+// apiserver-reachable policies share an owner (the Service) and a role, and
+// both watches enqueue by owner reference, so the source-kind check is what
+// keeps those two reconcilers off each other's policies.
+func externalAllowPolicyPredicate(sourceKind string) predicate.Predicate {
 	return predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		l := obj.GetLabels()
 		return l[LabelManagedBy] == LabelManagedByValue &&
 			l[LabelRole] == LabelRoleExternalAllow &&
-			l[LabelSourceKind] == LabelSourceKindService
+			l[LabelSourceKind] == sourceKind
 	})
 }
 
+// podCreateOnly passes pod creates only: a new pod is the only event that can
+// unblock a previously-unresolvable named targetPort. Updates can't add a
+// container port name without recreating the pod, and deletes only remove
+// candidates. Without this watch the pending case recovers only on the 30s
+// requeue.
+var podCreateOnly = predicate.Funcs{
+	CreateFunc:  func(event.CreateEvent) bool { return true },
+	UpdateFunc:  func(event.UpdateEvent) bool { return false },
+	DeleteFunc:  func(event.DeleteEvent) bool { return false },
+	GenericFunc: func(event.GenericEvent) bool { return false },
+}
+
 func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Re-enqueue the source Service when an external-allow policy event
-	// fires (delete = drift correction; user-edit-then-update = SSA reapply).
-	extPolPredicate := externalAllowPolicyPredicate()
-
-	// Pod creates only — a new pod is the only event that can unblock a
-	// previously-unresolvable named targetPort. Pod updates/deletes never
-	// help: updates can't add a container port name without recreating the
-	// pod, and deletes remove a (possibly-resolving) endpoint without
-	// adding new ones. Without this watcher, the named-port pending case
-	// recovers only on the 30s requeue.
-	podCreateOnly := predicate.Funcs{
-		CreateFunc:  func(event.CreateEvent) bool { return true },
-		UpdateFunc:  func(event.UpdateEvent) bool { return false },
-		DeleteFunc:  func(event.DeleteEvent) bool { return false },
-		GenericFunc: func(event.GenericEvent) bool { return false },
-	}
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("external-allow").
 		For(&corev1.Service{}).
@@ -475,15 +447,15 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// the watch. See ADR 0011 (amended).
 			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
 				&corev1.Service{}, handler.OnlyControllerOwner()),
-			builder.WithPredicates(extPolPredicate),
+			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindService)),
 		).
 		Watches(
 			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToServices),
+			handler.EnqueueRequestsFromMapFunc(namespaceToServices(r.Client)),
 		).
 		Watches(
 			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(r.podToServicesWithNamedPorts),
+			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
 			builder.WithPredicates(podCreateOnly),
 		).
 		Complete(r)
@@ -493,21 +465,10 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // changes. Catches the "annotated kube-vnet/external-allow=false mid-flight"
 // case where no Service event fires but the existing policies should go
 // away. List is bounded to one NS — cheap.
-func (r *ExternalAllowReconciler) namespaceToServices(ctx context.Context, obj client.Object) []reconcile.Request {
-	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetName())); err != nil {
-		return nil
+func namespaceToServices(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return servicesInNamespace(ctx, c, obj.GetName(), nil)
 	}
-	out := make([]reconcile.Request, 0, len(svcs.Items))
-	for i := range svcs.Items {
-		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
-		})
-	}
-	return out
 }
 
 // podToServicesWithNamedPorts enqueues every Service in the new pod's
@@ -515,21 +476,26 @@ func (r *ExternalAllowReconciler) namespaceToServices(ctx context.Context, obj c
 // are the only Services whose policy emission might have been blocked
 // waiting for this pod's container-port names; numeric-targetPort Services
 // don't depend on Pod state at all. Bounded by NS size.
-func (r *ExternalAllowReconciler) podToServicesWithNamedPorts(ctx context.Context, obj client.Object) []reconcile.Request {
+func podToServicesWithNamedPorts(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return servicesInNamespace(ctx, c, obj.GetNamespace(), hasNamedTargetPort)
+	}
+}
+
+// servicesInNamespace returns a request per Service in ns that passes keep
+// (every Service if keep is nil).
+func servicesInNamespace(ctx context.Context, c client.Reader, ns string, keep func(*corev1.Service) bool) []reconcile.Request {
 	var svcs corev1.ServiceList
-	if err := r.List(ctx, &svcs, client.InNamespace(obj.GetNamespace())); err != nil {
+	if err := c.List(ctx, &svcs, client.InNamespace(ns)); err != nil {
 		return nil
 	}
-	out := make([]reconcile.Request, 0)
+	var out []reconcile.Request
 	for i := range svcs.Items {
-		if !hasNamedTargetPort(&svcs.Items[i]) {
+		if keep != nil && !keep(&svcs.Items[i]) {
 			continue
 		}
 		out = append(out, reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Namespace: svcs.Items[i].Namespace,
-				Name:      svcs.Items[i].Name,
-			},
+			NamespacedName: client.ObjectKeyFromObject(&svcs.Items[i]),
 		})
 	}
 	return out

@@ -167,8 +167,7 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
 // `kube-vnet.system/host-port.<port>.<proto>=true` and allows
 // `ipBlock: 0.0.0.0/0` on that port.
 func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy {
-	protoLower := strings.ToLower(string(key.protocol))
-	stamp := LabelSystemHostPortPrefix + fmt.Sprintf("%d.%s", key.port, protoLower)
+	stamp := LabelSystemHostPortPrefix + key.String()
 	portIS := intstr.FromInt32(key.port)
 	proto := key.protocol
 	return &networkingv1.NetworkPolicy{
@@ -184,7 +183,7 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 				LabelK8sManagedBy: LabelManagedByValue,
 				LabelRole:         LabelRoleExternalAllow,
 				LabelSourceKind:   LabelSourceKindHost,
-				LabelSource:       "host-" + fmt.Sprintf("%d-%s", key.port, protoLower),
+				LabelSource:       fmt.Sprintf("host-%d-%s", key.port, strings.ToLower(string(key.protocol))),
 			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
@@ -223,28 +222,18 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// declare any hostPort — avoids enqueuing on every pod heartbeat.
 	hostPortPodPredicate := HostPortChangedPredicate()
 
-	// Drift correction: re-enqueue NS when a managed host-source policy
-	// changes (delete/edit). Filter by LabelSourceKind=host so a Service
-	// literally named `host-…` doesn't get this reconciler involved.
-	hostPolicyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		l := obj.GetLabels()
-		return l[LabelManagedBy] == LabelManagedByValue &&
-			l[LabelRole] == LabelRoleExternalAllow &&
-			l[LabelSourceKind] == LabelSourceKindHost
-	})
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("host-port").
 		For(&corev1.Namespace{}).
 		Watches(
 			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(podToNamespace),
+			handler.EnqueueRequestsFromMapFunc(objectNamespace),
 			builder.WithPredicates(hostPortPodPredicate),
 		).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(networkPolicyToNamespace),
-			builder.WithPredicates(hostPolicyPredicate),
+			handler.EnqueueRequestsFromMapFunc(objectNamespace),
+			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindHost)),
 		).
 		Complete(r)
 }
@@ -278,10 +267,7 @@ func HostPortChangedPredicate() predicate.Predicate {
 	}
 }
 
-func podToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
-}
-
-func networkPolicyToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
+// objectNamespace maps a namespaced object to a request for its Namespace.
+func objectNamespace(_ context.Context, obj client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }

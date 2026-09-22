@@ -302,7 +302,7 @@ func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
 	// by owner reference instead. The same separation the old mapper enforced —
 	// don't act on the ApiserverReachableReconciler's or the HostPortReconciler's
 	// policies — now lives in the watch predicate, so it is asserted here.
-	pred := externalAllowPolicyPredicate()
+	pred := externalAllowPolicyPredicate(LabelSourceKindService)
 
 	cases := []struct {
 		name string
