@@ -23,7 +23,7 @@ jobs:
           cache: true
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           cluster_name: kube-vnet-e2e-kr
           config: test/e2e/kind-config.yaml
@@ -84,7 +84,7 @@ jobs:
           cache: true
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           cluster_name: kube-vnet-e2e-wh
           config: test/e2e/kind-config.yaml
@@ -163,7 +163,7 @@ jobs:
           cache: true
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           cluster_name: kube-vnet-e2e-cal
           config: test/e2e/kind-config.yaml
@@ -248,7 +248,7 @@ jobs:
           version: v3.16.3
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           cluster_name: kube-vnet-e2e-helm
           config: test/e2e/kind-config.yaml
@@ -535,7 +535,7 @@ jobs:
           version: v3.16.3
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.14.0
+        uses: helm/kind-action@v1.15.0
         with:
           cluster_name: kube-vnet-e2e-helm-ns
           config: test/e2e/kind-config.yaml
