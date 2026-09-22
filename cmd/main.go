@@ -16,9 +16,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 	"github.com/lhns/kube-vnet/internal/controller"
+	"github.com/lhns/kube-vnet/internal/webhook/podresolution"
 )
 
 // version, commit, date are set at build time via -ldflags. See the Dockerfile
@@ -52,6 +55,10 @@ func main() {
 		disabledNamespaces  string
 		apiserverSourceCIDR string
 		showVersion         bool
+		webhookEnabled      bool
+		webhookPort         int
+		webhookCertDir      string
+		serviceAccountName  string
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -76,6 +83,23 @@ func main() {
 			"your control-plane node CIDR (e.g. 10.1.2.0/24) when the pod "+
 			"network is exposed and you want tighter scoping. See ADR 0041.",
 	)
+
+	flag.BoolVar(&webhookEnabled, "webhook-enabled", false,
+		"serve the pod-resolution admission webhooks (ADR 0034). The mutating "+
+			"webhook stamps membership labels during pod admission, closing the "+
+			"window in which a starting pod is denied because it is not yet "+
+			"stamped; the validating webhook enforces that those labels match "+
+			"resolution. Requires serving certificates in --webhook-cert-dir "+
+			"and the matching webhook configurations (the chart installs both "+
+			"when webhook.enabled=true).",
+	)
+	flag.StringVar(&serviceAccountName, "service-account-name", "kube-vnet-controller",
+		"the operator's own ServiceAccount name. The validating webhook exempts "+
+			"this identity so the reconciler's patches are not judged as user "+
+			"writes. Must match the chart's serviceAccount name.")
+	flag.IntVar(&webhookPort, "webhook-port", 9443, "port for the admission webhook server")
+	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
+		"directory holding tls.crt and tls.key for the webhook server")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -122,6 +146,10 @@ func main() {
 		LeaderElection:          enableLeaderElect,
 		LeaderElectionID:        "kube-vnet.lhns.de",
 		LeaderElectionNamespace: operatorNS,
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Port:    webhookPort,
+			CertDir: webhookCertDir,
+		}),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to create manager")
@@ -220,6 +248,46 @@ func main() {
 	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up host-port reconciler")
 		os.Exit(1)
+	}
+
+	if webhookEnabled {
+		if operatorNS == "" {
+			// The validating webhook exempts the operator's own
+			// ServiceAccount by username. Without POD_NAMESPACE we cannot
+			// build that username, so the operator's own patches would be
+			// judged like a user's — and with failurePolicy: Fail that is a
+			// cluster-wide outage. Refuse to start instead.
+			setupLog.Error(nil, "--webhook-enabled requires POD_NAMESPACE to be set "+
+				"(the validating webhook must know the operator's ServiceAccount)")
+			os.Exit(1)
+		}
+		resolver := &controller.Resolver{
+			Reader:   mgr.GetClient(),
+			NSFilter: nsFilter,
+			// No Recorder: admission is not a place to write to the
+			// apiserver. The reconciler emits the same diagnostic Events on
+			// its own pass moments later.
+		}
+		decoder := admission.NewDecoder(mgr.GetScheme())
+		mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{
+			Handler: &podresolution.Mutator{
+				Resolver: resolver,
+				Reader:   mgr.GetClient(),
+				NSFilter: nsFilter,
+				Decoder:  decoder,
+			},
+		})
+		mgr.GetWebhookServer().Register("/validate-v1-pod", &admission.Webhook{
+			Handler: &podresolution.Validator{
+				Resolver:         resolver,
+				Reader:           mgr.GetClient(),
+				NSFilter:         nsFilter,
+				Decoder:          decoder,
+				OperatorUsername: controller.ServiceAccountUsername(operatorNS, serviceAccountName),
+			},
+		})
+		setupLog.Info("pod-resolution admission webhooks enabled",
+			"port", webhookPort, "certDir", webhookCertDir)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

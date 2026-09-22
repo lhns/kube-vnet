@@ -38,6 +38,10 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 
 | Key | Default | Description |
 |---|---|---|
+| `webhook.enabled` | `false` | Stamp pod membership during admission (ADR 0034), closing the window in which a starting pod is denied because it is not yet stamped. **The validating half is `failurePolicy: Fail`: an operator outage blocks pod creation in managed namespaces.** Run 2+ replicas. |
+| `webhook.certSource` | `helm` | `helm` (self-signed CA, reused across upgrades via `lookup`) or `cert-manager` |
+| `webhook.certManager.issuerRef` | `{}` | Issuer for `certSource: cert-manager` |
+| `webhook.timeoutSeconds` | `5` | Admission timeout. Resolution is served from cache, so a slow reply means the operator is unhealthy |
 | `image.repository` | `ghcr.io/lhns/kube-vnet` | Operator image repository |
 | `image.tag` | `""` (chart appVersion) | Operator image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |

@@ -1,0 +1,161 @@
+{{- /*
+Pod-resolution admission webhooks (ADR 0034).
+
+Two handlers, deliberately asymmetric:
+
+  * MUTATING, failurePolicy: Ignore — stamps kube-vnet.system/net.* onto the
+    pod during admission so it is a member before it ever runs. It is an
+    acceleration, not a gate: if it is unreachable, admission proceeds, the
+    pod lands unstamped, the deny-all baseline keeps it unreachable rather
+    than over-permissive, and the reconciler stamps it moments later.
+
+  * VALIDATING, failurePolicy: Fail — enforces that those labels are the ones
+    resolution actually produces. It replaces the pods rule of the
+    system-labels VAP, which cannot survive the mutator: a mutating webhook's
+    patch is attributed to the REQUESTER, never to the operator's
+    ServiceAccount, so the VAP's username exemption would reject every pod
+    creation in a managed namespace. Fail preserves that VAP's posture — a
+    forged stamp is impossible even while the operator is unreachable — at
+    the cost of blocking pod creation in managed namespaces during an
+    operator outage. That trade is deliberate; see values.yaml.
+
+Both configurations carry identical selectors. A pod the mutator skips but
+the validator judges would be evaluated against a resolution the mutator
+never applied.
+*/}}
+{{- if .Values.webhook.enabled }}
+{{- $fullname := include "kube-vnet.fullname" . }}
+{{- $svc := printf "%s-webhook" $fullname }}
+{{- $cn := printf "%s.%s.svc" $svc .Release.Namespace }}
+{{- $certSecret := printf "%s-webhook-cert" $fullname }}
+{{- $caBundle := "" }}
+{{- if eq .Values.webhook.certSource "helm" }}
+  {{- /*
+  Reuse the existing Secret on upgrade. Regenerating the CA would leave the
+  configurations' caBundle pointing at a key the server no longer holds —
+  with failurePolicy: Fail on the validating side, a cluster-wide outage.
+  */}}
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace $certSecret }}
+  {{- if and $existing $existing.data (index $existing.data "ca.crt") }}
+    {{- $caBundle = index $existing.data "ca.crt" }}
+  {{- else }}
+    {{- $ca := genCA (printf "%s-ca" $fullname) 3650 }}
+    {{- $cert := genSignedCert $cn nil (list $cn (printf "%s.%s.svc.cluster.local" $svc .Release.Namespace)) 3650 $ca }}
+    {{- $caBundle = b64enc $ca.Cert }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $certSecret }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  ca.crt: {{ b64enc $ca.Cert }}
+  tls.crt: {{ b64enc $cert.Cert }}
+  tls.key: {{ b64enc $cert.Key }}
+---
+  {{- end }}
+{{- else if eq .Values.webhook.certSource "cert-manager" }}
+{{- if not .Values.webhook.certManager.issuerRef.name }}
+{{- fail "webhook.certSource=cert-manager requires webhook.certManager.issuerRef.name" }}
+{{- end }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $certSecret }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  secretName: {{ $certSecret }}
+  dnsNames:
+    - {{ $cn }}
+    - {{ printf "%s.%s.svc.cluster.local" $svc .Release.Namespace }}
+  issuerRef:
+    {{- toYaml .Values.webhook.certManager.issuerRef | nindent 4 }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+spec:
+  ports:
+    - port: 443
+      targetPort: webhook
+      protocol: TCP
+      name: https
+  selector:
+    {{- include "kube-vnet.selectorLabels" . | nindent 4 }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-pod-resolution
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+  {{- if eq .Values.webhook.certSource "cert-manager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" .Release.Namespace $certSecret }}
+  {{- end }}
+webhooks:
+  - name: pods.resolution.kube-vnet.lhns.de
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    reinvocationPolicy: IfNeeded
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ $svc }}
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-v1-pod
+        port: 443
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    rules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+        scope:       Namespaced
+    {{- include "kube-vnet.webhookSelectors" . | nindent 4 }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ $fullname }}-pod-resolution
+  labels:
+    {{- include "kube-vnet.labels" . | nindent 4 }}
+  {{- if eq .Values.webhook.certSource "cert-manager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ printf "%s/%s" .Release.Namespace $certSecret }}
+  {{- end }}
+webhooks:
+  - name: pods.systemlabels.kube-vnet.lhns.de
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: {{ .Values.webhook.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ $svc }}
+        namespace: {{ .Release.Namespace }}
+        path: /validate-v1-pod
+        port: 443
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    rules:
+      - apiGroups:   [""]
+        apiVersions: ["v1"]
+        operations:  ["CREATE", "UPDATE"]
+        resources:   ["pods"]
+        scope:       Namespaced
+    {{- include "kube-vnet.webhookSelectors" . | nindent 4 }}
+{{- end }}

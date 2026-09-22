@@ -29,10 +29,22 @@ spec:
   failurePolicy: Fail
   matchConstraints:
     resourceRules:
+      {{- /*
+      Pods are covered here ONLY while the admission webhook is disabled.
+      A mutating webhook's patch is attributed to the requester, not to the
+      operator's ServiceAccount, so the username exemption below does not
+      cover it — with the webhook running, this rule would reject every pod
+      creation in a managed namespace. The validating webhook enforces the
+      stronger property in its place: system labels must equal what
+      resolution produces, which CEL cannot check because it cannot resolve.
+      See ADR 0034.
+      */}}
+      {{- if not .Values.webhook.enabled }}
       - apiGroups:   [""]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
         resources:   ["pods"]
+      {{- end }}
       - apiGroups:   ["networking.k8s.io"]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]

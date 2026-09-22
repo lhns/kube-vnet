@@ -1,3 +1,23 @@
+> **Amendment (2026-09-11) — for Pods, enforcement moves from the VAP to a validating webhook
+> when the admission webhook is enabled.**
+>
+> The VAP enforces "these labels may not be set, changed or removed by anyone but the operator".
+> That is the strongest statement CEL can make, because CEL cannot recompute resolution — but it
+> is incompatible with stamping at admission: a mutating webhook's patch is attributed to the
+> requester, so the username exemption does not cover it and every pod creation in a managed
+> namespace would be denied (see [ADR 0034](0034-admission-webhook-for-pod-resolution.md)).
+>
+> With `webhook.enabled=true` the chart drops **only** the pods rule from
+> `system-labels-vap.yaml`; the `networkpolicies` and `virtualnetworks` rules stay, since nothing
+> mutates those. In its place a validating webhook checks the stronger property — the
+> `kube-vnet.system/*` labels on a pod must equal what resolution produces — which subsumes "may
+> not be set by users" and additionally rejects a stamp the operator itself would never write.
+>
+> The trade is where the enforcement lives. The VAP is evaluated inside the apiserver and holds
+> whether or not the operator is running; the webhook runs `failurePolicy: Fail` to keep the same
+> guarantee, which means an operator outage blocks pod creation in managed namespaces. With
+> `webhook.enabled=false` (the default) nothing changes.
+
 # 0037 — `kube-vnet.system/` prefix convention for operator-owned keys
 
 Status: Accepted

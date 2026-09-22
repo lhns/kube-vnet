@@ -1,4 +1,4 @@
-//go:build e2e || e2e_namespace
+//go:build e2e || e2e_namespace || e2e_webhook
 
 package e2e
 

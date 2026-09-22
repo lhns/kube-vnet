@@ -156,9 +156,35 @@ Cilium translates `podSelector`s into "security identities" that it caches on ea
 
 **Symptom.** First few seconds after a pod starts, traffic that should be isolated isn't (or vice versa). After ~5–30 seconds, things settle.
 
+**The 5–30 s figure is Cilium's identity-allocation lag specifically — not a general CNI number,
+and not kube-vnet's own startup window** (pitfall 6). Do not carry it over to another CNI.
+
 This is documented behavior, not a bug. Cilium provides metrics (`cilium_identity_allocation_attempts_total`, `cilium_endpoint_state`) for visibility. See Cilium's [identity-management docs](https://docs.cilium.io/en/stable/network/concepts/security-identities/).
 
 If pods routinely send hard traffic immediately on startup and you can't tolerate the lag, look at Cilium's `--identity-allocation-mode=crd` vs. `kvstore` choice and the `--enable-well-known-identities` flag.
+
+---
+
+## Pitfall 6: every CNI — kube-vnet's own startup window
+
+Distinct from pitfall 5, and easy to mistake for it. Cilium's lag is the CNI resolving identities;
+this one is kube-vnet resolving membership, and it happens on **every** CNI including kube-router
+and Calico.
+
+Membership policies select on the `kube-vnet.system/net.*` label the operator stamps after the
+apiserver persists a pod. Until it lands, the pod matches no membership policy and the deny-all
+baseline applies. Measured at **under a second** on kube-router v2.10.0 — enough to fail the first
+connection of a client that does not retry, and to look exactly like a misconfiguration.
+
+Note what a denial looks like there: kube-router with iptables **rejects**, so the caller sees an
+immediate `Connection refused`, not a timeout. Reading that as "nothing is listening" sends you
+after the wrong bug.
+
+**Fix.** Enable the admission webhook (`webhook.enabled=true`,
+[ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)), which stamps inside the
+apiserver's write path so the pod is a member from the instant it exists. Where that is not an
+option, gate the workload on the real condition with an initContainer rather than on a fixed
+`sleep`. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 
@@ -190,7 +216,10 @@ kubectl exec -n "$NS" member -- nc -l -p 9090 &
 
 # From the outsider, try to reach it.
 kubectl exec -n "$NS" outsider -- timeout 3 nc -vz "$MEMBER_IP" 9090
-# Expect: "timed out" or "connection refused" if isolation works.
+# Expect a denial. WHICH denial is CNI-specific: an immediate "connection
+# refused" on kube-router/iptables, a hang on CNIs that drop. Establish yours
+# with an unlabelled control pod rather than assuming — see
+# docs/guides/troubleshooting.md.
 # If "succeeded", the CNI is not enforcing the policy.
 
 kubectl delete pod -n "$NS" member outsider

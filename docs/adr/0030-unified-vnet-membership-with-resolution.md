@@ -1,5 +1,18 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
+> **Amendment (2026-09-11) — the deferred webhook is no longer deferred.**
+>
+> § "Mutating admission webhook for label stamping" deferred it as future opt-in work, noting *"if
+> real-world users need sub-second guarantees, a future opt-in webhook can be added."* They did: a
+> migration Job that does not retry failed on its first connection because it was not yet stamped.
+> [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented and opt-in via
+> `webhook.enabled`.
+>
+> The "~100ms" figure quoted for the admission-to-stamp window was never measured. The field
+> bound is **<=1s** on kube-router v2.10.0, where a denial presents as an immediate RST rather
+> than a timeout. Treat ~100ms as a typical value, not a ceiling: it stretches under load, during
+> an operator restart, and with a slow apiserver.
+
 > **Amendment (2026-07-26) — the resolution controller watches a *fifth* input: `VirtualNetwork` itself.**
 >
 > "A new controller watches the four input sources" (below) was an incomplete list. A rule doesn't only come *from* a source — it **references a vnet**, so the existence of that vnet is itself an input to resolution. `filterPermittedRules` drops a rule whose vnet doesn't exist (`Permits` → NotFound), and `applyResolution` still writes the `resolved-generation` annotation. With no `VirtualNetwork` watch, nothing re-enqueued the pod when the vnet later appeared.

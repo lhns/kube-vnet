@@ -10,6 +10,43 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- **Optional admission webhook that stamps pod membership synchronously
+  (`webhook.enabled`, default off).** Membership policies select pods by the
+  `kube-vnet.system/net.*` label the operator stamps *after* the apiserver
+  persists a pod. Until it lands the pod matches no membership policy and the
+  deny-all baseline applies — field-measured at under a second on kube-router
+  v2.10.0, which is enough to fail the first connection of a client that does
+  not retry, and where a denial presents as an immediate `Connection refused`
+  rather than a timeout. With the webhook enabled, resolution runs inside the
+  apiserver's write path, so a pod is a member from the instant it exists, on
+  both create and relabel. Implements [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
+
+  **Read before enabling.** The validating half runs `failurePolicy: Fail` to
+  keep today's guarantee that `kube-vnet.system/*` labels cannot be forged even
+  while the operator is unreachable; the cost is that an operator outage blocks
+  pod creation in managed namespaces. `kube-system`, `kube-public`,
+  `kube-node-lease` and the release namespace are excluded so the cluster and
+  the operator can always recover. Run 2+ replicas. The mutating half is
+  `failurePolicy: Ignore` and degrades to the previous behaviour.
+
+  When enabled, the pods rule of the system-labels `ValidatingAdmissionPolicy`
+  is replaced by that validating webhook: a mutating webhook's patch is
+  attributed to the requester, not to the operator, so the policy's exemption
+  could not cover it. The webhook enforces a stronger property in its place —
+  the labels must equal what resolution produces, which CEL cannot check
+  because it cannot resolve. The policy's networkpolicies and virtualnetworks
+  rules are unchanged, and with the webhook off the chart renders exactly as
+  before.
+
+### Fixed
+
+- **e2e: the helm-uninstall cleanup assertion slept a fixed 5s and then checked
+  once.** On a loaded runner that is a spurious failure — the same
+  wait-a-guessed-duration mistake the webhook above exists to remove. It now
+  polls for the condition.
+
 ## [0.7.3] — 2026-09-02
 
 ### Fixed

@@ -1,3 +1,21 @@
+> **Amendment (2026-09-11) — kube-vnet now runs a webhook of its own, and it deliberately does
+> not rely on this mechanism.**
+>
+> This ADR unblocks *other people's* apiserver-reached Services. [ADR
+> 0034](0034-admission-webhook-for-pod-resolution.md) gives kube-vnet its own webhook Service,
+> which looks like a bootstrap dependency: the component that grants the apiserver access would be
+> the component the apiserver cannot reach.
+>
+> It is not one. `cmd/main.go` unconditionally appends the operator's release namespace to
+> `--disabled-namespaces`, so that namespace is never managed: it gets no deny-all baseline, and
+> this reconciler skips it at the `NSFilter.IsManaged` gate. There is nothing to unblock, and no
+> auto-allow policy is generated for the operator's own webhook.
+>
+> The invariant that keeps this true is "the operator's namespace is never managed". Anything
+> that weakens it — making the self-exclusion conditional, say — would turn the webhook's
+> reachability into a self-referential dependency, and with the validating webhook's
+> `failurePolicy: Fail` that is a cluster that cannot create pods. Do not weaken it.
+
 # ADR 0041 — Auto-allow Services reached by the apiserver
 
 > **Amendment (2026-06-29, same-day follow-up)**: the initial implementation emitted policies scoped to the Service-side port rather than the pod-side targetPort. NetworkPolicy is enforced after kube-proxy DNATs to `pod:targetPort`, so a Service-port allow doesn't actually permit the apiserver's traffic — admission silently times out. Symptom on the user's cluster:

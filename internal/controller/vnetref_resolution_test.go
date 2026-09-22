@@ -27,8 +27,7 @@ func ref(name, namespace string) vnetv1alpha1.VirtualNetworkRef {
 // resolving to the pod's local namespace vnet even though kube-vnet-system
 // has no `namespace` vnet at all. The ref must be honored verbatim.
 func TestCanonicalVnetKey_NamespaceVnet_ForeignNamespace_IsNotRewritten(t *testing.T) {
-	r := &ResolutionReconciler{}
-	got := r.canonicalVnetKey(ref(SystemVnetNamespace, "kube-vnet-system"), "app")
+	got := canonicalVnetKey(ref(SystemVnetNamespace, "kube-vnet-system"), "app")
 	if want := VnetKey("kube-vnet-system." + SystemVnetNamespace); got != want {
 		t.Fatalf("ref.Namespace was rewritten: got %q, want %q "+
 			"(the pod's NS must NOT be substituted for an explicit namespace)", got, want)
@@ -40,7 +39,6 @@ func TestCanonicalVnetKey_NamespaceVnet_ForeignNamespace_IsNotRewritten(t *testi
 // structurally identical keys. Guards against re-adding a
 // `case SystemVnetNamespace:` branch.
 func TestCanonicalVnetKey_NamespaceVnet_BehavesLikeUserVnet(t *testing.T) {
-	r := &ResolutionReconciler{}
 	const podNS = "app"
 	for _, tc := range []struct {
 		name    string
@@ -52,8 +50,8 @@ func TestCanonicalVnetKey_NamespaceVnet_BehavesLikeUserVnet(t *testing.T) {
 		{"explicit foreign", "other", "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sys := r.canonicalVnetKey(ref(SystemVnetNamespace, tc.refNS), podNS)
-			usr := r.canonicalVnetKey(ref("web", tc.refNS), podNS)
+			sys := canonicalVnetKey(ref(SystemVnetNamespace, tc.refNS), podNS)
+			usr := canonicalVnetKey(ref("web", tc.refNS), podNS)
 			if wantSys := VnetKey(tc.wantFmt + "." + SystemVnetNamespace); sys != wantSys {
 				t.Errorf("system `namespace` vnet: got %q, want %q", sys, wantSys)
 			}
@@ -65,17 +63,16 @@ func TestCanonicalVnetKey_NamespaceVnet_BehavesLikeUserVnet(t *testing.T) {
 }
 
 func TestCanonicalVnetKey_OmittedNamespace_InfersLocal(t *testing.T) {
-	r := &ResolutionReconciler{}
 	const podNS = "app"
-	if got, want := r.canonicalVnetKey(ref("web", ""), podNS), VnetKey("app.web"); got != want {
+	if got, want := canonicalVnetKey(ref("web", ""), podNS), VnetKey("app.web"); got != want {
 		t.Errorf("user vnet: got %q, want %q", got, want)
 	}
-	if got, want := r.canonicalVnetKey(ref(SystemVnetNamespace, ""), podNS), VnetKey("app."+SystemVnetNamespace); got != want {
+	if got, want := canonicalVnetKey(ref(SystemVnetNamespace, ""), podNS), VnetKey("app."+SystemVnetNamespace); got != want {
 		t.Errorf("namespace vnet: got %q, want %q", got, want)
 	}
 	// The cluster singleton's canonical key is bare (ADR 0033). Omitting the
 	// namespace yields it directly; no operator-namespace lookup needed.
-	if got, want := r.canonicalVnetKey(ref(SystemVnetCluster, ""), podNS), VnetKey(SystemVnetCluster); got != want {
+	if got, want := canonicalVnetKey(ref(SystemVnetCluster, ""), podNS), VnetKey(SystemVnetCluster); got != want {
 		t.Errorf("cluster vnet: got %q, want %q", got, want)
 	}
 }
@@ -84,12 +81,11 @@ func TestCanonicalVnetKey_OmittedNamespace_InfersLocal(t *testing.T) {
 // it against the real CR (which exists only in the operator's namespace).
 // It is collapsed to the bare canonical form only after permission passes.
 func TestCanonicalVnetKey_ClusterVnet_ExplicitNamespace_StaysQualified(t *testing.T) {
-	r := &ResolutionReconciler{}
-	if got, want := r.canonicalVnetKey(ref(SystemVnetCluster, "kube-vnet-system"), "app"),
+	if got, want := canonicalVnetKey(ref(SystemVnetCluster, "kube-vnet-system"), "app"),
 		VnetKey("kube-vnet-system."+SystemVnetCluster); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
-	if got, want := r.canonicalVnetKey(ref(SystemVnetCluster, "bogus"), "app"),
+	if got, want := canonicalVnetKey(ref(SystemVnetCluster, "bogus"), "app"),
 		VnetKey("bogus."+SystemVnetCluster); got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -188,7 +184,7 @@ func TestNotJoinableHint(t *testing.T) {
 // (including none) produce a rule and no warning.
 func TestPodLabelRules_WarnsOnInvalidDirection(t *testing.T) {
 	rec := &fakeRecorder{}
-	r := &ResolutionReconciler{Recorder: rec}
+	r := &Resolver{Recorder: rec}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "shop", Name: "p",

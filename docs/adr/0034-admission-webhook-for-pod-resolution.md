@@ -6,7 +6,71 @@
 >
 > What remains as motivation here is only the genuine **~100ms** admission→stamp window described below, which the fail-closed baseline already makes safe (unreachable, never over-permissive). Treat "kube-vnet has a mutating webhook" as false when reading incident reports: it has never been built.
 
-Status: Proposed
+> **Amendment (2026-09-11) — implemented, and the "VAP exemption" section below is wrong.**
+>
+> The window this ADR proposed to close was measured in the field: a `vmctl` migration Job could
+> not reach its target on the first connection and succeeded on retry. On kube-router v2.10.0
+> (iptables) a kube-vnet denial presents as an **immediate RST**, not a timeout — established by a
+> control pod without the join label, refused 60/60 over ~2 min — and the pod IP was refused too,
+> ruling out endpoint readiness. Probe granularity bounds the window at **<=1s**. The motivation
+> here is therefore no longer theoretical: it broke a real client that does not retry.
+>
+> **The blocker this ADR missed.** § "VAP exemption" says to "confirm the exemption applies to
+> webhook writes by serviceaccount identity, not by code path". It does not, and cannot: a
+> mutating webhook's patch is attributed to the **original requester**, and mutating webhooks run
+> *before* validating admission policies. With `system-labels-vap`'s pods rule in place
+> (`failurePolicy: Fail`, and on CREATE `oldObject` is null so its allow-branch is false for any
+> system label present), a stamping webhook would have made **every pod creation in a managed
+> namespace fail admission**.
+>
+> **Resolution.** The pods rule of that VAP is replaced, when the webhook is enabled, by a
+> *validating webhook* backed by the same resolver. CEL could only enforce "nobody but the
+> operator may touch these labels" because it cannot recompute resolution; the handler can, so it
+> enforces the stronger property directly — the `kube-vnet.system/*` labels on a pod must equal
+> what `Resolve()` produces for it. A forged stamp that disagrees is rejected; one that agrees is
+> by definition the correct value. Only the *delta* is policed, so a stale stamp the request did
+> not touch cannot cause a collateral denial. The VAP's networkpolicies and virtualnetworks rules
+> are untouched, and with `webhook.enabled=false` the chart renders exactly as before.
+>
+> **The mutator does not prune what it did not write.** The obvious implementation applies the
+> resolved set and drops every other `kube-vnet.system/*` label, exactly as the reconciler does.
+> That silently *deletes* a forged stamp and admits the pod — no error, no message, where the VAP
+> being replaced denied with guidance toward `kube-vnet/` labels. So the mutator prunes only
+> labels a previous resolution had set (present in `oldObject`), and leaves anything the request
+> itself introduced for the Validator to reject. The reconciler keeps pruning everything: it is
+> authoritative and has no requester to answer to.
+>
+> **failurePolicy is split, deliberately.** Mutating is `Ignore` — an acceleration, so an outage
+> degrades to the pre-webhook behaviour (pod lands unstamped, baseline keeps it unreachable, the
+> reconciler stamps it moments later). Validating is `Fail`, preserving the VAP's guarantee that
+> stamps cannot be forged even while the operator is unreachable. **That is an availability
+> regression**: with the webhook enabled, an operator outage blocks pod creation in managed
+> namespaces. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are
+> excluded so the cluster and the operator can always recover, and the feature is opt-in
+> (`webhook.enabled`, default false) for exactly this reason.
+>
+> **No bootstrap loop, contrary to expectation.** The concern that the operator's own
+> `ApiserverReachableReconciler` would have to unblock its own webhook Service (ADR 0041) does not
+> arise: `cmd/main.go` unconditionally appends the operator's namespace to the disabled list, so
+> that namespace is never managed, never gets a deny-all baseline, and is skipped by the auto-allow
+> reconciler. Nothing needs to grant the apiserver access to the webhook.
+>
+> **Correction to the Context below**: it describes the baseline as selecting pods whose system
+> labels are *absent*, via a `NotIn` matchExpression. ADR 0035 removed that. Today's baseline
+> denies **all** ingress in a managed namespace (empty podSelector) and membership policies grant;
+> the fail-closed property is unchanged, the mechanism is not.
+>
+> **Scope that remains open.** Resolution triggered by *config* edits — a Binding, Baseline or
+> VirtualNetwork spec change that restamps existing pods — stays asynchronous. No admission
+> mechanism sees those requests; that is the reconciler's job and is correct as such.
+>
+> A scheduling-gate design was evaluated as the alternative (inject `spec.schedulingGates` at
+> admission, let the reconciler stamp and then ungate). It avoids the VAP collision entirely and
+> needs no resolution logic at admission, but it delays every pod start by a reconcile and cannot
+> cover label edits on running pods. Recorded here as the fallback if the VAP conversion ever
+> proves unworkable.
+
+Status: Accepted
 
 Date: 2026-05-06
 

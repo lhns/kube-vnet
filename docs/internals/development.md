@@ -119,6 +119,24 @@ The e2e helpers wrap `kubectl exec` etc.; see `test/e2e/helpers_test.go`. Probe 
 
 `canReach` is fast on the happy path; `cannotReach` is fixed-duration because there's no "deny event" to wait for.
 
+### Wait for conditions, not durations
+
+That asymmetry is the rule in general: **poll for the condition you actually
+need; a bare `sleep <n>` needs a comment saying why polling is impossible.**
+
+A fixed wait is legitimate when the assertion is *negative* — you cannot poll
+for "nothing happened", which is why `cannotReach` and several unit tests wait
+a fixed window. It is a bug when the assertion is *positive*: the duration is
+a guess about someone else's machine, and on a loaded CI runner it fails a
+build that was fine. `kubectl wait`, a retry loop, or `eventually()` all
+express the real condition and finish as soon as it holds.
+
+There is no lint rule for this, deliberately. The two cases are
+syntactically identical — the difference is whether the assertion that follows
+is positive or negative — and a heuristic version of the check flagged nine
+existing test sleeps and was wrong about all nine. It is a judgement call,
+so it belongs in review.
+
 ---
 
 ## CI
