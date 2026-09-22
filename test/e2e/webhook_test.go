@@ -11,16 +11,6 @@ import (
 // This lane runs with `webhook.enabled=true`; every other e2e lane runs with
 // it off, so both configurations stay covered.
 
-func webhookVnet(ns, name string) string {
-	return fmt.Sprintf(`apiVersion: kube-vnet.lhns.de/v1alpha1
-kind: VirtualNetwork
-metadata:
-  name: %s
-  namespace: %s
-spec: {}
-`, name, ns)
-}
-
 // The whole point of the admission webhook (ADR 0034): a pod is a member of
 // its virtual networks before it runs, so its FIRST connection succeeds.
 //
@@ -32,7 +22,7 @@ func TestWebhook_FirstConnectionSucceeds(t *testing.T) {
 	ns := uniqueNS(t, "wh")
 	ensureNamespace(t, ns, nil)
 	t.Cleanup(func() { cleanupNamespace(t, ns) })
-	applyYAML(t, webhookVnet(ns, "net1"))
+	applyYAML(t, vnetSpec("net1", ns, ""))
 
 	// Server first, fully ready, so the only variable left is the client's
 	// own membership at the moment it starts.
@@ -66,7 +56,7 @@ func TestWebhook_StampAppliedByAdmission(t *testing.T) {
 	ns := uniqueNS(t, "whann")
 	ensureNamespace(t, ns, nil)
 	t.Cleanup(func() { cleanupNamespace(t, ns) })
-	applyYAML(t, webhookVnet(ns, "net1"))
+	applyYAML(t, vnetSpec("net1", ns, ""))
 
 	applyYAML(t, clientPod(ns, "probe", map[string]string{"kube-vnet/net.net1": "both"}))
 

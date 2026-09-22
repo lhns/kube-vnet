@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -20,12 +21,33 @@ const (
 	denyProbe  = 15 * time.Second // cannotReach: every wget must fail for this long
 )
 
-// httpServerPod returns a Pod that runs `agnhost netexec` (HTTP server on :80).
-func httpServerPod(ns, name string, joinLabels map[string]string) string {
+// vnetSpec returns a VirtualNetwork manifest. `allowed` is the indented body
+// of spec.allowedNamespaces, or "" for home-namespace-only.
+func vnetSpec(name, ns string, allowed string) string {
+	allowedYAML := ""
+	if allowed != "" {
+		allowedYAML = "\n  allowedNamespaces:\n" + allowed
+	}
+	return fmt.Sprintf(`apiVersion: kube-vnet.lhns.de/v1alpha1
+kind: VirtualNetwork
+metadata:
+  name: %s
+  namespace: %s
+spec:%s
+`, name, ns, allowedYAML)
+}
+
+// podLabelsYAML renders `app: <name>` plus joinLabels as indented YAML lines.
+func podLabelsYAML(name string, joinLabels map[string]string) string {
 	labels := []string{fmt.Sprintf("app: %s", name)}
 	for k, v := range joinLabels {
 		labels = append(labels, fmt.Sprintf("%s: %q", k, v))
 	}
+	return strings.Join(labels, "\n    ")
+}
+
+// httpServerPod returns a Pod that runs `agnhost netexec` (HTTP server on :80).
+func httpServerPod(ns, name string, joinLabels map[string]string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata:
@@ -40,15 +62,11 @@ spec:
       args: ["netexec", "--http-port=80"]
       ports:
         - containerPort: 80
-`, name, ns, strings.Join(labels, "\n    "), testImage)
+`, name, ns, podLabelsYAML(name, joinLabels), testImage)
 }
 
 // clientPod returns a Pod that sleeps; kubectl exec is used to drive wget.
 func clientPod(ns, name string, joinLabels map[string]string) string {
-	labels := []string{fmt.Sprintf("app: %s", name)}
-	for k, v := range joinLabels {
-		labels = append(labels, fmt.Sprintf("%s: %q", k, v))
-	}
 	return fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata:
@@ -61,7 +79,7 @@ spec:
     - name: client
       image: %s
       command: ["sleep", "3600"]
-`, name, ns, strings.Join(labels, "\n    "), testImage)
+`, name, ns, podLabelsYAML(name, joinLabels), testImage)
 }
 
 func ensureNamespace(t *testing.T, name string, labels map[string]string) {
@@ -92,13 +110,15 @@ func kubectl(t *testing.T, args ...string) (string, int) {
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	err := cmd.Run()
-	exit := 0
-	if ee, ok := err.(*exec.ExitError); ok {
-		exit = ee.ExitCode()
-	} else if err != nil && exit == 0 {
-		exit = -1
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return buf.String(), 0
+	case errors.As(err, &ee):
+		return buf.String(), ee.ExitCode()
+	default:
+		return buf.String(), -1
 	}
-	return buf.String(), exit
 }
 
 // kubectlMust runs kubectl and fatals if exit != 0.
@@ -153,15 +173,21 @@ func podIP(t *testing.T, ns, name string) string {
 	return out
 }
 
-// canReach polls `wget` from `srcPod` to `dstIP:80` and returns true if any
-// attempt within `timeout` succeeds. Used to assert allow.
+// wget makes one HTTP request from srcPod to dstIP:80 and reports success.
+func wget(t *testing.T, ns, srcPod, dstIP string) bool {
+	t.Helper()
+	_, code := kubectl(t, "exec", "-n", ns, srcPod, "--",
+		"wget", "-q", "-T", "2", "-O", "-", fmt.Sprintf("http://%s/", dstIP))
+	return code == 0
+}
+
+// canReach polls wget from srcPod to dstIP:80 and returns true if any attempt
+// within timeout succeeds. Used to assert allow.
 func canReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		_, code := kubectl(t, "exec", "-n", ns, srcPod, "--",
-			"wget", "-q", "-T", "2", "-O", "-", fmt.Sprintf("http://%s/", dstIP))
-		if code == 0 {
+		if wget(t, ns, srcPod, dstIP) {
 			return true
 		}
 		time.Sleep(time.Second)
@@ -197,9 +223,7 @@ func cannotReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		_, code := kubectl(t, "exec", "-n", ns, srcPod, "--",
-			"wget", "-q", "-T", "2", "-O", "-", fmt.Sprintf("http://%s/", dstIP))
-		if code == 0 {
+		if wget(t, ns, srcPod, dstIP) {
 			return false
 		}
 		time.Sleep(2 * time.Second)
