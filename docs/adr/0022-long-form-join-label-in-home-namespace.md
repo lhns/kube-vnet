@@ -1,6 +1,6 @@
 # 0022 — Long-form join label accepted in the home namespace
 
-Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — the input ergonomic this ADR introduced is preserved; both bare and prefixed pod-input labels are still accepted. The operator's *output* (system labels stamped on pods, membership policy names) now normalizes to canonical fully-qualified `<homeNS>.<vnet>` form, so the previous output-side dual-policy emission is gone.)
+Status: Accepted (refined by [ADR 0033](0033-canonical-fq-system-labels.md) — the input ergonomic this ADR introduced is preserved; both bare and prefixed pod-input labels are still accepted. The operator's *output* (system labels stamped on pods, membership policy names) now normalizes to canonical fully-qualified `<homeNS>.<vnet>` form, so the previous output-side dual-policy emission is gone. The `BareJoinLabelVnetNotFound` Pod event in the addendum below was retired by [ADR 0027](0027-pod-scoped-join-label-events.md)'s 2026-07-20 amendment; the same prefixed-form hint now rides on the resolution controller's `VirtualNetworkNotJoinable` Warning.)
 
 ## Context
 

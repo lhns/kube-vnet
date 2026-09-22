@@ -23,7 +23,7 @@
 >
 > That tightening removed an *accidental* correctness property. A diagnosis depends on VirtualNetwork state ("no such vnet"), which the old predicate re-checked only as a side effect of unrelated pod churn — so creating the missing vnet would have left a stale Warning until the pod next changed. The controller therefore gains an explicit `Watches(&VirtualNetwork{})` whose map function enqueues exactly the pods referencing that vnet, via the two statically-known label keys (bare `kube-vnet/net.<name>` scoped to the vnet's namespace, and prefixed `kube-vnet/net.<ns>.<name>` cluster-wide). The re-check is now intentional rather than incidental.
 
-Status: Accepted (note: `ConflictingDirections` mentioned in this ADR's vnet-status taxonomy is renamed to `ResolutionConflict` per [ADR 0033](0033-canonical-fq-system-labels.md), now sourced from the resolver's cross-source conflicts rather than the bare-vs-prefixed pair check. The pod-event surface this ADR introduces is unchanged.)
+Status: Accepted; the `JoinLabelDiagnosticReconciler` is retired (2026-07-20 amendment above) — pod-scoped Warnings now come from the resolution controller. The admission-time VAP stands, with the allow-list pruned by the 2026-05-05 addendum. `ConflictingDirections` was removed by [ADR 0033](0033-canonical-fq-system-labels.md).
 
 Date: 2026-05-04
 

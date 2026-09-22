@@ -1,6 +1,6 @@
 # 0007 — Operator-level excluded namespaces
 
-Status: Accepted
+Status: Accepted (flag renamed to `--disabled-namespaces` per the [ADR 0024](0024-ingress-isolation-mode-and-overrides.md) addendum; default narrowed to `kube-system` by [ADR 0042](0042-coredns-ingress-carveout-and-kube-system-enrollment.md). Semantics and the operator-namespace self-inclusion are unchanged.)
 
 ## Context
 

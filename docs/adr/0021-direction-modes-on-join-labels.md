@@ -1,6 +1,6 @@
 # 0021 — Direction modes on join labels
 
-Status: Accepted (with [2026-05-05 addendum](#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped) below)
+Status: Accepted (with [2026-05-05 addendum](#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped) below). The direction enum and traffic algebra stand; the per-direction/per-form policy shapes and names described here are superseded by [ADR 0033](0033-canonical-fq-system-labels.md) (one policy per vnet and namespace, no per-binding policies) and [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) (names).
 
 ## Context
 

@@ -29,7 +29,15 @@
 >
 > The "**No mutating admission webhook**" statement below still stands and is unchanged — [ADR 0034](0034-admission-webhook-for-pod-resolution.md) remains *Proposed*. Stamping happens asynchronously after admission; admission ordering has never been what determines membership.
 
-Status: Accepted (resolution-lattice section partially superseded by [ADR 0031](0031-baseline-tier-resolution.md); the `--elide-baseline-for` flag introduced here was removed by [ADR 0035](0035-removal-of-elide-baseline-for.md) — it had no observable effect on connectivity; the operator-owned label keys introduced here — `kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system` — were moved to the `kube-vnet.system/` prefix by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md), generalizing the convention already used for stamped pod labels; **policy names were updated to include explicit kind prefixes by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) — baseline becomes `kube-vnet.base`, membership becomes `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`**; the system-vnet reserved-name/label VAP introduced here now guards `CREATE`/`UPDATE` only — `DELETE` is intentionally unguarded so the namespace controller can cascade-delete the per-namespace `namespace` system vnet during namespace teardown (guarding it left managed namespaces stuck in `Terminating`), with user-initiated deletes recovered by the SystemVnetReconciler's drift-correction)
+Status: Accepted. Later changes:
+
+- Resolution lattice: partially superseded by [ADR 0031](0031-baseline-tier-resolution.md).
+- `--elide-baseline-for`: removed by [ADR 0035](0035-removal-of-elide-baseline-for.md); it had no observable effect on connectivity.
+- Operator-owned label keys (`kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system`): moved under `kube-vnet.system/` by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md).
+- Policy names: kind-prefixed by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) (`kube-vnet.base`, `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`).
+- Mutating admission webhook: deferred here, implemented as opt-in by [ADR 0034](0034-admission-webhook-for-pod-resolution.md).
+- Resolution controller trigger set: completed by the 2026-07-26 amendment and [ADR 0044](0044-trigger-sets-must-cover-read-sets.md).
+- System-vnet VAP: guards `CREATE`/`UPDATE` only. `DELETE` is unguarded so namespace teardown can cascade-delete the per-namespace `namespace` vnet (guarding it left namespaces stuck in `Terminating`); user deletes are recovered by the `SystemVnetReconciler`.
 
 Date: 2026-05-05
 
