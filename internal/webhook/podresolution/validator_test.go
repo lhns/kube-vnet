@@ -84,6 +84,19 @@ func TestValidator_ForgedStamp_Denied(t *testing.T) {
 	}
 }
 
+// An added label with an empty value must not pass as "unchanged" just because
+// a missing key also reads as "".
+func TestValidator_ForgedEmptyStamp_Denied(t *testing.T) {
+	base := pod("app", nil)
+	c := newClient(t, []client.Object{vnet("web", "app", nil)}, base)
+	v := newValidator(t, c)
+
+	forged := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": ""})
+	if resp := validate(t, v, "alice", nil, forged); resp.Allowed {
+		t.Fatal("a forged empty-valued stamp was admitted")
+	}
+}
+
 // A stamp that matches what resolution produces is not forgery: it is the
 // correct value. Admitting it is what lets the mutator's own output through.
 func TestValidator_CorrectStamp_Allowed(t *testing.T) {

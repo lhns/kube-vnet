@@ -90,7 +90,7 @@ func (v *Validator) Handle(ctx context.Context, req admission.Request) admission
 
 	var bad []string
 	for k, val := range newManaged {
-		if oldManaged[k] == val {
+		if old, had := oldManaged[k]; had && old == val {
 			continue // untouched by this request
 		}
 		want, ok := desired[k]
