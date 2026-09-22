@@ -27,6 +27,7 @@ never applied.
 {{- $fullname := include "kube-vnet.fullname" . }}
 {{- $svc := printf "%s-webhook" $fullname }}
 {{- $cn := printf "%s.%s.svc" $svc .Release.Namespace }}
+{{- $dnsNames := list $cn (printf "%s.cluster.local" $cn) }}
 {{- $certSecret := printf "%s-webhook-cert" $fullname }}
 {{- $caBundle := "" }}
 {{- if eq .Values.webhook.certSource "helm" }}
@@ -43,7 +44,7 @@ never applied.
     {{- $tls = $existing.data }}
   {{- else }}
     {{- $ca := genCA (printf "%s-ca" $fullname) 3650 }}
-    {{- $cert := genSignedCert $cn nil (list $cn (printf "%s.%s.svc.cluster.local" $svc .Release.Namespace)) 3650 $ca }}
+    {{- $cert := genSignedCert $cn nil $dnsNames 3650 $ca }}
     {{- $tls = dict "ca.crt" (b64enc $ca.Cert) "tls.crt" (b64enc $cert.Cert) "tls.key" (b64enc $cert.Key) }}
   {{- end }}
   {{- $caBundle = index $tls "ca.crt" }}
@@ -74,8 +75,9 @@ metadata:
 spec:
   secretName: {{ $certSecret }}
   dnsNames:
-    - {{ $cn }}
-    - {{ printf "%s.%s.svc.cluster.local" $svc .Release.Namespace }}
+    {{- range $dnsNames }}
+    - {{ . }}
+    {{- end }}
   issuerRef:
     {{- toYaml .Values.webhook.certManager.issuerRef | nindent 4 }}
 ---

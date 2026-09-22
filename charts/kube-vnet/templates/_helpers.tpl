@@ -51,6 +51,36 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{/*
+The username the apiserver reports for the operator's ServiceAccount. The
+VAPs exempt it so the operator's own writes are admitted.
+*/}}
+{{- define "kube-vnet.operatorUsername" -}}
+{{- printf "system:serviceaccount:%s:%s" .Release.Namespace (include "kube-vnet.serviceAccountName" .) -}}
+{{- end -}}
+
+{{/*
+Non-empty when the cluster serves ValidatingAdmissionPolicy at
+admissionregistration.k8s.io/v1 (GA since Kubernetes 1.30). Minor is
+stripped of non-digits because some providers report e.g. "30+".
+*/}}
+{{- define "kube-vnet.vapSupported" -}}
+{{- $major := int .Capabilities.KubeVersion.Major -}}
+{{- $minor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
+{{- if or (gt $major 1) (and (eq $major 1) (ge $minor 30)) }}true{{ end -}}
+{{- end -}}
+
+{{/*
+Security context shared by the kubectl containers of the cleanup hook.
+*/}}
+{{- define "kube-vnet.cleanupSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+runAsNonRoot: true
+runAsUser: 65532
+capabilities: { drop: [ALL] }
+{{- end -}}
+
+{{/*
 Selectors shared by both pod-resolution webhook configurations (ADR 0034).
 
 They MUST be identical on the mutating and validating sides: a pod the

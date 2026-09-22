@@ -16,9 +16,7 @@ anyway.
 See ADR 0030 (the convention's origin for pod labels) and ADR 0037 (the
 generalization to NetworkPolicy and VirtualNetwork labels).
 */}}
-{{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
-{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
-{{- if or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30)) }}
+{{- if include "kube-vnet.vapSupported" . }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -60,9 +58,7 @@ spec:
     # The operator's ServiceAccount username is exempted from this VAP.
     # Templated from Helm release values so a non-default install lines up.
     - name: operatorUser
-      expression: {{ printf "\"system:serviceaccount:%s:%s\""
-        (.Release.Namespace)
-        (include "kube-vnet.serviceAccountName" .) | quote }}
+      expression: {{ include "kube-vnet.operatorUsername" . | printf "%q" | quote }}
     # System labels in the new object.
     - name: newSystemLabels
       expression: 'object.metadata.?labels.orValue({}).filter(k, k.startsWith(variables.systemPrefix))'
