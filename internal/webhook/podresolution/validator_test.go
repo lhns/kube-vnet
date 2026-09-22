@@ -97,11 +97,9 @@ func TestValidator_CorrectStamp_Allowed(t *testing.T) {
 	}
 }
 
-// The interaction that makes or breaks this design: the mutator writes system
-// labels as the REQUESTING user, and the validator sees them. If the two
-// disagree, every pod creation in a managed namespace fails admission
-// cluster-wide. This is the exact failure that makes the system-labels VAP
-// unusable alongside a mutating webhook.
+// The mutator writes system labels as the requesting user, and the validator
+// sees them. If the two disagree, every pod creation in a managed namespace
+// fails admission; this is why the system-labels VAP could not stay.
 func TestValidator_AcceptsMutatorOutput(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
