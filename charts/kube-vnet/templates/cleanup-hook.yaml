@@ -51,6 +51,13 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
+  {{- if .Values.webhook.enabled }}
+  # Used by remove-webhooks, before the operator that serves them stops.
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
+    resourceNames: [{{ include "kube-vnet.fullname" . }}-pod-resolution]
+    verbs: [get, delete]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -109,6 +116,26 @@ spec:
       #    is async; pods are cascade-deleted by the controller manager).
       # 3. Now delete the policies. Nothing left to race with.
       initContainers:
+        {{- if .Values.webhook.enabled }}
+        {{- /*
+        The admission webhook configurations go first: the validating one is
+        failurePolicy: Fail, and Helm deletes it only after this hook, so once
+        stop-operator runs every pod write in a managed namespace would be
+        rejected until the uninstall ends (or for good, if it fails).
+        */}}
+        - name: remove-webhooks
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
+          command: [kubectl]
+          args:
+            - delete
+            - mutatingwebhookconfiguration,validatingwebhookconfiguration
+            - {{ include "kube-vnet.fullname" . }}-pod-resolution
+            - --ignore-not-found
+            - --wait=false
+          securityContext:
+            {{- include "kube-vnet.cleanupSecurityContext" . | nindent 12 }}
+        {{- end }}
         - name: stop-operator
           image: {{ $image }}
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
