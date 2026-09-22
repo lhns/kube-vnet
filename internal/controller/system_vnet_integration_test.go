@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -48,12 +47,14 @@ func TestIntegration_SystemVnet_DriftCorrection(t *testing.T) {
 		t.Fatalf("delete system vnet: %v", err)
 	}
 
-	// Wait for it to come back.
+	// A matching UID would be the deleted object still visible, not a recreation.
 	eventually(t, 10*time.Second, func() error {
 		v2 := &vnetv1alpha1.VirtualNetwork{}
-		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetNamespace}, v2)
-		if apierrors.IsNotFound(err) {
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetNamespace}, v2); err != nil {
 			return err
+		}
+		if v2.UID == v.UID {
+			return fmt.Errorf("system vnet not recreated yet (same UID)")
 		}
 		return nil
 	})

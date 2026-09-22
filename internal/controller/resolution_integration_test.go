@@ -494,18 +494,20 @@ func TestIntegration_Resolution_VnetCreatedAfterPod_StampsWithoutPodChange(t *te
 		"kube-vnet/net." + home + ".late": "both",
 	}))
 
-	// 2. It settles unstamped, but resolution DID run and conclude — the
-	//    resolved-generation annotation is what makes the state terminal.
-	time.Sleep(2 * time.Second)
+	// 2. Resolution runs and concludes (resolved-generation is what makes the
+	//    state terminal) without stamping.
 	p := &corev1.Pod{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
-		t.Fatalf("get pod: %v", err)
-	}
+	eventually(t, 10*time.Second, func() error {
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
+			return err
+		}
+		if p.Annotations[AnnotationResolvedGeneration] == "" {
+			return fmt.Errorf("resolution has not written resolved-generation yet")
+		}
+		return nil
+	})
 	if got, ok := p.Labels[sysLabel]; ok {
 		t.Fatalf("pod stamped %q before the vnet existed", got)
-	}
-	if p.Annotations[AnnotationResolvedGeneration] == "" {
-		t.Fatal("expected resolution to have run and stamped resolved-generation")
 	}
 
 	// 3. The vnet appears.

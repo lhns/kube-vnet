@@ -343,13 +343,16 @@ func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); !apierrors.IsNotFound(err) {
 		t.Errorf("baseline should not exist in disabled ns: err=%v", err)
 	}
-	v := &vnetv1alpha1.VirtualNetwork{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
-		t.Fatalf("get vnet: %v", err)
-	}
-	if conditionStatusOf(v, "Ready") != metav1.ConditionFalse {
-		t.Errorf("Ready != False")
-	}
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Ready") != metav1.ConditionFalse {
+			return fmt.Errorf("Ready != False")
+		}
+		return nil
+	})
 }
 
 func TestIntegration_InvalidName_RejectedByAPI(t *testing.T) {
