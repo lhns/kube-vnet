@@ -9,10 +9,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
@@ -144,6 +147,33 @@ func TestVnetToAffectedPods_IsPodsInAdmittedNamespaces(t *testing.T) {
 	}
 	want := []string{"platform/home", "webapp/permitted"}
 	if !slices.Equal(sortedNames(got), want) {
+		t.Fatalf("got %v, want %v", sortedNames(got), want)
+	}
+}
+
+// Narrowing allowedNamespaces must re-resolve the pods it excluded, or they
+// keep stale stamps. EnqueueRequestsFromMapFunc maps both the old and the new
+// object on Update, which covers them; a hand-written handler must too.
+func TestVnetWatch_NarrowingReachesDroppedNamespaces(t *testing.T) {
+	wide := mkVnet("payments", "platform", &vnetv1alpha1.NamespaceSelector{Names: []string{"webapp"}})
+	narrow := mkVnet("payments", "platform", nil)
+	r := fanoutReconciler(
+		mkNamespace("platform", nil), mkNamespace("webapp", nil),
+		narrow, fanoutPod("platform", "home"), fanoutPod("webapp", "dropped"),
+	)
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer q.ShutDown()
+
+	handler.EnqueueRequestsFromMapFunc(r.vnetToAffectedPods).
+		Update(context.Background(), event.UpdateEvent{ObjectOld: wide, ObjectNew: narrow}, q)
+
+	var got []string
+	for q.Len() > 0 {
+		req, _ := q.Get()
+		got = append(got, req.Namespace+"/"+req.Name)
+		q.Done(req)
+	}
+	if want := []string{"platform/home", "webapp/dropped"}; !slices.Equal(sortedNames(got), want) {
 		t.Fatalf("got %v, want %v", sortedNames(got), want)
 	}
 }

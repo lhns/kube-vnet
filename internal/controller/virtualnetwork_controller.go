@@ -354,12 +354,10 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 			continue
 		}
 
-		// Defense in depth against stale stamps. The resolution controller
-		// strips stamps when a namespace is disabled and never stamps a
-		// non-permitted vnet, but both signals lag the state change (its
-		// Namespace watch has to fire; a narrowed allowedNamespaces never
-		// re-triggers resolution at all). The membership policy must not
-		// trust a stamp the current cluster state wouldn't grant.
+		// Defense in depth against stale stamps. Resolution strips stamps a
+		// namespace is no longer granted, but only after its own watch fires.
+		// The membership policy must not trust a stamp the current cluster
+		// state wouldn't grant.
 		managed, err := managedFor(p.Namespace)
 		if err != nil {
 			return nil, nil, err

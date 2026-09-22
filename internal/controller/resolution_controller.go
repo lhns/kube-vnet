@@ -362,8 +362,10 @@ func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object)
 // naming a not-yet-created vnet resolves to no stamp, and since the pod
 // predicate is change-based nothing else would revisit it.
 //
-// The affected set is the pods in the namespaces the vnet now admits, which
-// covers every membership source without matching each one. See ADR 0044.
+// The affected set is the pods in the namespaces the vnet admits, which covers
+// every membership source without matching each one. On update the handler
+// maps both revisions, so narrowing allowedNamespaces also reaches the pods it
+// excluded. See ADR 0044.
 func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
 	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
 	if !ok || vnet == nil {
