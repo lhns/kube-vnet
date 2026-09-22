@@ -57,7 +57,7 @@ status:
 
 `metadata.name` must match the DNS-1123 label regex `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` — lowercase alphanumeric and hyphens, no dots, max 63 chars. Enforced at admission by an `x-kubernetes-validations` (CEL) rule on the CRD; defense-in-depth check at runtime in the reconciler. See [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md).
 
-`metadata.namespace` is the **home namespace**. The home namespace is always implicitly in `allowedNamespaces`; pods in the home namespace use the *bare* join label form.
+`metadata.namespace` is the **home namespace**. The home namespace is always implicitly in `allowedNamespaces`; pods there may use the bare or the prefixed join label form.
 
 ---
 
@@ -138,7 +138,7 @@ status:
     - type: Ready
       status: "True"
       reason: PoliciesGenerated
-      message: "5 NetworkPolic(y|ies) across 2 namespace(s)"
+      message: "5 NetworkPolicies in 2 namespaces"
       lastTransitionTime: "2026-04-30T17:24:13Z"
     - type: Degraded
       status: "False"
@@ -153,27 +153,22 @@ Two condition types are maintained: `Ready` and `Degraded`.
 
 | Status | Reason | Message gist | When it fires |
 |---|---|---|---|
-| True | `NoMembers` | "no pods are joining this VirtualNetwork" | Reconcile succeeded; no pods carry the appropriate join label. |
-| True | `PoliciesGenerated` | "<N> NetworkPolic(y|ies) across <M> namespace(s)" | Reconcile succeeded; at least one policy generated. |
+| True | `NoMembers` | "no pods are joining this VirtualNetwork" | Reconcile succeeded; no receiver-capable members, so no policies. |
+| True | `PoliciesGenerated` | "<N> NetworkPolicies in <M> namespaces" | Reconcile succeeded; at least one policy generated. |
 | False | `InvalidName` | "name <name> is not a DNS-1123 label" | The name fails the runtime validation regex (the CRD's CEL rule should prevent this from being persisted; this is defense-in-depth). |
 | False | `HomeNamespaceExcluded` | "home namespace <ns> is excluded by the operator" | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. |
 | False | `ApplyFailed` | apiserver error message | A `NetworkPolicy` apply call returned an error. |
-| False | `NamespaceNotAllowed` | "..." | A vnet-level surface for the namespace-permission check; usually the per-pod `InvalidJoiners` reason on `Degraded` is what users see. |
-| False | `NamespaceExcluded` | "..." | A vnet-level surface for namespace-exclusion; usually surfaces as `HomeNamespaceExcluded` when the home namespace itself is excluded. |
 
 ### Degraded condition
 
 | Status | Reason | Message gist | When it fires |
 |---|---|---|---|
 | False | `NoIssues` | "" | Reconcile clean; no issues observed. |
-| True | `InvalidJoiners` | "<N> invalid joiner(s): <ns/pod>, <ns/pod>, …" | Some pods carry the prefixed join label but their namespace is non-permitted (`NamespaceNotAllowed`) or excluded (`NamespaceExcluded`). The Degraded message names the offending pods. |
-| True | `UnknownDirection` | "<N> pod(s) with unknown direction: <ns/pod>=<value>, …" | At least one pod's join-label value is not one of `both`/`ingress`/`egress`/`none` (the legacy `"true"`/`"false"`/empty aliases are rejected at admission on K8s >= 1.30 and excluded at reconcile time everywhere). The pod is excluded from membership. See [ADR 0021](../adr/0021-direction-modes-on-join-labels.md). |
-| True | `ResolutionConflict` | "<N> pod(s) with cross-source resolution conflicts: <ns/pod>, …" | At least one pod has conflicting `Direction` values from two distinct resolution sources for this vnet (e.g. a binding says `both` while a pod label says `egress`, or two bindings disagree). The conflict is intersected fail-closed and the per-pod conflict annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. See [ADR 0033](../adr/0033-canonical-fq-system-labels.md). |
+| True | `InvalidJoiners` | "<N> invalid joiners: <ns>/<pod>:<reason>, …" (first three, then "(+N more)") | A pod carries a `kube-vnet/net.*` join label for this vnet that can't be honored. Per-pod reasons: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (pod's namespace is disabled), `NamespaceNotAllowed` (not permitted by `allowedNamespaces`). Advisory: a pod that is a member through another source (binding, baseline) keeps that membership. |
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
-| True | `NameCollision` | (planned; tracked) | A user-managed `NetworkPolicy` with the same name kube-vnet wants to use exists and doesn't carry the `kube-vnet.system/managed-by` label. The operator refuses to overwrite. |
 
-The full machine-readable reason constants live in `internal/controller/virtualnetwork_controller.go` (the `Reason*` block).
+`ResolutionConflict` is defined as a constant but not currently set: conflicting directions from different sources are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) without being reported on the vnet. The reason constants live in `internal/controller/virtualnetwork_controller.go` (the `Reason*` block).
 
 ### `status.members`
 
@@ -231,7 +226,7 @@ Standard Kubernetes pattern: `metadata.generation` last seen by the controller. 
 - **Name**: DNS-1123 label (lowercase alphanumeric and hyphens; no dots; max 63 chars). Enforced via CRD-level `x-kubernetes-validations` CEL rule; runtime check in the reconciler as defense-in-depth.
 - **`allowedNamespaces.names`**: must be valid namespace names (DNS-1123 label) — Kubernetes' standard validation. The operator does not re-validate.
 
-There is currently no admission webhook. The CEL rule covers the only known invalid-name case. See [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md).
+No webhook validates `VirtualNetwork` objects; the CEL rule covers the only known invalid-name case. See [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md). (The optional admission webhook, `webhook.enabled`, handles pods only.)
 
 ---
 
@@ -239,13 +234,12 @@ There is currently no admission webhook. The CEL rule covers the only known inva
 
 | Event | What happens |
 |---|---|
-| Create | Reconciler enqueues; if no pods carry the join label, status becomes `Ready=True, NoMembers` and no policies are generated. |
-| Pod added/labeled | Pod-watch fires; reconciler enqueues the relevant vnet(s); membership updated; policy created/updated; baseline installed in the namespace if it wasn't already. |
-| Pod removed/un-labeled | Same as above; membership updated; policy may shrink (peer rules) or be deleted (if the namespace empties); baseline GC'd if the namespace has no managed members. |
+| Create | Reconciler enqueues; with no members, status becomes `Ready=True, NoMembers` and no policies are generated. |
+| Pod stamped / unstamped | The resolution controller changes the pod's `kube-vnet.system/net.*` label; the pod watch enqueues the vnet; the membership policy for that namespace is created, updated, or deleted. |
 | Spec edit | Reconciler enqueues; new desired state computed; SSA reconciles; stale policies (e.g. for namespaces no longer in `allowedNamespaces`) deleted. |
-| Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all (including in foreign namespaces). Baseline GC'd in each touched namespace. |
+| Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all, including in foreign namespaces. |
 
-For the full reconciliation algorithm see [`../architecture.md`](../internals/architecture.md).
+The `kube-vnet.base` baseline is independent of every vnet: it exists in each managed namespace for as long as the namespace is managed. For the reconciliation algorithm see [`architecture.md`](../internals/architecture.md).
 
 ---
 
@@ -285,7 +279,7 @@ metadata:
 spec:
   virtualNetworkRef:
     name: <string>               # required
-    namespace: <string>          # required (target vnet's home namespace)
+    namespace: <string>          # optional; see "Referencing a VirtualNetwork"
   direction: both                # both | ingress | egress | none; defaults to both
   podSelector:                   # required; standard metav1.LabelSelector
     matchLabels: { ... }
@@ -333,15 +327,15 @@ Standard Kubernetes pattern: `metadata.generation` last seen by the controller.
 
 ## Generated NetworkPolicy
 
-No per-binding policy is emitted (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` on every pod selected by the binding, and the regular per-`(vnet, namespace)` membership policy `kube-vnet.<homeNS>.<vnet>-<8hex>` covers them via the standard selector.
+No per-binding policy is emitted (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` on every pod selected by the binding, and the regular per-`(vnet, namespace)` membership policy `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` covers them via the standard selector.
 
-The binding controller writes only the binding's status. The desired-state computation in `VirtualNetworkReconciler` watches bindings and folds them into the regular membership policy.
+The binding controller writes only the binding's status.
 
 ## Lifecycle
 
 | Event | What happens |
 |---|---|
-| Create | Binding controller validates spec, computes the matching pod set, sets `Ready` accordingly, writes status. The owning vnet is enqueued so its policy set picks up the binding. |
+| Create | Binding controller validates spec, computes the matching pod set, sets `Ready` accordingly, writes status. The resolution controller re-resolves the selected pods and stamps them. |
 | Pod added/removed in binding's namespace | Binding's controller refreshes `attachedPods`. The resolution controller adjusts each pod's stamped system labels; the regular membership policy reflects the new peer set on next vnet reconcile. |
 | Spec edit | Same as create. |
 | Delete | The resolution controller un-stamps the binding's contribution from each affected pod. The vnet's `deleteStale` step removes any policy no longer in the desired set. |
@@ -391,20 +385,13 @@ spec:
 | `memberships` | `[]BaselineMembership` | no (empty = no NS-tier defaults) | Memberships every pod in this namespace inherits. Atomic list; order not significant. |
 | `memberships[].virtualNetworkRef.name` | string | yes | Target vnet's name. |
 | `memberships[].virtualNetworkRef.namespace` | string | no | Optional; inferred when omitted. See [Referencing a VirtualNetwork](#referencing-a-virtualnetwork). |
-| `memberships[].virtualNetworkRef.namespace` | string | yes | Target vnet's home namespace. |
 | `memberships[].direction` | string | yes | One of the eight direction values: `both`, `ingress`, `egress`, `none`, `default-both`, `default-ingress`, `default-egress`, `default-none` (enum-enforced). Bare values are **enforced** — bindings and pod labels in this namespace cannot override them. `default-*` values are **advisory** — lower tiers may override per vnet. |
 
-This baseline itself inherits from the [`ClusterVirtualNetworkBaseline`](#clustervirtualnetworkbaseline): it may override only entries the cluster baseline marked `default-*`. An attempt to override a bare cluster-pinned value is rejected (see `OverrideRejected` below); the cluster value stays in effect.
+This baseline itself inherits from the [`ClusterVirtualNetworkBaseline`](#clustervirtualnetworkbaseline): it may override only entries the cluster baseline marked `default-*`. An attempt to override a bare cluster-pinned value is ignored; the cluster value stays in effect.
 
 ## status
 
-| Condition type | Meaning |
-|---|---|
-| `Ready` | Baseline validated and folded into resolution. |
-| `Conflicts` | Two entries reference the same vnet with disagreeing directions. Resolution still proceeds fail-closed (directions intersect); the condition surfaces the disagreement. |
-| `OverrideRejected` | This baseline tried to override a vnet the cluster baseline pinned with a **bare** direction. The entry is ignored, the cluster value applies, and the condition message names the vnet. |
-
-`status.observedGeneration` mirrors the reconciled `metadata.generation`.
+The API declares `status.conditions` (documented types `Ready`, `Conflicts`, `OverrideRejected`) and `status.observedGeneration`, but no controller writes baseline status yet: duplicate entries are intersected fail-closed and rejected overrides are dropped without a condition. The `READY` printer column is therefore empty.
 
 ## Printer columns
 
@@ -444,12 +431,10 @@ metadata:
 spec:
   memberships:
     - virtualNetworkRef:
-        name: namespace      # per-NS system vnet
-        namespace: kube-vnet-system
+        name: namespace      # per-NS system vnet: the pod's own namespace
       direction: default-both
     - virtualNetworkRef:
         name: cluster        # cluster-wide system vnet
-        namespace: kube-vnet-system
       direction: default-egress
 ```
 
@@ -461,12 +446,7 @@ Identical shape to `VirtualNetworkBaseline.spec` — `memberships[]` with `virtu
 
 ## status
 
-| Condition type | Meaning |
-|---|---|
-| `Ready` | Baseline validated and folded into resolution. |
-| `Conflicts` | Duplicate vnet refs with disagreeing directions; resolution intersects fail-closed. |
-
-(No `OverrideRejected` — there is no tier above this one.)
+Same as `VirtualNetworkBaseline`: declared (`Ready`, `Conflicts`), not yet written by any controller.
 
 ## Printer columns
 
