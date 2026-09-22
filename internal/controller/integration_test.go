@@ -52,23 +52,6 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	})
 }
 
-// assertAllowAllBaseline checks the policy is the mode=none allow-all shape:
-// policyTypes=[Ingress], one empty ingress rule (no From, no Ports). Per
-// the K8s NetworkPolicy spec, an empty rule matches all sources on all ports.
-func assertAllowAllBaseline(t *testing.T, p *networkingv1.NetworkPolicy) {
-	t.Helper()
-	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Errorf("policyTypes = %v, want [Ingress]", p.Spec.PolicyTypes)
-	}
-	if len(p.Spec.Ingress) != 1 {
-		t.Fatalf("expected one ingress rule, got %d: %+v", len(p.Spec.Ingress), p.Spec.Ingress)
-	}
-	rule := p.Spec.Ingress[0]
-	if len(rule.From) != 0 || len(rule.Ports) != 0 {
-		t.Errorf("allow-all rule must have empty From and Ports, got %+v", rule)
-	}
-}
-
 // TestIntegration_Baseline_LandsForManagedNamespace verifies the deny-all
 // baseline is installed in every managed namespace (ADR 0030: uniform
 // baseline shape, no per-namespace mode).
@@ -918,15 +901,6 @@ func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 
 // ----- --default-deny-everywhere flag tests ---------------------------------
 
-// withDefaultDenyEverywhere is a no-op kept only so the FlagOn_* tests still
-// compile. Under ADR 0030 the baseline is always present (deny-all) in every
-// managed namespace, so the legacy "flag on/off" knob doesn't exist anymore.
-// The tests below now exercise: namespace gets baseline; disabled-NS skips
-// baseline; annotation transitions remove baseline.
-func withDefaultDenyEverywhere(t *testing.T, _ bool) {
-	t.Helper()
-}
-
 // touchNamespace forces a reconcile of the namespace by issuing a no-op label
 // update. Needed because in tests we may flip the flag *after* a namespace was
 // created and the watch already fired without our flag being on.
@@ -949,7 +923,6 @@ func touchNamespace(t *testing.T, name string) {
 // namespace with no vnet → baseline appears.
 func TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere(t *testing.T) {
 	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
 	ns := uniqueNS(t, "ddaon")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	touchNamespace(t, ns)
@@ -964,7 +937,6 @@ func TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere(t *testing.T) {
 // namespace annotated kube-vnet/disabled=true → no baseline.
 func TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped(t *testing.T) {
 	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
 	ns := uniqueNS(t, "ddadis")
 	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
 	touchNamespace(t, ns)
@@ -981,7 +953,6 @@ func TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped(t *testing.T
 // baseline present, then the disabled annotation gets added → baseline removed.
 func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing.T) {
 	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
 	ns := uniqueNS(t, "ddaflip")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	touchNamespace(t, ns)
@@ -1054,10 +1025,6 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 		}
 	}
 }
-
-// ensure imports stay used when individual tests are commented out
-var _ = strings.HasPrefix
-var _ = corev1.Namespace{}
 
 // TestIntegration_MemberWithMalformedUserLabel_StaysMember pins the fix
 // for the diagnostic-scan-suppresses-membership bug found in the project

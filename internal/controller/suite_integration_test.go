@@ -17,7 +17,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -36,12 +35,10 @@ import (
 
 // Shared envtest fixture set up by TestMain. All integration tests share one apiserver.
 var (
-	testEnv                  *envtest.Environment
-	testCfg                  *rest.Config
-	testClient               client.Client
-	testScheme               = runtime.NewScheme()
-	testNSReconciler         *NamespaceReconciler // exposed so tests can flip DefaultDenyEverywhere
-	testResolutionReconciler *ResolutionReconciler
+	testEnv    *envtest.Environment
+	testCfg    *rest.Config
+	testClient client.Client
+	testScheme = runtime.NewScheme()
 )
 
 func TestMain(m *testing.M) {
@@ -99,12 +96,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	testNSReconciler = &NamespaceReconciler{
+	nsReconciler := &NamespaceReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
 	}
-	if err := testNSReconciler.SetupWithManager(mgr); err != nil {
+	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)
 		_ = testEnv.Stop()
 		os.Exit(1)
@@ -121,7 +118,6 @@ func TestMain(m *testing.M) {
 		_ = testEnv.Stop()
 		os.Exit(1)
 	}
-	testResolutionReconciler = resReconciler
 
 	// The binding reconciler owns VirtualNetworkBinding status (Ready,
 	// attachedPods). It was absent from this suite, which is why its stale-status
@@ -316,25 +312,3 @@ func conditionStatusOf(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.Condi
 	}
 	return metav1.ConditionUnknown
 }
-
-// hasIngressFromKey returns true if the policy's first ingress rule has a peer
-// whose podSelector matches Exists on `key`.
-func hasIngressFromKey(p *networkingv1.NetworkPolicy, key string) bool {
-	if len(p.Spec.Ingress) == 0 {
-		return false
-	}
-	for _, peer := range p.Spec.Ingress[0].From {
-		if peer.PodSelector == nil {
-			continue
-		}
-		for _, expr := range peer.PodSelector.MatchExpressions {
-			if expr.Key == key && expr.Operator == metav1.LabelSelectorOpExists {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// ignored to avoid "imported and not used" if a test removes references.
-var _ = apierrors.IsNotFound
