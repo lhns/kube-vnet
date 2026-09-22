@@ -123,6 +123,24 @@ jobs:
       - name: run webhook e2e tests
         run: go test -tags e2e_webhook ./test/e2e/... -count=1 -v -timeout 15m
 
+      - name: the helm-generated serving cert survives an upgrade
+        run: |
+          set -euxo pipefail
+          # An upgrade must neither delete nor regenerate the Secret: the
+          # operator would lose its serving cert or no longer match caBundle.
+          ca() {
+            kubectl get secret kube-vnet-controller-webhook-cert -n kube-vnet-system \
+              -o jsonpath='{.data.ca\.crt}'
+          }
+          before=$(ca)
+          helm upgrade kube-vnet charts/kube-vnet --namespace kube-vnet-system \
+            --reuse-values --wait --timeout 3m
+          after=$(ca)
+          if [ -z "$before" ] || [ "$before" != "$after" ]; then
+            echo "FAIL: webhook cert Secret missing or rotated after helm upgrade."
+            exit 1
+          fi
+
       - name: dump diagnostics on failure
         if: failure()
         run: |
