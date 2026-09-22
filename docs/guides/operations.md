@@ -4,6 +4,8 @@ Running kube-vnet in production. Topology, sizing, monitoring, alerts.
 
 For the underlying mechanism (reconciler internals, baseline lifecycle), see [`architecture.md`](../internals/architecture.md). For the full metric/event surface, see [`reference/metrics-and-events.md`](../reference/metrics-and-events.md).
 
+Commands assume a Helm release named `kube-vnet` in `kube-vnet-system`, so the Deployment is `kube-vnet`. The kustomize / `release.yaml` install names it `kube-vnet-controller`.
+
 ---
 
 ## Deployment topology
@@ -50,7 +52,8 @@ This is purely a failure-mode tradeoff — see "When the operator is down" below
 What happens to your cluster while no replica is running:
 
 - **Existing `NetworkPolicy` resources stay enforced.** The apiserver continues serving them; the CNI continues dropping packets. Pods that *were* isolated remain isolated; pods that *were* allowed remain allowed.
-- **Membership changes don't propagate.** A new pod with a join label won't show up in the corresponding vnet's `status.members` until the operator returns. Its connectivity, however, is governed by whatever NetworkPolicy is already in the namespace.
+- **Membership changes don't propagate.** New pods stay unstamped, so they match no membership policy and the baseline denies their ingress until the operator returns.
+- **With `webhook.enabled=true`, pod creation and updates in managed namespaces are rejected** — the validating webhook fails closed. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are exempt, so the operator itself can always restart. This is why the webhook wants two or more replicas.
 - **VirtualNetwork resources can still be created/edited/deleted.** The apiserver accepts them; the operator just won't act on them until it's back.
 - **Drift correction pauses.** A user deleting an operator-managed `NetworkPolicy` while the operator is down won't trigger an immediate restore. The policy returns on the next reconcile after the operator comes back. See [`security.md`](../security/security.md) for what this means for the threat model.
 
@@ -69,7 +72,7 @@ resources:
 These work for typical clusters. The operator's footprint scales with:
 
 - **Number of `VirtualNetwork` resources** — each gets one informer entry, occasional reconciles. Negligible per-vnet.
-- **Number of pods carrying `kube-vnet/net.*` labels** — each fires a watch event. The label-prefix predicate ensures pods *without* those labels never enter the work queue.
+- **Number of pods in managed namespaces** — the resolution controller resolves every one of them (baseline memberships apply to all pods); predicates skip updates that don't change labels, annotations, or generation.
 - **Number of operator-managed `NetworkPolicy` resources** — also gets an informer entry, drift-correction events.
 
 Practical bumps:
@@ -140,16 +143,14 @@ scrape_configs:
 
 ### Sample alerting rules
 
-The four recommended alert rules (apply errors, reconcile error rate, slow reconcile, repeated PolicyRestored) live with the metric definitions in [`../reference/metrics-and-events.md` (Sample alert rules)](../reference/metrics-and-events.md#sample-alert-rules) - one canonical copy, kept in sync with the metrics they reference.
-
-(The `kube_events` series above is from `kube-state-metrics`. If you're not running it, watch `kubectl get events --field-selector reason=PolicyRestored -A` instead.)
+Four starter rules (apply errors, reconcile error rate, slow reconcile, repeated `PolicyRestored`) are in [metrics-and-events § sample alert rules](../reference/metrics-and-events.md#sample-alert-rules). The `PolicyRestored` rule needs `kube-state-metrics`; without it, watch `kubectl get events --field-selector reason=PolicyRestored -A`.
 
 ### Logs
 
 Structured JSON via zap (controller-runtime default). Stream:
 
 ```bash
-kubectl logs -n kube-vnet-system deploy/kube-vnet-controller -f
+kubectl logs -n kube-vnet-system deploy/kube-vnet -f
 ```
 
 Per-reconcile log lines look like:
@@ -183,7 +184,7 @@ Events have a default TTL of 1 hour (apiserver-managed) — they're a notificati
 
 ### "I just installed kube-vnet — why aren't my non-vnet pods isolated?"
 
-By default they are: every managed namespace gets a deny-all baseline. If pods can still reach each other, the most likely cause is that they're members of the same vnet (which adds an allow rule). Check `kubectl get netpol -A -l kube-vnet.system/role=baseline` to confirm the baseline is present in your namespace.
+Every managed namespace gets a deny-all baseline, but the seeded cluster baseline decides what stays open: with `ingressIsolationLevel=cluster` every pod is on the `cluster` system vnet and reachable from everywhere; with `namespace`, same-namespace pods reach each other. Check `kubectl get cvnbl default -o yaml` for the preset and `kubectl get netpol -A -l kube-vnet.system/role=baseline` for the baseline. If pods are still reachable under `pod`, they share a vnet, or see [troubleshooting](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other).
 
 If you want to *open up* a namespace, annotate it `kube-vnet/disabled: "true"` (the operator stays out entirely there) or add it to `--disabled-namespaces` / `operator.disabledNamespaces`.
 
@@ -191,7 +192,7 @@ If you want to *open up* a namespace, annotate it `kube-vnet/disabled: "true"` (
 
 ```bash
 # Operator running and Available
-kubectl get deploy -n kube-vnet-system kube-vnet-controller
+kubectl get deploy -n kube-vnet-system kube-vnet
 
 # Lease being renewed
 kubectl get lease -n kube-vnet-system kube-vnet.lhns.de \
@@ -245,7 +246,7 @@ If the query returns any policies, one of these happened:
 
 - You used `helm uninstall --no-hooks` (the hook never fired).
 - You removed the operator via `kubectl delete -k` / `kubectl delete crd` instead of `helm uninstall` — chart hooks only run for `helm uninstall`.
-- The pre-delete hook Job failed mid-stream. Check `helm history kube-vnet -n kube-vnet-system` to confirm the release status, and look for a leftover Job in the release namespace: `kubectl get jobs -n kube-vnet-system -l app.kubernetes.io/component=cleanup`.
+- The pre-delete hook Job failed mid-stream. Check `helm history kube-vnet -n kube-vnet-system` to confirm the release status, and look for a leftover Job and its pod in the release namespace: `kubectl get job -n kube-vnet-system kube-vnet-cleanup` and `kubectl get pods -n kube-vnet-system -l app.kubernetes.io/component=cleanup`.
 
 In any of those cases, clean up manually with the same selector the hook uses:
 
@@ -266,7 +267,7 @@ helm upgrade kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and leader election, you'll see a brief gap (~10–20s) where neither replica is leader. Existing policies stay enforced throughout. With two replicas, failover is faster.
 
-CRD changes are not applied by `helm upgrade` — see [`install.md`](../getting-started/install.md) for how to apply CRD updates explicitly.
+The chart's CRDs are regular templates, so `helm upgrade` updates them too.
 
 Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](../faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; name renames are handled by owner-ref-based self-healing on the next reconcile; connectivity stays intact throughout.
 
@@ -288,7 +289,7 @@ Recommended rollout:
 
 ### "An auditor is asking what kube-vnet does in `kube-system`"
 
-Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's default `operator.disabledNamespaces`, so the operator stays out of them entirely: no baseline, no system vnets, no resolution stamping, no eligibility as a peer for foreign-NS vnets. To enroll a system-namespace pod in a vnet, remove the namespace from `disabledNamespaces` explicitly. See [`security.md`](../security/security.md) for the full RBAC inventory.
+Nothing, with the default values. `kube-system` is the chart's default `operator.disabledNamespaces`, so the operator stays out of it entirely: no baseline, no system vnets, no resolution stamping, no eligibility as a peer for foreign-NS vnets. (`kube-public` and `kube-node-lease` are managed but hold no pods.) Removing `kube-system` from the list enrolls it; see [the recipe](recipes.md#managing-kube-system-and-keeping-dns-alive). See [`security.md`](../security/security.md) for the full RBAC inventory.
 
 ### "I'm upgrading from a release with the old config-key names"
 
@@ -296,7 +297,7 @@ Nothing. `kube-system`, `kube-public`, and `kube-node-lease` are in the chart's 
 
 **`operator.ingressIsolation.mode` and the `--ingress-isolation*` flags are gone.** The baseline is uniformly deny-all selecting every pod; there's no per-namespace mode and no elide-list (the `--elide-baseline-for` flag was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md)). To configure the cluster-wide default posture, set `operator.clusterBaseline.ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) on the chart — see [ADR 0031](../adr/0031-baseline-tier-resolution.md). The chart fails fast at install time if neither `ingressIsolationLevel` nor `memberships` is set when `create=true`; pick deliberately.
 
-**System namespaces are disabled by default again.** `operator.disabledNamespaces` defaults to `[kube-system, kube-public, kube-node-lease]`; the operator stays out of those entirely.
+**`kube-system` is disabled by default.** `operator.disabledNamespaces` defaults to `[kube-system]`; the operator stays out of it entirely.
 
 **Renamed/removed values — old names no longer accepted.** Rename in your values file and CI manifests *before* you upgrade:
 
@@ -355,6 +356,6 @@ A pod's join labels are O(N) where N is the number of vnets it belongs to. For t
 
 - Kubernetes' label storage handles it (no hard ceiling at this scale).
 - The operator's pod-watch predicate scans labels per event — O(L) per pod event. L=50 is fine; L=500 would be measurable.
-- Generated `NetworkPolicy` selectors are unaffected — the selector is `Exists` on a single key per vnet.
+- Generated `NetworkPolicy` selectors are unaffected — each membership policy selects on the single stamped key of its own vnet.
 
 If you're approaching this scale, the e2e suite can validate it (the `TestE2E_*` tests are easy to extend with a high-cardinality case). It hasn't been benchmarked at 1000+ pods × 50+ vnets.

@@ -12,17 +12,16 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [`kubectl apply` rejected my pod: "must be one of: both, ingress, egress, none"](#kubectl-apply-rejected-my-pod-must-be-one-of-both-ingress-egress-none)
 - [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
+- [I labeled my pod and the vnet is Ready, but external pods can still reach it](#i-labeled-my-pod-and-the-vnet-is-ready-but-external-pods-can-still-reach-it)
 - [A Job or one-shot pod fails to connect on startup, but succeeds on retry](#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [Admission webhook fails with `context deadline exceeded`](#admission-webhook-fails-with-context-deadline-exceeded)
 - [CNI pitfalls that silently break enforcement (separate page)](cni-pitfalls.md)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
-- [The default-deny baseline didn't appear](#the-default-deny-baseline-didnt-appear)
+- [The deny-all baseline didn't appear](#the-deny-all-baseline-didnt-appear)
 - [The baseline disappeared after I deleted my vnet — bug?](#the-baseline-disappeared-after-i-deleted-my-vnet--bug)
 - [A namespace is stuck in `Terminating`](#a-namespace-is-stuck-in-terminating)
 - [My VirtualNetworkBinding doesn't attach any pods](#my-virtualnetworkbinding-doesnt-attach-any-pods)
-- [Binding shows Ready=False, NamespaceNotAllowed](#binding-shows-readyfalse-namespacenotallowed)
-- [Degraded with UnknownDirection or ResolutionConflict](#degraded-with-unknowndirection-or-conflictingdirections)
 - ["kubectl get vnet" shows READY=False](#kubectl-get-vnet-shows-readyfalse)
 - ["Degraded" condition is True — what does each reason mean?](#degraded-condition-is-true--what-does-each-reason-mean)
 - [Operator logs are noisy with conflict / "object has been modified" errors](#operator-logs-are-noisy-with-conflict--object-has-been-modified-errors)
@@ -36,7 +35,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Pod events kube-vnet emits
 
-A `VirtualNetworkNotJoinable` Warning fires on the Pod itself when a `kube-vnet/net.*` label (or a binding/baseline ref) is present but the membership can't be honored. It surfaces in `kubectl describe pod` and via `kubectl get events --field-selector involvedObject.kind=Pod`. The message note tells you which of the cases below applies. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace.md).
+A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidJoinLabelDirection` instead. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
 > Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. Disabled is an explicit opt-out — the operator stays silent there by design.
 >
@@ -125,7 +124,7 @@ labels:
   # or `ingress`, `egress`, `none`
 ```
 
-The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the VAP is skipped (the chart conditions on `apiVersions` discovery). The same typo there is admitted but excluded from membership at reconcile time, surfacing as `Degraded`/`UnknownDirection` on the vnet — see [the section below](#degraded-with-unknowndirection-or-conflictingdirections).
+The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the chart doesn't install the VAP (it checks the Kubernetes version). The same typo is then admitted but ignored at reconcile time: the pod gets an `InvalidJoinLabelDirection` event and the vnet `Degraded=True, reason=InvalidJoiners` with per-pod reason `UnknownDirection` — see [Degraded reasons](#degraded-condition-is-true--what-does-each-reason-mean).
 
 ---
 
@@ -155,7 +154,7 @@ Most common case. Walk through these in order:
 
    The pod's namespace decides which forms are valid, not the vnet's.
 
-   **Direction value.** The label value matters now: `both` (default), `ingress`, `egress`, `none`. The legacy `true`/`false`/empty-string aliases were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). An unknown value (e.g. a typo `"bothh"`) is rejected and surfaces on the vnet's `Degraded` condition with reason `UnknownDirection`.
+   **Direction value.** The value must be `both`, `ingress`, `egress`, or `none`. An unknown value (e.g. a typo `"bothh"`) is rejected at admission, or — without the VAP — ignored with an `InvalidJoinLabelDirection` pod event.
 
 2. **Is the pod's namespace operator-excluded?**
 
@@ -166,7 +165,7 @@ Most common case. Walk through these in order:
    If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded.
 
    Two ways a namespace can be excluded:
-   - The operator-level `--disabled-namespaces` flag (default `kube-system,kube-public,kube-node-lease`, plus the operator's own namespace).
+   - The operator-level `--disabled-namespaces` flag (default `kube-system`, plus the operator's own namespace).
    - The per-namespace annotation: `kubectl get ns <name> -o jsonpath='{.metadata.annotations.kube-vnet/disabled}'` — if it reads `true`, that's why.
 
 3. **Is the pod's namespace permitted by `allowedNamespaces`?**
@@ -182,7 +181,7 @@ Most common case. Walk through these in order:
 4. **Is the operator alive?**
 
    ```bash
-   kubectl get deploy -n kube-vnet-system kube-vnet-controller
+   kubectl get deploy -n kube-vnet-system kube-vnet
    kubectl get lease -n kube-vnet-system kube-vnet.lhns.de \
      -o jsonpath='{.spec.holderIdentity} {.spec.renewTime}{"\n"}'
    ```
@@ -289,7 +288,7 @@ This covers the policy window and target readiness together, and it stops being 
 
    See [`install.md`](../getting-started/install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check: install Calico/Cilium/kube-router and re-test. If isolation now works, the previous CNI didn't enforce NetworkPolicy.
 
-   If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`troubleshooting/cni-pitfalls.md`](cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
+   If your CNI *claims* to enforce NetworkPolicy and isolation still doesn't work, see [`cni-pitfalls.md`](cni-pitfalls.md) for the specific misconfigurations that silently break enforcement (kube-router `ipMasq`, k0s ConfigMap-propagation gap, kube-router service-proxy bootstrap deadlock, Calico Felix not running, Cilium identity-allocation lag).
 
 2. **Is the deny-all baseline present in the receiving namespace?**
 
@@ -453,11 +452,11 @@ Per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), every ma
 2. Is the namespace in `--disabled-namespaces`?
 
    ```bash
-   kubectl get deploy -n kube-vnet-system kube-vnet-controller \
+   kubectl get deploy -n kube-vnet-system kube-vnet \
      -o jsonpath='{.spec.template.spec.containers[0].args}'
    ```
 
-   The default list is `kube-system,kube-public,kube-node-lease` plus the operator's own namespace.
+   The default list is `kube-system` plus the operator's own namespace.
 
 3. Otherwise, the baseline should be present:
 
@@ -518,39 +517,6 @@ The membership policy is named `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` and lives 
 
 ---
 
-## Binding shows Ready=False, NamespaceNotAllowed
-
-The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. Two fixes:
-
-```bash
-# Option 1: extend the vnet's allowedNamespaces.
-kubectl patch vnet -n <vnet-ns> <vnet-name> --type=merge -p '
-spec:
-  allowedNamespaces:
-    names: [<binding-ns>]
-'
-
-# Option 2: move the binding to a permitted namespace.
-```
-
-The binding is honored only when the target vnet permits its namespace — same rule as label-driven membership.
-
----
-
-## Degraded with UnknownDirection or ResolutionConflict
-
-`UnknownDirection`: at least one pod has a join label whose value isn't `both`/`ingress`/`egress`/`none`. The pod is excluded from membership; fix the typo. Legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.
-
-```bash
-kubectl describe vnet -n <ns> <name>   # the message names the offending pods
-```
-
-`ResolutionConflict`: at least one pod has cross-source disagreement on this vnet's `Direction` value (e.g. a `VirtualNetworkBinding` says `both` while a pod label says `egress`, or two bindings disagree). The resolver intersects fail-closed and stamps the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` so the conflict is auditable.
-
-Pick a single source per pod (drop the conflicting binding or fix the pod label). Bare-vs-prefixed disagreement on the same pod is *not* a conflict anymore — both inputs canonicalize to the same key and intersect cleanly per [ADR 0033](../adr/0033-canonical-fq-system-labels.md).
-
----
-
 ## "kubectl get vnet" shows READY=False
 
 The reason explains what to fix.
@@ -561,8 +527,7 @@ The reason explains what to fix.
 | `PoliciesGenerated` | (`Ready=True`) — everything's working. | Nothing to fix. |
 | `InvalidName` | The vnet's name has a dot or other invalid character. | Recreate the vnet with a DNS-1123 label name (lowercase alphanumeric and hyphens, no dots). |
 | `HomeNamespaceExcluded` | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. | Move the vnet to a managed namespace, or remove the namespace from the disabled list / annotation. |
-| `ApplyFailed` | The operator hit an apiserver error trying to apply a `NetworkPolicy`. | `kubectl logs deploy/kube-vnet-controller -n kube-vnet-system | grep apply` for the error detail. |
-| `NameCollision` | A user-managed `NetworkPolicy` exists with the same name kube-vnet wants to use, and it doesn't carry the `kube-vnet.system/managed-by` label. | Rename the user policy, or move it elsewhere. |
+| `ApplyFailed` | The operator hit an apiserver error trying to apply a `NetworkPolicy`. | `kubectl logs deploy/kube-vnet -n kube-vnet-system \| grep apply` for the error detail. |
 
 ---
 
@@ -571,14 +536,13 @@ The reason explains what to fix.
 | Reason | Meaning | Fix |
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
-| `InvalidJoiners` | At least one pod carries the appropriate join label but is in a non-permitted or excluded namespace. The vnet's status message names the offending pods. | Either (a) extend `allowedNamespaces` to include the pod's namespace, (b) move the pod, or (c) remove the join label from the pod if it shouldn't be a member. The Degraded message also distinguishes whether the underlying reason was `NamespaceNotAllowed` (not in `allowedNamespaces`) or `NamespaceExcluded` (in `--disabled-namespaces` or annotated `kube-vnet/disabled=true`). |
-| `UnknownDirection` | A pod's join label value is not one of `both`, `ingress`, `egress`, `none`. The pod is excluded from membership. (The legacy `true`/`false`/empty-string aliases were dropped per ADR 0030.) | Fix the value on the offending pod (named in the Degraded message). |
-| `ResolutionConflict` | At least one pod has cross-source disagreement on this vnet's `Direction` (binding-vs-label or binding-vs-binding). The resolver intersects fail-closed; the per-pod annotation `kube-vnet.system/conflict.<homeNS>.<vnet>` is set. | Drop the conflicting binding or fix the pod label so a single source determines the direction. See [ADR 0033](../adr/0033-canonical-fq-system-labels.md). |
+| `InvalidJoiners` | At least one pod carries a join label for this vnet that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceNotAllowed` (not in `allowedNamespaces`), `NamespaceExcluded` (namespace disabled). | Fix the value; extend `allowedNamespaces` or move the pod; or remove the join label if the pod shouldn't be a member. |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
-| `NameCollision` | Same as Ready. | Same fix. |
 
-The full list of constants is in `internal/controller/virtualnetwork_controller.go`; the user-facing version is [`reference/api.md`](../reference/api.md).
+**Conflicting directions** for the same vnet from different sources (a binding says `both`, the pod label `egress`; or two bindings disagree) are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) — here, `none`. Nothing currently reports the conflict: compare the pod's `kube-vnet.system/net.*` stamp with its sources and keep a single source per pod. Bare-vs-prefixed labels on the same pod canonicalize to one key ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
+
+Reason definitions: [`reference/api.md`](../reference/api.md#degraded-condition).
 
 ---
 
@@ -614,7 +578,7 @@ If you see this *outside* of a namespace deletion (i.e. the namespace exists and
 
 ## I see "PolicyRestored" Warning events — is something wrong?
 
-Maybe. The event fires when the operator re-creates a `NetworkPolicy` that was absent immediately before its apply call — i.e. someone (or something) deleted an operator-managed policy and the operator restored it.
+Maybe. The event fires when the operator re-creates a membership `NetworkPolicy` that was absent immediately before its apply call — someone (or something) deleted it and the operator restored it. (Baseline and auto-allow policies are restored too, without an Event.)
 
 Inspect:
 
@@ -628,7 +592,7 @@ Possible causes:
 - A misbehaving controller is repeatedly deleting them. Find it and stop it.
 - An attempted bypass — see [`security.md`](../security/security.md).
 
-If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple times per minute), there's an active loop somewhere. The Prometheus alert `KubeVnetPolicyRestoredRepeatedly` (in [`operations.md`](operations.md)) catches this.
+If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple times per minute), there's an active loop somewhere. The sample alert `KubeVnetPolicyRestoredRepeatedly` ([metrics-and-events](../reference/metrics-and-events.md#sample-alert-rules)) catches this.
 
 ---
 
@@ -636,15 +600,16 @@ If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple ti
 
 ```bash
 kubectl describe pod -n kube-vnet-system -l app.kubernetes.io/name=kube-vnet
-kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --previous
+kubectl logs -n kube-vnet-system deploy/kube-vnet --previous
 ```
 
 Common causes:
 
 - **`ImagePullBackOff`**: the image isn't available where the cluster pulls from. Check `image.repository` / `image.tag` in your Helm values, and the cluster's pull-secrets / image-policy.
-- **CrashLoopBackOff with "permission denied"**: the ServiceAccount RBAC didn't apply. Check `kubectl auth can-i list virtualnetworks.kube-vnet.lhns.de --as=system:serviceaccount:kube-vnet-system:kube-vnet-controller`.
+- **CrashLoopBackOff with "permission denied"**: the ServiceAccount RBAC didn't apply. Check `kubectl auth can-i list virtualnetworks.kube-vnet.lhns.de --as=system:serviceaccount:kube-vnet-system:kube-vnet`.
 - **CrashLoopBackOff with "no such CRD"**: the CRD wasn't installed. Reapply: `kubectl apply -f <release.yaml-or-equivalent>`.
 - **CrashLoopBackOff with "lease create forbidden"**: the leader-election Role/RoleBinding in the operator's namespace is missing.
+- **Exits with "--webhook-enabled requires POD_NAMESPACE"**: the Deployment lacks the downward-API `POD_NAMESPACE` env var (the chart sets it).
 
 ---
 
@@ -653,7 +618,7 @@ Common causes:
 A four-line health check:
 
 ```bash
-kubectl get deploy -n kube-vnet-system kube-vnet-controller \
+kubectl get deploy -n kube-vnet-system kube-vnet \
   -o jsonpath='Available={.status.conditions[?(@.type=="Available")].status}{"\n"}'
 
 kubectl get lease -n kube-vnet-system kube-vnet.lhns.de \
@@ -703,18 +668,18 @@ kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet,kube-vnet.
 kubectl get networkpolicy -A -l kube-vnet.system/network=<home-ns>.<vnet-name>
 
 # What's the operator running with?
-kubectl get deploy -n kube-vnet-system kube-vnet-controller \
+kubectl get deploy -n kube-vnet-system kube-vnet \
   -o jsonpath='{.spec.template.spec.containers[0].args}{"\n"}'
 
 # Operator version
-kubectl get deploy -n kube-vnet-system kube-vnet-controller \
+kubectl get deploy -n kube-vnet-system kube-vnet \
   -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 
 # Live operator logs
-kubectl logs -n kube-vnet-system deploy/kube-vnet-controller -f
+kubectl logs -n kube-vnet-system deploy/kube-vnet -f
 
 # Just errors
-kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=1000 \
+kubectl logs -n kube-vnet-system deploy/kube-vnet --tail=1000 \
   | jq -c 'select(.level=="error")'
 
 # Recent Warning events on a vnet

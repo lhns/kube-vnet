@@ -2,13 +2,13 @@
 
 Every Prometheus metric the operator exposes, every Kubernetes Event reason it emits, and sample queries for each.
 
-For where to scrape and how to alert, see [`../operations.md`](../guides/operations.md#observability).
+For where to scrape, see [`operations.md`](../guides/operations.md#observability).
 
 ---
 
 ## Metrics
 
-The operator exposes Prometheus text format on `:8080/metrics`. Six domain-specific metrics on top of the controller-runtime defaults (`workqueue_*`, `controller_runtime_*`, `rest_client_*`, Go runtime — those are documented [upstream](https://github.com/kubernetes-sigs/controller-runtime/blob/main/pkg/metrics/leaderelection.go)).
+The operator exposes Prometheus text format on `:8080/metrics`. Six domain-specific metrics on top of the controller-runtime defaults (`workqueue_*`, `controller_runtime_*`, `rest_client_*`, Go runtime — documented [upstream](https://github.com/kubernetes-sigs/controller-runtime/tree/main/pkg/metrics)).
 
 ### `kube_vnet_reconciliations_total`
 
@@ -62,7 +62,7 @@ kube_vnet_networks_total
 |---|---|
 | **Type** | Gauge |
 | **Labels** | none |
-| **Description** | Number of `NetworkPolicy` resources currently labeled `kube-vnet.system/managed-by=kube-vnet` (membership policies + baselines combined). |
+| **Description** | Number of `NetworkPolicy` resources currently labeled `kube-vnet.system/managed-by=kube-vnet` (baselines, membership and auto-allow policies). |
 | **When it changes** | Updated by `MetricsCollector` every 30 seconds. |
 
 Sample query — current managed-policy count:
@@ -77,8 +77,8 @@ kube_vnet_managed_policies_total
 |---|---|
 | **Type** | Gauge |
 | **Labels** | `network` — `<homeNamespace>/<vnetName>` |
-| **Description** | Total pod members per VirtualNetwork. |
-| **When it changes** | At the end of each successful `Reconcile`, set to the sum of `len(MembersByNS[ns])` across all member-bearing namespaces. Cleared on vnet deletion via `clearMembers`. |
+| **Description** | Distinct member pods per VirtualNetwork, across all member namespaces. |
+| **When it changes** | At the end of each successful `Reconcile`. Cleared on vnet deletion via `clearMembers`. |
 
 Sample query — top 5 vnets by member count:
 
@@ -157,46 +157,26 @@ groups:
 
 ## Kubernetes Events
 
-The operator emits Events on every VirtualNetwork it reconciles. Events have a default TTL of 1 hour (apiserver-managed); they're a notification mechanism, not a durable audit log. The VirtualNetwork's status conditions are the source of truth for current state.
+Events are best-effort notifications with the apiserver's default TTL (1 hour), not an audit log. Status conditions are the source of truth for current state.
 
-### VirtualNetwork event reasons
+Every reason the operator emits:
 
-| Reason | Type | When it fires |
-|---|---|---|
-| `Ready` | Normal | `Ready` condition transitions False → True. The current condition message is the event message. |
-| `NotReady` | Warning | `Ready` condition transitions True → False. |
-| `Degraded` | Warning | `Degraded` condition transitions False → True. |
-| `Recovered` | Normal | `Degraded` condition transitions True → False. |
-| `ApplyFailed` | Warning | A `NetworkPolicy` apply call returned an error. Fires immediately at the failure site, regardless of subsequent condition state. The event message includes the policy ref and the apiserver error. |
-| `PolicyRestored` | Warning | The operator just re-created a `NetworkPolicy` that was absent immediately before its apply call. Indicates an out-of-band deletion was detected and reverted. The message includes the policy ref. See [ADR 0019](../adr/0019-baseline-durability.md) and [`security.md`](../security/security.md). |
+| Reason | Type | Emitted on | Source (`From`) | When |
+|---|---|---|---|---|
+| `Ready` | Normal | VirtualNetwork | `kube-vnet` | `Ready` condition transitions to True. The event message is the condition message. |
+| `NotReady` | Warning | VirtualNetwork | `kube-vnet` | `Ready` condition transitions to False. |
+| `Degraded` | Warning | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to True. |
+| `Recovered` | Normal | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to False. |
+| `ApplyFailed` | Warning | VirtualNetwork | `kube-vnet` | A membership `NetworkPolicy` apply returned an error. Fires at the failure site, independent of condition transitions; the message names the policy and the apiserver error. |
+| `PolicyRestored` | Warning | VirtualNetwork | `kube-vnet` | The operator re-created a membership `NetworkPolicy` that was absent immediately before its apply, i.e. an out-of-band deletion was reverted. See [ADR 0019](../adr/0019-baseline-durability.md). |
+| `VirtualNetworkNotJoinable` | Warning | the Pod, `VirtualNetworkBinding`, `VirtualNetworkBaseline` or `ClusterVirtualNetworkBaseline` that declared the membership | `kube-vnet-resolution` | A referenced vnet can't be joined: it doesn't exist at the resolved namespace (a bare `kube-vnet/net.<X>` label with no local vnet `<X>` gets a hint to use the prefixed form), or its `spec.allowedNamespaces` doesn't permit the pod's namespace. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md). |
+| `InvalidJoinLabelDirection` | Warning | Pod | `kube-vnet-resolution` | A `kube-vnet/net.*` label has a value other than `both`, `ingress`, `egress`, `none`. The label is ignored until fixed. Mostly relevant where the join-label `ValidatingAdmissionPolicy` is absent (Kubernetes < 1.30). |
+| `Pending` | Warning | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | An auto-allow policy is held back because a named `targetPort` has no backing pod with a matching `containerPort` name yet. Retried every 30s. |
+| `Skipped` | Normal | Service | `kube-vnet-external-allow` | An externally exposed Service has no `spec.selector`, so no `ext.svc` policy can be derived. |
 
-The condition reasons that drive these events include `PoliciesGenerated`, `NoMembers`, `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NamespaceNotAllowed`, `NamespaceExcluded`, `ApplyFailed`, `NoIssues`. The Go-level constants are in `internal/controller/virtualnetwork_controller.go` (`Reason*`).
+The operator does not emit Events for pods in disabled namespaces. There are no binding events: a `VirtualNetworkBinding` reports its state only through its `Ready` condition ([reasons](api.md#ready-condition-1)).
 
-(A `NameCollision` event reason is planned alongside the same-named `Degraded` reason for the case where a user-managed `NetworkPolicy` blocks an operator name.)
-
-### Pod event reason: `VirtualNetworkNotJoinable` (join-label diagnostics)
-
-Emitted by the `ResolutionReconciler` on the Pod object in the pod's own namespace, Warning, whenever a join label (or binding/baseline ref) can't be honored. A single reason covers what used to be three separate `JoinLabelDiagnosticReconciler` reasons — the message's note distinguishes the cause, and a hint steers the fix. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace.md).
-
-| Reason | Type | Scope | When it fires |
-|---|---|---|---|
-| `VirtualNetworkNotJoinable` | Warning | Pod | A referenced vnet can't be joined: bare `kube-vnet/net.<X>` with no local vnet `<X>` (message hints the prefixed form `kube-vnet/net.<homeNS>.<X>`); prefixed `kube-vnet/net.<homeNS>.<X>` where `<homeNS>/<X>` doesn't exist; or the vnet exists but its `spec.allowedNamespaces` doesn't permit the pod's namespace. |
-
-Pods in `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespaces are skipped — explicit opt-out trumps diagnostic noise. Note Events are best-effort: the durable source of truth for a vnet's rejected joiners remains the vnet's `Degraded`/`InvalidJoiners` condition.
-
-### VirtualNetworkBinding event reasons
-
-A `VirtualNetworkBinding`'s `Ready` condition uses these reasons (constants in `internal/controller/virtualnetworkbinding_controller.go`):
-
-| Reason | Status | Meaning |
-|---|---|---|
-| `PodsAttached` | True | Selector matched at least one pod; binding-driven policy is in place. |
-| `NoPodsMatch` | False | Selector valid but matched zero pods in the binding's namespace. |
-| `VirtualNetworkNotFound` | False | `spec.virtualNetworkRef` does not resolve. |
-| `NamespaceNotAllowed` | False | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
-| `NamespaceExcluded` | False | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. |
-| `UnknownDirection` | False | `spec.direction` is not one of the recognized values. |
-| `InvalidSelector` | False | `spec.podSelector` cannot be parsed. |
+Status-condition reasons for all CRDs are in [`api.md`](api.md); the constants are the `Reason*` blocks in `internal/controller/virtualnetwork_controller.go` and `virtualnetworkbinding_controller.go`.
 
 ### Inspect events
 
@@ -204,13 +184,12 @@ A `VirtualNetworkBinding`'s `Ready` condition uses these reasons (constants in `
 # Recent events on a specific vnet
 kubectl describe vnet -n <ns> <name>
 
-# All events for a kind
-kubectl get events -A --field-selector involvedObject.kind=VirtualNetwork \
-  --sort-by='.lastTimestamp' | tail -20
-
-# Just the Warning ones across the cluster
+# Warning events on VirtualNetworks across the cluster
 kubectl get events -A --field-selector type=Warning,involvedObject.kind=VirtualNetwork \
   --sort-by='.lastTimestamp' | tail -20
+
+# Memberships the operator could not honor
+kubectl get events -A --field-selector reason=VirtualNetworkNotJoinable
 
 # All PolicyRestored events (drift signal)
 kubectl get events -A --field-selector reason=PolicyRestored \
@@ -225,22 +204,7 @@ If you run `kube-state-metrics` with the events collector enabled, every Event b
 sum by (namespace, reason) (rate(kube_events{involvedObject_kind="VirtualNetwork"}[5m]))
 ```
 
-Most event aggregators (Datadog, Splunk, Elastic) consume Kubernetes Events directly via the apiserver — no extra config needed beyond their normal cluster integration.
-
----
-
-## Status conditions (recap from `api.md`)
-
-Each `VirtualNetwork.status.conditions` carries `Ready` and `Degraded`. Full reason taxonomy in [`api.md`](api.md). Brief recap:
-
-| Condition | Status | Common reasons |
-|---|---|---|
-| `Ready` | True | `PoliciesGenerated`, `NoMembers` |
-| `Ready` | False | `ApplyFailed`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
-| `Degraded` | False | `NoIssues` |
-| `Degraded` | True | `InvalidJoiners`, `UnknownDirection`, `ResolutionConflict`, `InvalidName`, `HomeNamespaceExcluded`, `NameCollision` |
-
-`kubectl wait --for=condition=Ready vnet/<name> -n <ns>` works because of this standard pattern.
+Most event aggregators (Datadog, Splunk, Elastic) consume Kubernetes Events directly via the apiserver.
 
 ---
 

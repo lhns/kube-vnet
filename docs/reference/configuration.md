@@ -2,45 +2,30 @@
 
 Every operator flag, every Helm value, every environment variable.
 
-For installation, see [`../install.md`](../getting-started/install.md). For the reasoning behind defaults, see the linked ADRs.
+For installation, see [`install.md`](../getting-started/install.md). For the reasoning behind defaults, see the linked ADRs.
 
 ---
 
 ## Operator command-line flags
 
-The operator binary (`/manager` in the container) accepts these flags. They map 1:1 to the Helm `operator.*` values.
+Defined in `cmd/main.go`. The chart sets them from the `operator.*` and `webhook.*` values (see the `→` notes in the [value tables](#helm-chart-values)); `--webhook-port` and `--webhook-cert-dir` are not exposed by the chart.
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--metrics-bind-address` | string | `:8080` | Address the Prometheus metrics endpoint listens on. Use `:0` to disable. |
+| `--metrics-bind-address` | string | `:8080` | Address the Prometheus metrics endpoint listens on. `0` disables it (binary only — the chart derives the container port from this value). |
 | `--health-probe-bind-address` | string | `:8081` | Address the `/healthz` and `/readyz` endpoints listen on. |
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--disabled-namespaces` | string (comma-separated) | `kube-system` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly — which is why the release namespace holds no per-namespace `namespace` system vnet. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md). |
 | `--apiserver-source-cidr` | string (CIDR) | `0.0.0.0/0` | Source CIDR allowed by the auto-emitted `kube-vnet.ext.apiserver.*` policies for Services the apiserver dials (admission webhooks, APIServices, CRD conversion webhooks). The default matches the no-NetworkPolicy baseline; tighten to your control-plane subnet when the pod network is externally reachable. Validated at startup — an unparseable CIDR exits 1. See [the auto-allow guide](../guides/auto-allow.md#apiserver-reachable-services-extapiserver) and [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md). |
+| `--webhook-enabled` | bool | `false` | Serve the pod-resolution admission webhooks (`/mutate-v1-pod`, `/validate-v1-pod`). Requires `POD_NAMESPACE` (startup fails without it) plus serving certificates and webhook configurations, which the chart installs when `webhook.enabled=true`. See [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md). |
+| `--webhook-port` | int | `9443` | Port of the webhook server. |
+| `--webhook-cert-dir` | string | `/tmp/k8s-webhook-server/serving-certs` | Directory holding `tls.crt` and `tls.key`. |
+| `--service-account-name` | string | `kube-vnet-controller` | The operator's own ServiceAccount name. The validating webhook exempts this identity so the operator's own pod patches are not judged as user writes. The chart passes its ServiceAccount name when `webhook.enabled=true`. |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
 
-### Inheritance order for vnet membership (per pod)
-
-Per [ADR 0031](../adr/0031-baseline-tier-resolution.md), the resolution controller computes effective `(vnet, direction)` per pod by walking three tiers from lowest to highest priority:
-
-1. `ClusterVirtualNetworkBaseline` named `default` (cluster-scoped singleton; chart-seeded from `operator.clusterBaseline`).
-2. `VirtualNetworkBaseline` named `default` in the pod's namespace (singleton).
-3. **Pod tier**: `VirtualNetworkBinding` CRs that match the pod (must use a non-empty selector) plus the pod's own `kube-vnet/net.<vnet>=<direction>` labels. Sources within this tier intersect on conflict (fail-closed).
-
-Cross-tier override-permission is encoded in the eight-value `Direction` enum: bare values (`both`, `ingress`, `egress`, `none`) are enforced — lower tiers cannot override; `default-*` variants (only valid at baseline tiers) are advisory. The reserved-name VAP from the previous PR pins the system-vnet names (`namespace`, `cluster`) for the operator's exclusive use.
-
-`kube-vnet/disabled=true` and `--disabled-namespaces` membership override everything: the operator does nothing in those namespaces.
-
-### Example: configuring the cluster baseline via Helm
-
-The chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` from `operator.clusterBaseline`. When `create=true`, exactly one of `ingressIsolationLevel` (one of `pod` / `namespace` / `cluster`) or `memberships` (explicit map of `<vnet-key>: <direction>`) must be set.
-
-```bash
-# Same-NS reachable, cross-NS egress only (the historical "namespace" mode).
-helm install ... --set operator.clusterBaseline.ingressIsolationLevel=namespace
-```
+How the three baseline tiers, bindings and labels combine into a pod's membership: [concepts § the `default-*` variants](../getting-started/concepts.md#the-default--variants-baseline-tiers-only) and [ADR 0031](../adr/0031-baseline-tier-resolution.md).
 
 ---
 
@@ -48,7 +33,7 @@ helm install ... --set operator.clusterBaseline.ingressIsolationLevel=namespace
 
 | Variable | Source | Purpose |
 |---|---|---|
-| `POD_NAMESPACE` | Kubernetes downward API (set by the Deployment) | The operator's own namespace. Always added to the operator-level exclusion list at startup. Used to scope the leader-election lease. |
+| `POD_NAMESPACE` | Kubernetes downward API (set by the Deployment) | The operator's own namespace. Always added to the disabled-namespace list at startup, holds the `cluster` system vnet and the leader-election lease, and is required with `--webhook-enabled`. |
 
 The chart and the kustomize manifests both set `POD_NAMESPACE` via:
 
@@ -83,7 +68,7 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 |---|---|---|---|
 | `replicaCount` | int | `1` | Operator replicas. Scale to 2+ for HA across nodes; pair with anti-affinity. Leader election is on by default, so multi-replica is safe. |
 
-### `operator.*` (one-to-one with the binary's flags)
+### `operator.*`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -96,9 +81,22 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 | `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |
 
+### `webhook.*` (pod-resolution admission webhooks — ADR 0034)
+
+Off by default. When enabled, pods are stamped with their `kube-vnet.system/net.*` membership labels during admission, closing the window in which a newly created pod is denied because the controller has not stamped it yet. The chart then installs a `MutatingWebhookConfiguration` (`failurePolicy: Ignore`) and a `ValidatingWebhookConfiguration` (`failurePolicy: Fail`), both named `<release>-pod-resolution`, a `<release>-webhook` Service, and the serving certificate. The validating webhook takes over the pod rule of the system-labels `ValidatingAdmissionPolicy`.
+
+**Trade-off:** because the validating half fails closed, an operator outage blocks pod creation and update in managed namespaces. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are excluded from both webhooks. Run at least two replicas. See [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `webhook.enabled` | bool | `false` | → `--webhook-enabled` (and `--service-account-name`). |
+| `webhook.certSource` | string | `helm` | `helm`: self-signed CA generated at install and reused across upgrades via `lookup`. `cert-manager`: renders a `Certificate` against `webhook.certManager.issuerRef` and relies on the CA injector for the `caBundle`. |
+| `webhook.certManager.issuerRef` | object | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`. `name` is required in that mode. |
+| `webhook.timeoutSeconds` | int | `5` | Admission timeout for both webhooks. |
+
 ### `dnsCarveout.*` (CoreDNS ingress carve-out — ADR 0042)
 
-A chart-shipped `NetworkPolicy` (not operator-managed) that keeps CoreDNS reachable on `:53` when its namespace is managed by kube-vnet. Without it, removing `kube-system` from `disabledNamespaces` would apply the deny-all baseline to CoreDNS and break cluster DNS. DNS needs *universal* reachability (every pod, plus hostNetwork clients on the node IP), so it's a raw `ipBlock: 0.0.0.0/0` policy — the same shape the auto-allow families use — not a vnet binding.
+A chart-shipped `NetworkPolicy`, `kube-vnet-coredns-allow`, that keeps CoreDNS reachable on `:53` from `0.0.0.0/0` when its namespace is managed. Why and when: [recipes § managing kube-system](../guides/recipes.md#managing-kube-system-and-keeping-dns-alive).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -150,7 +148,7 @@ See [`security.md`](../security/security.md#who-can-write-what) for the trust-mo
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`../operations.md`](../guides/operations.md#resource-sizing) for sizing guidance. |
+| `resources` | object | `{ limits: { cpu: 500m, memory: 256Mi }, requests: { cpu: 50m, memory: 64Mi } }` | Standard CPU/memory requests and limits. See [`operations.md`](../guides/operations.md#resource-sizing) for sizing guidance. |
 | `livenessProbe.initialDelaySeconds` | int | `15` | Standard. |
 | `livenessProbe.periodSeconds` | int | `20` | Standard. |
 | `readinessProbe.initialDelaySeconds` | int | `5` | Standard. |
@@ -197,20 +195,20 @@ A few of the defaults aren't obvious; here's why.
 
 ### Why `replicaCount: 1`?
 
-kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. See [`../operations.md`](../guides/operations.md#deployment-topology).
+kube-vnet is a control-plane operator, not a data-plane one. Existing `NetworkPolicy` keeps working while the operator is down; only change-propagation pauses. A single replica is enough for typical clusters; scaling to 2 is for node-failure resilience, not throughput. The exception is `webhook.enabled=true`: pod admission then depends on the operator, so run at least 2. See [`operations.md`](../guides/operations.md#deployment-topology).
 
 ### Why `--leader-elect=true` in the chart but `false` in the binary?
 
-The chart matches "what cert-manager / Cilium operator / Flux do" — leader election on by default so scaling is one line. The binary defaults to off so local `make run` doesn't need leader-election RBAC.
+In the chart, so scaling is a one-line change. In the binary, so `make run` doesn't need leader-election RBAC.
 
 ### Why does `disabledNamespaces` default to `kube-system`?
 
 `kube-system` holds cluster-critical pods (CoreDNS, the metrics server, the apiserver aggregator) where a deny-all baseline actually bites, so the operator stays out of it entirely by default (no baseline, no system vnets, no resolution stamping). `kube-public` and `kube-node-lease` hold no pods, so managing them is inert — they are *not* disabled by default (ADR 0042 narrowed the set from all three to just `kube-system`).
 
-To enroll `kube-system` (e.g. to segment DNS or bring its pods into vnets), remove it from this list. When you do, the chart automatically renders the CoreDNS carve-out (`dnsCarveout`, above) so cluster DNS keeps working — otherwise the deny-all baseline would break it. Everything else in `kube-system` is already covered: hostNetwork pods are skipped, and metrics-server is reached via the `ext.apiserver` family. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
+To enroll `kube-system`, remove it from the list; the chart then renders the CoreDNS carve-out. See [recipes § managing kube-system](../guides/recipes.md#managing-kube-system-and-keeping-dns-alive) and [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md).
 
 The operator's own namespace is implicitly added to `disabledNamespaces` so that a misconfigured `allowedNamespaces.all: true` vnet can't accidentally lock the operator out of itself.
 
 ### Why such small `resources.requests`?
 
-Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`../operations.md` § Resource sizing](../guides/operations.md#resource-sizing) for when to bump.
+Idle operator footprint is tiny — a few MB resident, near-zero CPU. The requests are sized so the operator schedules anywhere; the limits give it headroom for a reconcile burst. See [`operations.md` § Resource sizing](../guides/operations.md#resource-sizing) for when to bump.

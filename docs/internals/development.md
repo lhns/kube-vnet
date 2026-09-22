@@ -60,7 +60,7 @@ When to add one: any time you write a pure function (no I/O, no client). The pol
 
 ### 2. Integration tests (envtest, build tag `integration`)
 
-A real `kube-apiserver` + `etcd` running locally via `sigs.k8s.io/controller-runtime/pkg/envtest`. The CRD is installed; the manager + reconcilers are started; tests exercise full reconcile cycles. ~20s for the whole suite (currently 22 tests).
+A real `kube-apiserver` + `etcd` running locally via `sigs.k8s.io/controller-runtime/pkg/envtest`. The CRDs are installed; the manager + reconcilers are started; tests exercise full reconcile cycles. The webhook package (`internal/webhook/podresolution`) has its own envtest suite.
 
 No CNI — these tests verify what the operator *does*, not what the network *enforces*.
 
@@ -72,7 +72,7 @@ make integration-test
 
 When to add one:
 
-- A new reconciler behavior that involves multiple resource types (e.g. "deleting the vnet GCs the baseline").
+- A new reconciler behavior that involves multiple resource types (e.g. "deleting the vnet removes its policies in every namespace").
 - A condition / event that fires on specific apiserver state.
 - Edge cases in cross-namespace logic.
 
@@ -93,7 +93,7 @@ Helpers available: `eventually(t, timeout, fn)`, `uniqueNS`, `mustCreate`, `make
 
 Real cluster, real CNI enforcing NetworkPolicy, the full operator deployed. Tests use `kubectl exec wget` to assert traffic actually flows or doesn't.
 
-CI runs the suite against **two CNIs in parallel**: kube-router (~30s boot, the lighter signal) and Calico (~2 min boot, more thorough enforcement). Both must pass.
+CI runs the suite against **two CNIs in parallel**: kube-router (~30s boot, the lighter signal) and Calico (~2 min boot, more thorough enforcement), plus lanes for the admission webhook and the Helm install. All must pass.
 
 Local:
 
@@ -143,16 +143,18 @@ so it belongs in review.
 
 Three workflows under `.github/workflows/`:
 
-- `ci.yaml` — runs on every push and PR:
+- `ci.yaml` — runs on pushes to `main` and on PRs:
   - `unit` — `go vet`, `go build`, `go test ./...`, regen-and-diff (catches forgot-to-regenerate)
   - `integration` — envtest suite
   - `helm` — `helm lint` + `helm template` with two value sets
   - `docker` — builds the image (no push) + Trivy image scan (CRITICAL/HIGH gates the build)
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
-- `e2e.yaml` — runs on every push and PR, both CNIs in parallel:
+- `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
   - `e2e-kube-router`
   - `e2e-calico`
-- `release.yaml` — runs on `v*` tag push:
+  - `e2e-webhook` — the admission webhook (ADR 0034), on kube-router
+  - `e2e-helm`, `e2e-helm-namespace` — install via the chart
+- `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
   - Builds + pushes multi-arch image to `ghcr.io/lhns/kube-vnet:<tag>`
   - Cosign signs the image (keyless via GitHub OIDC)
   - syft generates SPDX SBOM, attached as cosign attestation + release asset
@@ -167,17 +169,14 @@ Three workflows under `.github/workflows/`:
 ## Releasing a new version
 
 1. Update `CHANGELOG.md` — move the `Unreleased` section to a new `[vX.Y.Z] - YYYY-MM-DD` section.
-2. Update `charts/kube-vnet/Chart.yaml`:
-   - `version` (chart SemVer, no `v` prefix)
-   - `appVersion` (image tag, with the `v` prefix)
-3. Commit and merge to `main`.
-4. Tag:
+2. Commit and merge to `main`. No `Chart.yaml` edit is needed: the workflow packages the chart with `--version X.Y.Z --app-version vX.Y.Z` from the tag.
+3. Tag:
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
-5. The release workflow runs (~5 min). Watch [the Actions tab](https://github.com/lhns/kube-vnet/actions/workflows/release.yaml).
-6. Edit the auto-generated GitHub release notes if you want to add a "Highlights" section above the changelog.
+4. The release workflow runs (~10–15 min, multi-arch). Watch [the Actions tab](https://github.com/lhns/kube-vnet/actions/workflows/release.yaml).
+5. Edit the auto-generated GitHub release notes if you want to add a "Highlights" section above the changelog.
 
 For a v1alpha1 release, breaking changes between alpha versions are explicitly allowed — see the SemVer note in `CHANGELOG.md`. Document any breaking change in the changelog entry.
 
@@ -200,7 +199,7 @@ After changing CRD types in `api/v1alpha1/`:
 
 ```bash
 make generate     # regenerates zz_generated.deepcopy.go
-make manifests    # regenerates config/crd/bases/*.yaml AND config/rbac/role.yaml
+make manifests    # regenerates config/crd/bases/*.yaml, config/rbac/role.yaml, the chart's CRD templates and schemas/
 ```
 
 The CI `unit` job re-runs both and `git diff --exit-code` to ensure you didn't forget.
@@ -209,13 +208,13 @@ The CI `unit` job re-runs both and `git diff --exit-code` to ensure you didn't f
 
 ## Adding a CRD field
 
-1. Edit `api/v1alpha1/virtualnetwork_types.go`. Add the field with kubebuilder markers (e.g. `+optional`, `+kubebuilder:default=foo`, `+kubebuilder:validation:Pattern="..."`).
+1. Edit the type in `api/v1alpha1/`. Add the field with kubebuilder markers (e.g. `+optional`, `+kubebuilder:default=foo`, `+kubebuilder:validation:Pattern="..."`).
 2. `make generate manifests` — regenerates deepcopy and the CRD YAML.
 3. Update `internal/controller/policy_generator.go` and/or `virtualnetwork_controller.go` to use the new field.
 4. Add unit tests for the new behavior.
 5. If the field changes user-visible semantics, add an integration test.
 6. If it changes traffic behavior, add an e2e test.
-7. Update `docs/concepts.md`, `docs/reference/api.md`, `charts/kube-vnet/values.yaml` if applicable.
+7. Update `docs/getting-started/concepts.md`, `docs/reference/api.md`, `charts/kube-vnet/values.yaml` if applicable.
 8. Add an ADR if the change is a real design decision (anything where you'd want a future maintainer to see *why*).
 
 ---
@@ -227,7 +226,7 @@ The CI `unit` job re-runs both and `git diff --exit-code` to ensure you didn't f
 3. Add a unit/integration test for the new behavior.
 4. Update `docs/reference/configuration.md`.
 5. Mirror in `charts/kube-vnet/values.yaml` and `charts/kube-vnet/templates/deployment.yaml`.
-6. Update `docs/install.md` "Common values" if it's likely to be set.
+6. Update `docs/getting-started/install.md` "Common values" if it's likely to be set.
 
 ---
 
@@ -263,4 +262,4 @@ helm template testrelease charts/kube-vnet --kube-version 1.31.0
 
 - Github Issues for bugs, feature requests.
 - Discussions for "how do I...", design questions.
-- Security: GitHub's private security advisory mechanism (Security tab → Report a vulnerability).
+- Security: see [`SECURITY.md`](../../SECURITY.md).

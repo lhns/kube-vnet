@@ -1,10 +1,6 @@
 # Code structure
 
-> Snapshot of the operator's Go source layout — file-by-file responsibilities and the runtime flow between them.
->
-> **As of commit** [`12d9f63`](../../../../commit/12d9f63) — *remove --elide-baseline-for: baseline elide had no observable effect (ADR 0035)*.
->
-> This document is descriptive, not authoritative. If it disagrees with the code, the code wins; update this doc in the same PR.
+> File-by-file responsibilities and the runtime flow between them. Descriptive, not authoritative: if it disagrees with the code, the code wins — update this doc in the same PR.
 
 ## File tree (functionality only, tests excluded)
 
@@ -13,8 +9,9 @@ kube-vnet/
 │
 ├── cmd/
 │   └── main.go ............................. operator entrypoint: flags, manager
-│                                             setup, instantiates and wires all
-│                                             five reconcilers
+│                                             setup, wires the eight reconcilers,
+│                                             the metrics collector and (with
+│                                             --webhook-enabled) the webhooks
 │
 ├── api/v1alpha1/ ........................... CRD type definitions (kubebuilder)
 │   ├── groupversion_info.go ................ Go package marker, GroupVersion
@@ -33,9 +30,17 @@ kube-vnet/
 │                                             cluster-wide tier defaults
 │                                             (ADR 0031)
 │
+├── internal/webhook/podresolution/ ......... optional admission webhooks (ADR 0034)
+│   ├── mutator.go .......................... stamps kube-vnet.system/* labels +
+│   │                                         resolved-generation/resolved-by
+│   │                                         during pod admission
+│   └── validator.go ........................ rejects kube-vnet.system/* label
+│                                             changes that disagree with
+│                                             resolution (operator SA exempt)
+│
 └── internal/controller/ .................... operator logic
     │
-    │   --- Pure / library code (no I/O) ---
+    │   --- Pure functions and shared helpers ---
     ├── resolution.go ....................... pure resolver: takes ordered
     │                                         (cluster → ns → pod) layers of
     │                                         (vnet, direction) rules and
@@ -62,25 +67,34 @@ kube-vnet/
     │                                         disabled namespace check via
     │                                         --disabled-namespaces flag +
     │                                         kube-vnet/disabled=true
-    │                                         annotation)
-    ├── metrics.go ........................... Prometheus metric registration
-    │                                         (apply-error counter, reconcile
-    │                                         counter, resolution conflicts,
-    │                                         membership policy size)
+    │                                         annotation); opt-out/opt-in
+    │                                         annotation keys
+    ├── permits.go ........................... Permits: may a namespace join a
+    │                                         vnet (existence +
+    │                                         allowedNamespaces)
+    ├── resolver.go .......................... Resolver: builds the three layers
+    │                                         for a pod and returns the desired
+    │                                         kube-vnet.system/* labels; shared
+    │                                         by the ResolutionReconciler and
+    │                                         the mutating webhook. Hosts
+    │                                         canonicalVnetKey
+    ├── sweep.go ............................. sweepStalePolicies: label-scoped
+    │                                         deletion of policies not in the
+    │                                         desired set
+    ├── metrics.go ........................... the six kube_vnet_* metrics and
+    │                                         the 30s MetricsCollector
     │
     │   --- Reconcilers (controller-runtime) ---
     ├── resolution_controller.go ............. ResolutionReconciler: watches
     │                                         Pod + Namespace + VirtualNetwork
     │                                         + the two baseline CRDs +
     │                                         VirtualNetworkBinding (ADR 0044:
-    │                                         it reads all of them). Builds
-    │                                         the three resolution layers,
-    │                                         calls resolution.go::Resolve,
-    │                                         patches kube-vnet.system/net.*
-    │                                         labels + resolved-generation
-    │                                         annotation onto pods. Hosts
-    │                                         CanonicalSuffix and
-    │                                         canonicalVnetKey
+    │                                         it reads all of them). Calls
+    │                                         the Resolver and patches
+    │                                         kube-vnet.system/* labels +
+    │                                         resolved-generation/resolved-by
+    │                                         annotations onto pods. Hosts
+    │                                         CanonicalSuffix
     ├── virtualnetwork_controller.go ......... VirtualNetworkReconciler: watches
     │                                         VirtualNetwork + Pod +
     │                                         NetworkPolicy +
@@ -111,16 +125,20 @@ kube-vnet/
     │                                         VirtualNetwork + Pod +
     │                                         Namespace. Resolves binding's
     │                                         podSelector, sets binding
-    │                                         status (Ready,
-    └                                         attachedPods). Does NOT emit
-                                              policies — bindings stamp via
-                                              resolution layer per ADR 0033
+    │                                         status (Ready, attachedPods).
+    │                                         Does NOT emit policies —
+    │                                         bindings stamp via resolution
+    │                                         per ADR 0033
+    ├── external_allow_controller.go ......... ExternalAllowReconciler:
+    │                                         kube-vnet.ext.svc.* (ADR 0038)
+    ├── hostport_controller.go ............... HostPortReconciler:
+    │                                         kube-vnet.ext.host.* (ADR 0040)
+    └── apiserver_reachable_controller.go .... ApiserverReachableReconciler:
+                                              kube-vnet.ext.apiserver.*
+                                              (ADR 0041)
 ```
 
-The pod-scoped Warning for misconfigured `kube-vnet/net.*` labels (typos,
-dangling vnet refs, NS-not-allowed) is emitted as `VirtualNetworkNotJoinable`
-by the `ResolutionReconciler`; the separate `JoinLabelDiagnosticReconciler` was
-retired (ADR 0027 retirement amendment).
+The pod-scoped diagnostics (`VirtualNetworkNotJoinable`, `InvalidJoinLabelDirection`) are emitted by the `ResolutionReconciler` through the `Resolver`; the separate `JoinLabelDiagnosticReconciler` was retired (ADR 0027 retirement amendment).
 
 ## Code flow
 
@@ -151,7 +169,7 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
                 │   resolution_controller.go         │   watches: Pod (label
                 │   .Reconcile(pod)                  │   change), ClusterVNB,
                 │                                    │   VNB, VirtualNetwork
-                │   1. buildLayers() →               │   Binding
+                │   1. Resolver.buildLayers() →      │   Binding
                 │      [cluster, ns, pod-tier]       │
                 │   2. resolution.go::Resolve()  ───►│ pure function:
                 │      returns Effective +           │   intersection-truth-table,
@@ -168,6 +186,9 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
                   │   kube-vnet.system/net.<canonical>=<dir>  │
                   │ Pod annotations:                          │
                   │   kube-vnet.system/resolved-generation=N  │
+                  │   kube-vnet.system/resolved-by=controller │
+                  │   (the mutating webhook writes the same   │
+                  │   set at admission: resolved-by=admission)│
                   └─────────────────────┬─────────────────────┘
                                         │
                                         │  (this label is the contract;
@@ -208,7 +229,7 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
                    │ SSA apply
                    ▼
    ┌───────────────────────────────────────────────────────────────┐
-   │  NetworkPolicy: kube-vnet.<homeNS>.<vnet>-<8hex>  (one per    │
+   │  NetworkPolicy: kube-vnet.mem.<homeNS>.<vnet>-<8hex> (one per │
    │                                                    member-NS) │
    │  podSelector:                                                 │
    │    matchExpressions: [{key: kube-vnet.system/net.<canonical>, │
@@ -252,27 +273,15 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
               │       → delete the per-NS namespace vnet│
               └─────────────────────────────────────────┘
 
-                       === DIAGNOSTICS (no enforcement) ===
-
-                              Pod event with kube-vnet/net.* label
-                                       │
-                                       ▼
-              ┌─────────────────────────────────────────┐
-              │  joinlabel_diagnostic_controller.go     │
-              │  validates: vnet exists, NS allowed,    │
-              │             direction value valid       │
-              │  emits Warning Events on the pod        │
-              │  (does not patch labels)                │
-              └─────────────────────────────────────────┘
 ```
 
 ## The narrow waist
 
 The system label `kube-vnet.system/net.<canonical-key>=<direction>` is the contract between input and output:
 
-- **Resolution controller** is the only writer.
-- **Policy generator** and **baseline** are the only readers (via `NetworkPolicy` `matchExpressions`).
-- A `ValidatingAdmissionPolicy` (chart-shipped, not Go code) blocks user mutation of these labels — only the operator's ServiceAccount can write them.
+- **Writers**: the resolution controller, and the mutating webhook when enabled — both through the same `Resolver`.
+- **Reader**: the policy generator (via `NetworkPolicy` `matchExpressions`).
+- **Guard**: a chart-shipped `ValidatingAdmissionPolicy` lets only the operator's ServiceAccount change these labels; with the webhook enabled, the validating webhook replaces it for pods and additionally checks values against resolution.
 
 ## Reconciler boundaries
 
@@ -287,8 +296,11 @@ permanently rather than slowly.
 |---|---|---|
 | `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding`, `NetworkPolicy` (drift), `Namespace` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
-| `ResolutionReconciler` | `Pod` labels + annotations, `VirtualNetworkNotJoinable` `Event` on pods | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
+| `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` / `InvalidJoinLabelDirection` Events on the declaring object | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
+| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (creates), own policies (drift) |
+| `HostPortReconciler` | `NetworkPolicy` (`ext.host`) | `Namespace`, `Pod` (hostPort changes), own policies (drift) |
+| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (creates), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.

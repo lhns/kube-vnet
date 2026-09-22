@@ -13,7 +13,8 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 | Directory | What lives there |
 |---|---|
 | [`getting-started/`](#getting-started) | The linear path above: concepts → install → first network. |
-| [`guides/`](#guides) | Task- and topic-oriented: recipes, auto-allow, operations, security, troubleshooting. |
+| [`guides/`](#guides) | Task- and topic-oriented: recipes, auto-allow, operations, troubleshooting, CNI pitfalls. |
+| [`security/`](#security) | The security guide and the STRIDE threat model. |
 | [`reference/`](#reference) | Look-up tables, not narrative: CRD fields, flags/values, labels, metrics, glossary. |
 | [`internals/`](#internals) | For contributors: architecture, source map, dev workflow, the historical design doc. |
 | [`adr/`](adr/README.md) | Architecture Decision Records — the **source of truth** wherever prose docs disagree. |
@@ -22,7 +23,7 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 ### getting-started/
 
 - [`concepts.md`](getting-started/concepts.md) — the model in depth: VirtualNetworks, direction modes (all eight values), `allowedNamespaces` join-eligibility, the baseline tiers, `VirtualNetworkBinding`, how it all maps onto stock NetworkPolicy.
-- [`install.md`](getting-started/install.md) — three install paths, CNI prerequisites, upgrading, uninstalling, cosign/SBOM verification, air-gapped installs.
+- [`install.md`](getting-started/install.md) — three install paths, CNI prerequisites, upgrading, uninstalling, dev builds, cosign/SBOM verification, air-gapped installs.
 - [`first-vnet.md`](getting-started/first-vnet.md) — the copy-pasteable tutorial with a working probe.
 
 ### guides/
@@ -30,10 +31,13 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 - [`recipes.md`](guides/recipes.md) — worked examples: three-tier app, observability network, bridge pods, direction patterns, enrolling third-party pods, migrating an existing namespace, coexisting with user-managed NetworkPolicy, egress allowlists.
 - [`auto-allow.md`](guides/auto-allow.md) — the traffic the operator admits without being asked: externally-exposed Services, hostPort pods, and Services the apiserver dials (webhooks, metrics-server). Triggers, opt-outs, the `ext.*` policy naming.
 - [`operations.md`](guides/operations.md) — running it in production: topology, HA, leader election, sizing, monitoring, the operational playbooks.
-- [`security/security.md`](security/security.md) — the security guide: what kube-vnet does *not* defend, RBAC inventory, supply chain, hardening.
-- [`security/threat-model.md`](security/threat-model.md) — the formal STRIDE threat model: assets, actors, trust boundaries, DFD + sequence diagrams, findings register.
 - [`troubleshooting.md`](guides/troubleshooting.md) — symptom → diagnosis → fix, from "my pod isn't a member" to admission-webhook timeouts.
 - [`cni-pitfalls.md`](guides/cni-pitfalls.md) — CNI-layer enforcement failures (kube-router, k0s, Calico, Cilium) with per-node verification commands and a manual isolation probe.
+
+### security/
+
+- [`security.md`](security/security.md) — the security guide: what kube-vnet does *not* defend, RBAC inventory, supply chain, hardening.
+- [`threat-model.md`](security/threat-model.md) — the formal STRIDE threat model: assets, actors, trust boundaries, DFD + sequence diagrams, findings register.
 
 ### reference/
 

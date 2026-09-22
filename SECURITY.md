@@ -26,7 +26,7 @@ kube-vnet generates `networking.k8s.io/v1` NetworkPolicy objects from a membersh
 
 - a pod obtaining **ingress** it should not have, without the vnet owner authorizing it
 - a namespace tenant **self-granting** membership in another namespace's VirtualNetwork
-- forging or bypassing the operator-owned `kube-vnet.system/*` labels on a cluster where the ValidatingAdmissionPolicies are installed (Kubernetes ≥ 1.30)
+- forging or bypassing the operator-owned `kube-vnet.system/*` labels on a cluster where the ValidatingAdmissionPolicies are installed (Kubernetes ≥ 1.30) or, for pods, where the admission webhook is enabled — outside the namespaces the webhook exempts
 - privilege escalation via the operator's or the Helm cleanup hook's ServiceAccount
 - supply-chain issues in released images or charts
 
