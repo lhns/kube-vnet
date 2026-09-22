@@ -32,8 +32,8 @@ const (
 )
 
 // VirtualNetworkBindingReconciler maintains the binding's own status. The
-// effect of the binding on NetworkPolicies is the VirtualNetworkReconciler's
-// responsibility (it watches bindings via a mapper).
+// binding's effect on membership comes from resolution, which stamps the
+// selected pods.
 type VirtualNetworkBindingReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -157,13 +157,9 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(r.vnetToBindings),
 		).
-		// This reconcile also reads pods (status.attachedPods) and its own
-		// namespace (IsManaged, plus the labels PermitsForVnet may match on), and
-		// watched neither — so with no requeue either, the status froze at
-		// whatever was true when the binding was last reconciled. Both mappings
-		// are trivial because a binding only ever selects pods in its own
-		// namespace, and both namespace-derived inputs key on that same
-		// namespace. See ADR 0044.
+		// The reconcile also reads pods (status.attachedPods) and the binding's
+		// namespace (IsManaged, and the labels PermitsForVnet may match on);
+		// both key on the binding's own namespace. See ADR 0044.
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),

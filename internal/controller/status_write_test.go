@@ -13,11 +13,8 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// updateStatus used to call r.Status().Update() unconditionally. Because the
-// VirtualNetwork For() watch has no predicate, that write produced a watch
-// event which re-enqueued the same vnet, which wrote again: a self-feeding
-// loop costing one apiserver PUT plus (via the apply loop) one uncached
-// NetworkPolicy GET per generated policy, indefinitely.
+// updateStatus must skip no-op writes: the VirtualNetwork For() watch has no
+// predicate, so every write re-enqueues the vnet.
 //
 // ResourceVersion is the observable proof of an API write: the fake client
 // bumps it on every accepted write and leaves it alone when we skip.
@@ -43,7 +40,7 @@ func rv(t *testing.T, c client.Client, ns, name string) string {
 	return got.ResourceVersion
 }
 
-// REGRESSION LOCK: identical input must not produce a second write.
+// Identical input must not produce a second write.
 func TestUpdateStatus_NoWriteWhenUnchanged(t *testing.T) {
 	ctx := context.Background()
 	vnet := &vnetv1alpha1.VirtualNetwork{
@@ -168,18 +165,10 @@ func (f *fakeRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, reason, _, 
 	f.reasons = append(f.reasons, reason)
 }
 
-// REGRESSION LOCK for the bug this fix introduced and then fixed.
-//
-// The first implementation snapshotted the "prior" status *inside*
-// updateStatus. But Reconcile calls setReady/setDegraded BEFORE updateStatus,
-// and those mutate vnet.Status in place — so the snapshot captured the
-// already-mutated value, compared it against itself, found no difference, and
-// skipped EVERY write. Status froze permanently: Degraded never became True,
-// and four integration tests failed.
-//
-// This pins the contract that makes the diff correct: the comparison baseline
-// must be the status as fetched from the apiserver, captured before any
-// condition mutation.
+// Reconcile mutates vnet.Status (setReady/setDegraded) before calling
+// updateStatus, so the comparison baseline must be the status as fetched,
+// captured before those mutations. A snapshot taken inside updateStatus would
+// equal itself and suppress every write.
 func TestUpdateStatus_WritesWhenConditionsMutatedBeforeCall(t *testing.T) {
 	ctx := context.Background()
 	vnet := &vnetv1alpha1.VirtualNetwork{

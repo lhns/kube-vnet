@@ -17,10 +17,10 @@ import (
 func TestSyncManagedLabels_AddsAndRemoves(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-			"kube-vnet.system/net.old":       "both",     // managed, will be removed
-			"kube-vnet.system/net.payments":  "ingress",  // managed, will be updated
-			"kube-vnet.system/host-port.stale.tcp": "true", // managed (different prefix), will be removed
-			"app":                            "demo",     // unmanaged, untouched
+			"kube-vnet.system/net.old":             "both",    // managed, will be removed
+			"kube-vnet.system/net.payments":        "ingress", // managed, will be updated
+			"kube-vnet.system/host-port.stale.tcp": "true",    // managed (different prefix), will be removed
+			"app":                                  "demo",    // unmanaged, untouched
 		}},
 	}
 	isManaged := func(k string) bool {
@@ -342,7 +342,7 @@ func TestSweepStalePoliciesByOwner_SkipsPoliciesWithoutOwner(t *testing.T) {
 
 // TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative pins the
 // contract on LabelK8sManagedBy (app.kubernetes.io/managed-by): it is
-// INFORMATIONAL ONLY. It is user-writable and not VAP-protectable, so a
+// informational only. It is user-writable and not VAP-protectable, so a
 // user could stamp it on a third-party policy; if any sweep treated it
 // as an ownership signal, kube-vnet would delete objects it doesn't own.
 // Both sweep entry points must ignore a policy that carries ONLY the

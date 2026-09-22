@@ -23,11 +23,9 @@ func ref(name, namespace string) vnetv1alpha1.VirtualNetworkRef {
 	return vnetv1alpha1.VirtualNetworkRef{Name: name, Namespace: namespace}
 }
 
-// REGRESSION LOCK. The original bug: canonicalVnetKey discarded ref.Namespace
-// for the reserved name `namespace` and substituted the pod's own namespace,
-// so `{name: namespace, namespace: kube-vnet-system}` silently "worked" —
-// resolving to the pod's local namespace vnet even though kube-vnet-system
-// has no `namespace` vnet at all. The ref must be honored verbatim.
+// An explicit namespace on a `namespace` ref must be honored verbatim, not
+// replaced by the pod's own namespace: kube-vnet-system has no `namespace`
+// vnet, so this ref must not resolve to one.
 func TestCanonicalVnetKey_NamespaceVnet_ForeignNamespace_IsNotRewritten(t *testing.T) {
 	got := canonicalVnetKey(ref(SystemVnetNamespace, "kube-vnet-system"), "app")
 	if want := VnetKey("kube-vnet-system." + SystemVnetNamespace); got != want {
@@ -93,10 +91,9 @@ func TestCanonicalVnetKey_ClusterVnet_ExplicitNamespace_StaysQualified(t *testin
 	}
 }
 
-// REGRESSION LOCK. Permits short-circuited on the vnet NAME alone, so any
-// `<ns>.cluster` key was permitted regardless of its home namespace — the
-// reason a wrong `cluster` ref could never be caught. Only the bare canonical
-// form may short-circuit.
+// Only the bare `cluster` key may short-circuit Permits; a qualified
+// `<ns>.cluster` key must be checked against the real vnet, or a wrong
+// `cluster` ref could never be caught.
 func TestPermits_ClusterVnet_ForeignNamespace_NotPermitted(t *testing.T) {
 	c := fake.NewClientBuilder().
 		WithScheme(schemeForPermits(t)).

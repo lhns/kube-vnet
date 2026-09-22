@@ -9,20 +9,18 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// VnetKey is the label suffix that goes after `kube-vnet/net.` (user input)
-// or `kube-vnet.system/net.` (operator output). For the system vnets it's
-// just `"namespace"` or `"cluster"`. For user vnets it follows the existing
-// bare/prefixed convention: bare `"<vnet>"` when pod and vnet live in the
-// same namespace, prefixed `"<homeNS>.<vnet>"` otherwise.
+// VnetKey identifies a vnet in resolution: `<homeNS>.<vnet>`, or bare
+// `cluster` for the cluster singleton (ADR 0033). The canonical key is also
+// the suffix of the operator's `kube-vnet.system/net.` stamp.
 //
-// Resolution treats VnetKey as opaque — it's the caller's job to compute the
-// right key for each (binding/baseline/pod) pair before invoking the resolver.
+// Resolve treats VnetKey as opaque; callers compute the key for each rule.
 type VnetKey string
 
 // ResolutionRule is one row of the inheritance lattice — a single baseline
 // membership, binding, or pod-label entry that contributes to the effective
-// state. Source names the contributing object ("baseline", "<binding-name>",
-// or "<pod-label>"); it appears in conflict reports.
+// state. Source names the contributing object (e.g.
+// "VirtualNetworkBinding/<name>" or "<pod-label>"); it appears in conflict
+// reports.
 type ResolutionRule struct {
 	Vnet      VnetKey
 	Direction Direction
@@ -36,8 +34,7 @@ type ResolutionRule struct {
 	// Hint is an optional extra sentence appended to the VirtualNetworkNotJoinable
 	// Warning when this rule is dropped, carrying source-specific guidance a
 	// generic message can't. Pod join labels set it to steer a bare
-	// `kube-vnet/net.<X>` toward the prefixed form when no local vnet X exists
-	// (folded in from the retired JoinLabelDiagnosticReconciler; see ADR 0027).
+	// `kube-vnet/net.<X>` toward the prefixed form when no local vnet X exists.
 	Hint string
 
 	// Owner is the object that declared this rule — the Baseline, Binding, or
@@ -102,14 +99,12 @@ type ResolutionConflict struct {
 // OverrideRejected records a downstream tier's attempt to override a vnet
 // where the upstream tier had pinned a bare (enforced) direction. The
 // downstream attempt is ignored; the upstream value remains effective.
-// Surfaced on the offending baseline's status so admins see why their
-// override didn't take effect.
 type OverrideRejected struct {
-	Vnet            VnetKey
-	AttemptedScope  ResolutionScope // scope whose attempt was rejected
-	AttemptedDir    Direction       // the would-be direction
-	BlockingScope   ResolutionScope // scope that pinned the bare value
-	BlockingDir     Direction       // the bare value blocking override
+	Vnet           VnetKey
+	AttemptedScope ResolutionScope // scope whose attempt was rejected
+	AttemptedDir   Direction       // the would-be direction
+	BlockingScope  ResolutionScope // scope that pinned the bare value
+	BlockingDir    Direction       // the bare value blocking override
 }
 
 // ResolutionResult is the resolved effective state for one pod.
@@ -132,6 +127,7 @@ type ResolutionResult struct {
 // reduced to their bare components first; the result is always bare.
 //
 // Truth table (ADR 0031):
+//
 //	          both   ingress egress  none
 //	both    | both   ingress egress  none
 //	ingress | ingress ingress none    none

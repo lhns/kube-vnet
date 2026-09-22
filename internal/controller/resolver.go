@@ -26,9 +26,8 @@ import (
 //     an incoming pod are the ones resolution would produce.
 //
 // There is deliberately no second implementation: an admission-time copy
-// of this logic would drift from the reconciler's, and the two disagreeing
-// is indistinguishable from a policy bug. The differential test in
-// resolver_parity_test.go locks the paths together.
+// would drift from the reconciler's. internal/webhook/podresolution's
+// parity_test.go locks the paths together.
 //
 // Every method only reads, so Reader may be a cache-backed client.Reader.
 type Resolver struct {
@@ -75,15 +74,8 @@ func (r *Resolver) DesiredLabels(ctx context.Context, pod *corev1.Pod) (map[stri
 func (r *Resolver) buildLayers(ctx context.Context, pod *corev1.Pod) ([]ResolutionLayer, error) {
 	var layers []ResolutionLayer
 
-	// Every rule set is filtered through filterPermittedRules before
-	// becoming a layer. Rules that reference vnets the pod's NS can't
-	// actually join get dropped here, so the system-label stamping that
-	// follows resolution only stamps vnets the pod genuinely belongs to.
-	// Without this gate, a pod-label or baseline entry pointing at a
-	// non-permitting vnet would still stamp `kube-vnet.system/net.*` on
-	// the pod — a lying stamp that doesn't match the membership policy
-	// the VirtualNetworkReconciler later generates. Dropped rules emit a
-	// VirtualNetworkNotJoinable Warning Event. See ADR 0043.
+	// Every rule set goes through filterPermittedRules, so only vnets the
+	// pod's namespace may join are stamped (ADR 0043).
 
 	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
 	// `default`.
@@ -150,22 +142,11 @@ func (r *Resolver) notJoinableNote(ctx context.Context, key VnetKey, podNS strin
 		homeNS, name, podNS)
 }
 
-// filterPermittedRules drops rules that reference vnets the pod's NS
-// isn't permitted to join (per Permits, the single-source-of-truth
-// helper in permits.go). "Not permitted" — vnet doesn't exist, NS not
-// in allowedNamespaces — drops the rule and emits a
-// VirtualNetworkNotJoinable Warning Event on the object that declared it,
-// so a wrong `virtualNetworkRef.namespace` is visible instead of silent
-// (ADR 0043). A transient apiserver
-// error is NOT the same thing: it propagates as an error so the caller
-// requeues instead of stripping a possibly-valid stamp. Collapsing
-// errors into "deny" caused stamp churn (momentary membership loss)
-// during apiserver blips, with no requeue to recover.
-//
-// This is the membership gate for the stamping pipeline. The
-// VirtualNetworkReconciler does the same check independently when
-// generating membership policies; this filter keeps the pod's stamped
-// labels honest by deciding the same thing here.
+// filterPermittedRules drops rules naming vnets the pod's namespace may not
+// join (Permits) and emits a VirtualNetworkNotJoinable Warning on the object
+// that declared each, so a wrong `virtualNetworkRef.namespace` is visible
+// (ADR 0043). A transient error propagates instead, so the caller requeues
+// rather than stripping a possibly valid stamp.
 func (r *Resolver) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) ([]ResolutionRule, error) {
 	if len(rules) == 0 {
 		return rules, nil
@@ -309,11 +290,8 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 		}
 		dir, ok := ParseBareDirection(v)
 		if !ok {
-			// Malformed direction value: membership silently ignores it. Surface
-			// it on the pod so the mistake is visible even without the admission
-			// VAP (which is absent on Kubernetes < 1.30, or if disabled). This
-			// is nearly free — we already parsed the value here, and it only
-			// fires for a misconfigured label the user fixes once.
+			// Surface the ignored label on the pod, for clusters without the
+			// direction-value VAP (Kubernetes < 1.30, or disabled).
 			if r.Recorder != nil {
 				r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning,
 					ReasonInvalidJoinLabelDirection, "Resolve",

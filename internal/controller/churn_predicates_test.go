@@ -9,12 +9,8 @@ import (
 )
 
 // These tests pin the churn-reduction contract: pod predicates must fire on
-// *changes* to the things kube-vnet cares about, not on mere membership.
-//
-// Before this, JoinLabelPodPredicate returned true whenever the pod *carried*
-// a join label, so every status heartbeat (restart counts, readiness flips,
-// podIP assignment) enqueued a reconcile — each of which ran a cluster-wide
-// PodList. A pod restart storm therefore became a reconcile storm.
+// changes to the things kube-vnet reads, not on every update of a pod that
+// merely carries a relevant label.
 
 func podWithLabels(ns, name string, labels map[string]string) *corev1.Pod {
 	return &corev1.Pod{
@@ -22,8 +18,7 @@ func podWithLabels(ns, name string, labels map[string]string) *corev1.Pod {
 	}
 }
 
-// REGRESSION LOCK. A pure status update on a join-labelled pod must NOT
-// enqueue. This is the storm behaviour.
+// A pure status update on a join-labelled pod must not enqueue.
 func TestJoinLabelChangedPredicate_StatusOnlyUpdate_DoesNotFire(t *testing.T) {
 	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
 	labels := map[string]string{"kube-vnet/net.payments": "both", "app": "web"}
@@ -72,7 +67,7 @@ func TestJoinLabelChangedPredicate_FiresOnEitherPrefix(t *testing.T) {
 			wantFire: true,
 		},
 		{
-			// The resolution controller's stamp write. The generator MUST see it.
+			// The resolution controller's stamp write; the generator must see it.
 			name:     "system stamp added",
 			oldL:     map[string]string{"kube-vnet/net.payments": "both"},
 			newL:     map[string]string{"kube-vnet/net.payments": "both", "kube-vnet.system/net.shop.payments": "both"},
