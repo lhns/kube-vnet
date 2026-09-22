@@ -4,7 +4,7 @@ Status: Accepted (most items resolved; see below)
 
 ## Context
 
-The design doc (`docs/kube-vnet-design.md`) lists items required for a "complete" v1 that were not implemented in the initial pass. This ADR tracks them. Most have since landed; the remaining one is recorded explicitly so it isn't forgotten.
+The design doc ([`docs/internals/design.md`](../internals/design.md)) lists items required for a "complete" v1 that were not implemented in the initial pass. This ADR tracks them. Most have since landed; the remaining one is recorded explicitly so it isn't forgotten.
 
 ## Decision
 

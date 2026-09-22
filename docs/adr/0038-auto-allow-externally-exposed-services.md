@@ -1,8 +1,6 @@
 # ADR 0038 — Auto-allow externally-exposed Services
 
-> **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.external-<svcName>-<8hex>` referenced in this ADR is now `kube-vnet.ext.svc.<svcName>-<8hex>`. The `kube-vnet.system/source` label value evolved twice: first from `service/<svcName>` to bare `<svcName>` (commit 2c798f2 — label values can't contain `/`), then to `svc-<svcName>` for symmetry with the host-source `host-<port>-<proto>` shape (ADR 0040). A new `kube-vnet.system/source-kind: svc|host` label is now the authoritative dispatcher signal so reconcilers don't have to infer kind from value. See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) for the naming convention.
->
-> **Note (ADR 0040 follow-up, 2026-06-26)**: `hostPort` containers, listed below under "Out of scope" as deferred-to-v2, are now handled by [ADR 0040](0040-auto-allow-hostport-pods.md) — per-`(NS, port, protocol)` policies under the same `kube-vnet.ext.host.*` naming family, using operator-stamped pod labels for the podSelector.
+> **Note (2026-06-26)**: per [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) the policy name was `kube-vnet.external-<svcName>-<8hex>` before becoming the `kube-vnet.ext.svc.<svcName>-<8hex>` shown below. The `kube-vnet.system/source` value shown below changed from `service/<svcName>` to `<svcName>` (label values can't contain `/`, commit 2c798f2) and then to `svc-<svcName>`, symmetric with hostPort's `host-<port>-<proto>`. The new `kube-vnet.system/source-kind: svc|host|apiserver` label is what reconcilers dispatch on. The hostPort case listed under "Out of scope" is handled by [ADR 0040](0040-auto-allow-hostport-pods.md).
 
 **Status**: Accepted (2026-06-26)
 
@@ -96,7 +94,7 @@ No — the ingress controller (traefik / nginx-ingress / the Gateway data plane 
 
 - Ingress controllers and LB-backed admin UIs are reachable from outside the cluster by default in kube-vnet-managed namespaces. The traefik scenario above just works after install — no annotation, no hand-written policy.
 - Pod-to-pod isolation is preserved. The emitted policy is port-scoped (only the Service's exposed `targetPort`s) and additive (other policies' selectors and from-rules still apply). A pod that exposes :80 via LB and runs admin tools on :9100 keeps the :9100 protection it already had.
-- The chart's `system-labels-vap` (extended in ADR 0037) already protects any policy carrying a `kube-vnet.system/*` label. External-allow policies inherit that protection — users can't create, delete, or mutate them outside the operator.
+- The chart's `system-labels-vap` (extended in ADR 0037) already protects any policy carrying a `kube-vnet.system/*` label. External-allow policies inherit that protection — users can't create, delete, or mutate them outside the operator. *(Correction, 2026-09-23: the VAP guards `CREATE`/`UPDATE` only. It blocks forging or relabelling such a policy but not deleting it; the Service-owner watch re-applies a deleted one.)*
 - The pre-delete cleanup hook (ADR 0036) cleans up external-allow policies automatically: it selects on `kube-vnet.system/managed-by=kube-vnet`, which every external-allow policy carries.
 - New RBAC: `services` get/list/watch. Merged into the existing `namespaces` rule by controller-gen since they share the same verbs in the operator ClusterRole.
 - Users who want a tighter source-CIDR allow for a specific Service: annotate `kube-vnet/external-allow=false` and write their own NetworkPolicy. The opt-out is per-resource so the rest of the namespace's Services still auto-emit.

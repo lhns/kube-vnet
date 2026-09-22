@@ -2,6 +2,8 @@
 
 > **Amendment (ADR 0043, 2026-07-09)**: `virtualNetworkRef.namespace` is now optional and, when set, honored rather than ignored. Omitting it is the recommended form for the system vnets. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
+> **Amendment (2026-09-23) — the conflict and override-rejection surfaces were never implemented.** `Resolve()` applies intersection and override rejection exactly as described and records both in `ResolutionResult.Conflicts` / `OverrideRejected`, but no caller reads them. There is no `kube-vnet.system/conflict.<vnet>` pod annotation, no `kube_vnet_resolution_conflicts_total` metric, no `OverrideRejected` or `Conflicts` condition on baselines (nothing writes baseline status), and the vnet's `ResolutionConflict` reason is declared but never set. Fail-closed behaviour holds; the user-visible signal does not exist yet.
+
 Status: Accepted
 
 Date: 2026-05-05

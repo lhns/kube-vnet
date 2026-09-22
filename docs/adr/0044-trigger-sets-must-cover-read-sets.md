@@ -99,5 +99,5 @@ Predicates may narrow *which* changes fire, never *which fields matter*. `Genera
 ## References
 
 - [ADR 0030](0030-unified-vnet-membership-with-resolution.md) — the resolution model; its 2026-07-26 amendment is one instance of this rule.
-- [ADR 0034](0034-admission-webhook-for-pod-resolution.md) — *Proposed*, unimplemented. There is no mutating webhook; stamping is asynchronous and post-admission, so admission ordering never determined membership.
+- [ADR 0034](0034-admission-webhook-for-pod-resolution.md) — *Proposed* and unimplemented when this ADR was written; stamping was purely asynchronous, so admission ordering never determined membership. Since implemented as an opt-in (2026-09-11). It stamps at pod admission only; a vnet created *after* its pods still reaches them through the watch this ADR requires.
 - [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md) — ref canonicalisation, which decides when an omitted namespace means "the pod's own".

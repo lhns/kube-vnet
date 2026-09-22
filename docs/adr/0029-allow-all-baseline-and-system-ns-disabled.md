@@ -1,8 +1,6 @@
 # 0029 — Allow-all baseline in mode=none, and system namespaces disabled by default
 
-> **Amendment (2026-07-09)**: the default disabled set is narrowed from `[kube-system, kube-public, kube-node-lease]` to `[kube-system]` by [ADR 0042](0042-coredns-ingress-carveout-and-kube-system-enrollment.md). `kube-public` and `kube-node-lease` hold no pods, so disabling them bought nothing; only `kube-system` (cluster-critical pods) stays disabled by default, and enrolling it is made DNS-safe by the chart's CoreDNS carve-out.
-
-Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The "baseline always emitted for visibility" rule is replaced by "deny-all baseline + `--elide-baseline-for`" — visibility now comes from the system vnet membership labels rather than from a baseline placeholder. The "system namespaces disabled by default" decision is preserved unchanged in the new model.
+Status: Superseded by [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (2026-05-05). The allow-all baseline is replaced by a uniform deny-all baseline (ADR 0030's `--elide-baseline-for` exemption was later removed by [ADR 0035](0035-removal-of-elide-baseline-for.md)); visibility now comes from the system vnet membership labels. "System namespaces disabled by default" carried over, and was narrowed to `[kube-system]` by [ADR 0042](0042-coredns-ingress-carveout-and-kube-system-enrollment.md) — `kube-public` and `kube-node-lease` hold no pods, and enrolling `kube-system` is made DNS-safe by the chart's CoreDNS carve-out.
 
 Date: 2026-05-04
 
@@ -60,7 +58,7 @@ To enroll a system-namespace pod in a vnet, an admin removes the relevant namesp
 
 - Existing clusters running mode=none gain one additional NetworkPolicy per managed namespace on upgrade. The policy is functionally invisible — it allows everything — but it shows up in lists. CHANGELOG calls this out.
 - One more object per managed namespace in steady state. Trivial; baselines are tiny and stable.
-- The "discover deliberate joiner pods in `kube-system`" use case from ADR 0023 now requires explicit opt-in. Users who relied on the previous default to enroll a kube-system pod in a vnet must remove the namespace from `disabledNamespaces`. This is captured in CHANGELOG and in `docs/install.md`.
+- The "discover deliberate joiner pods in `kube-system`" use case from ADR 0023 now requires explicit opt-in. Users who relied on the previous default to enroll a kube-system pod in a vnet must remove the namespace from `disabledNamespaces`. This is captured in CHANGELOG and in [`docs/getting-started/install.md`](../getting-started/install.md).
 
 ## Alternatives considered
 

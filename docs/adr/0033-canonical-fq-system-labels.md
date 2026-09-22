@@ -1,10 +1,11 @@
 # 0033 — Canonical fully-qualified system labels; per-binding policies removed
 
-> **Amendment (ADR 0043, 2026-07-09)**: `CanonicalSuffix`'s collapse of `<anything>.cluster` → bare `cluster` still governs join *labels* and the stamped identity. For `virtualNetworkRef`s, permission is now decided on the **fully-qualified** key first (so a wrong `<ns>.cluster` is denied as not-found) and only surviving rules are collapsed to the bare canonical form. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
+Status: Accepted. Later changes:
 
-> **Note (ADR 0039 amendment, 2026-06-26)**: the policy name shape `kube-vnet.<homeNS>.<vnet>-<8hex>` referenced throughout this ADR is now `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`. The cluster singleton bare-name treatment is preserved inside the new `mem.` prefix: `kube-vnet.cluster-<hash>` → `kube-vnet.mem.cluster-<hash>`. The label keys themselves (`kube-vnet.system/net.*`) are unchanged. See [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md).
-
-Status: Accepted
+- Policy names gain a kind segment per [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md): `kube-vnet.<homeNS>.<vnet>-<8hex>` → `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`, and `kube-vnet.cluster-<8hex>` → `kube-vnet.mem.cluster-<8hex>`. Label keys are unchanged.
+- The "Baseline elide-list translation" section and the other `--elide-baseline-for` references are obsolete: [ADR 0035](0035-removal-of-elide-baseline-for.md) removed the flag.
+- [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md): the `<anything>.cluster` → `cluster` collapse still governs join labels and stamped identity, but a `virtualNetworkRef` is permission-checked on its fully-qualified key first (a wrong `<ns>.cluster` is denied as not-found) and collapsed only afterwards.
+- `ReasonResolutionConflict` is declared but never set, and the per-pod conflict annotation and metric do not exist; see [ADR 0031](0031-baseline-tier-resolution.md)'s 2026-09-23 amendment. Conflicts are still intersected fail-closed.
 
 Date: 2026-05-06
 
@@ -18,7 +19,7 @@ That split exists *only* because the pod-input form has two shapes. The output d
 
 A second leftover from before the resolution layer: bindings produce dedicated `kube-vnet.<homeNS>.<vnet>.b.<binding>-<8hex>` policies. Under [ADR 0030](0030-unified-vnet-membership-with-resolution.md)'s resolution model, `bindingRules` already stamps `kube-vnet.system/net.<vnet>` on selected pods. The regular per-vnet membership policy's selector matches those pods. The dedicated per-binding policy duplicates coverage.
 
-A third issue surfaces when looking at this: `Degraded.reason=ConflictingDirections` (from `internal/controller/virtualnetwork_controller.go:436-450`) fires only when a pod has both bare and prefixed labels for the same vnet with different directions. Under canonicalization, both inputs map to the same VnetKey at stamp time, and the resolver's intersection (per ADR 0031) handles disagreements without a degraded condition. The reason is obsolete in its current form, but a generalized resolution-conflict surface (binding-vs-label, binding-vs-binding) is still valuable.
+A third issue surfaces when looking at this: `Degraded.reason=ConflictingDirections` (then in `internal/controller/virtualnetwork_controller.go`) fires only when a pod has both bare and prefixed labels for the same vnet with different directions. Under canonicalization, both inputs map to the same VnetKey at stamp time, and the resolver's intersection (per ADR 0031) handles disagreements without a degraded condition. The reason is obsolete in its current form, but a generalized resolution-conflict surface (binding-vs-label, binding-vs-binding) is still valuable.
 
 The intended outcome: every pod-tier system label and every membership-policy name is uniformly `<homeNS>.<vnet>` (FQ). User input ergonomics survive (ADR 0022's bare-label-in-home-NS still works). Baseline-spec keys stay bare for the chart-values shorthand and the `--elide-baseline-for` flag — the operator translates bare to FQ at render time. Per-binding policies are deleted. `ConflictingDirections` becomes `ResolutionConflict`, sourced from the resolver's existing `Conflicts` slice.
 

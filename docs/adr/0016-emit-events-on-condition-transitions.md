@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+> **Amendment (2026-09-23)**: the recorder is now obtained with `mgr.GetEventRecorder(...)` (the `events.k8s.io` API; `Eventf` takes an action and a related object) rather than `GetEventRecorderFor`. Event reasons and transition semantics are unchanged.
+
 ## Context
 
 Status conditions (ADR 0012) are the structured, programmatic surface for "what's the state of this VirtualNetwork?". But conditions only show up when a tool actively reads the resource. When something **changes** — e.g. `Ready` flips from True to False because a NetworkPolicy apply failed — there is no push signal unless the operator emits a Kubernetes Event.

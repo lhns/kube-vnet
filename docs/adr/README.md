@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Each ADR captures a single decision: the context, what was decided, and the consequences. ADRs are immutable once accepted — if a decision is reversed, a new ADR supersedes the old one.
+Each ADR captures a single decision: the context, what was decided, and the consequences. ADRs are immutable once accepted — if a decision is reversed, a new ADR supersedes the old one. When a later ADR or a code change affects an accepted one, its `Status:` line names the change and links it; a short dated amendment records anything the Status line can't.
 
 For long-form background on the project, see [`../internals/design.md`](../internals/design.md). The design doc explains the *what* and *why* at length; ADRs are the short, decision-scoped record that lives alongside the code.
 
@@ -11,7 +11,7 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 3. [0003 — One label per VirtualNetwork](0003-one-label-per-virtualnetwork.md)
 4. [0004 — Bare vs namespace-prefixed join label](0004-bare-vs-namespace-prefixed-join-label.md)
 5. [0005 — Namespaced CRD with allowedNamespaces](0005-namespaced-crd-with-allowed-namespaces.md)
-6. [0006 — Default-deny baseline and single per-namespace opt-out](0006-baseline-default-deny-and-single-opt-out.md)
+6. [0006 — Default-deny baseline and single per-namespace opt-out](0006-baseline-default-deny-and-single-opt-out.md) — *superseded by 0023 and 0025*
 7. [0007 — Operator-level excluded namespaces](0007-operator-level-excluded-namespaces.md)
 8. [0008 — Pure-function policy generator](0008-pure-function-policy-generator.md)
 9. [0009 — Server-side apply with field manager](0009-server-side-apply-with-field-manager.md)
@@ -23,23 +23,23 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 15. [0015 — controller-runtime as the operator library](0015-controller-runtime-as-the-operator-library.md)
 16. [0016 — Emit events on condition transitions](0016-emit-events-on-condition-transitions.md)
 17. [0017 — Name validation via CEL and runtime check](0017-name-validation-via-cel-and-runtime-check.md)
-18. [0018 — Test strategy: unit + envtest + kind+Calico](0018-test-strategy-envtest-and-kind-calico.md)
+18. [0018 — Test strategy: unit + envtest + kind (kube-router + Calico)](0018-test-strategy-envtest-and-kind-calico.md)
 19. [0019 — Baseline durability via drift correction; AdminNetworkPolicy deferred](0019-baseline-durability.md)
-20. [0020 — `--default-deny-everywhere` flag for cluster-wide default-deny](0020-default-deny-unmanaged-namespaces.md)
+20. [0020 — `--default-deny-everywhere` flag for cluster-wide default-deny](0020-default-deny-unmanaged-namespaces.md) — *superseded by 0024 and 0025*
 21. [0021 — Direction modes on join labels (`both` / `ingress` / `egress` / `none`)](0021-direction-modes-on-join-labels.md)
 22. [0022 — Long-form join label accepted in the home namespace](0022-long-form-join-label-in-home-namespace.md)
-23. [0023 — Decoupled `disabled` and `ingress-isolation` annotations](0023-decoupled-disabled-and-ingress-isolation.md)
-24. [0024 — Operator ingress-isolation default + per-mode override lists](0024-ingress-isolation-mode-and-overrides.md)
-25. [0025 — `ingress-isolation` rename + egress unrestricted](0025-ingress-isolation-rename-egress-unrestricted.md)
+23. [0023 — Decoupled `disabled` and `ingress-isolation` namespace annotations](0023-decoupled-disabled-and-ingress-isolation.md) — *superseded by 0030*
+24. [0024 — Operator ingress-isolation default + per-mode override lists](0024-ingress-isolation-mode-and-overrides.md) — *superseded by 0030*
+25. [0025 — `ingress-isolation` rename + ingress-only scope](0025-ingress-isolation-rename-egress-unrestricted.md) — *superseded by 0030; the egress-unrestricted decision stands*
 26. [0026 — `VirtualNetworkBinding` CRD as the no-label alternative](0026-virtualnetworkbinding-crd.md)
 27. [0027 — Pod-scoped events for join-label diagnostics](0027-pod-scoped-join-label-events.md)
-28. [0028 — Runtime policy-enforcement verification (Proposed / draft)](0028-runtime-policy-verification.md)
+28. [0028 — Runtime policy-enforcement verification (design space)](0028-runtime-policy-verification.md) — *Proposed (draft)*
 29. [0029 — Allow-all baseline in mode=none; system namespaces disabled by default](0029-allow-all-baseline-and-system-ns-disabled.md) — *superseded by 0030*
 30. [0030 — Unified vnet-membership model with resolution layer](0030-unified-vnet-membership-with-resolution.md) — *resolution-lattice section partially superseded by 0031*
 31. [0031 — Baseline-tier resolution: replace bindings/CVNB with explicit defaults vs bindings](0031-baseline-tier-resolution.md)
 32. [0032 — Removing a chart-shipped CRD requires a two-release deprecation dance](0032-chart-crd-removal-two-release-pattern.md)
 33. [0033 — Canonical fully-qualified system labels; per-binding policies removed](0033-canonical-fq-system-labels.md)
-34. [0034 — Mutating admission webhook for synchronous pod-tier resolution (Proposed)](0034-admission-webhook-for-pod-resolution.md)
+34. [0034 — Mutating admission webhook for synchronous pod-tier resolution](0034-admission-webhook-for-pod-resolution.md)
 35. [0035 — Removal of `--elide-baseline-for`: baseline elide had no observable effect](0035-removal-of-elide-baseline-for.md)
 36. [0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall](0036-helm-pre-delete-hook-cleanup.md)
 37. [0037 — `kube-vnet.system/` prefix convention for operator-owned keys](0037-system-prefix-convention-for-operator-owned-keys.md)
@@ -57,7 +57,7 @@ Each ADR follows MADR-lite:
 
 ```
 # NNNN — Short title
-Status: Accepted | Superseded by NNNN | Deprecated
+Status: Proposed | Accepted | Superseded by NNNN | Deprecated
 
 ## Context
 Why we needed to decide.

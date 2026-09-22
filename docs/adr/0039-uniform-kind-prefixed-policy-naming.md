@@ -1,6 +1,6 @@
 # ADR 0039 — Uniform kind-prefixed naming for operator-emitted NetworkPolicies
 
-**Status**: Accepted (2026-06-26)
+**Status**: Accepted (2026-06-26). [ADR 0041](0041-auto-allow-apiserver-reachable-services.md) adds a third `ext` source kind: `kube-vnet.ext.apiserver.<svcName>-<8hex>`.
 
 ## Context
 
