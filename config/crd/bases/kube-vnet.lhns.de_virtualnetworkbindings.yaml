@@ -185,7 +185,7 @@ spec:
               conditions:
                 description: |-
                   Conditions follow the standard Kubernetes condition pattern.
-                  Known types: Ready, Degraded.
+                  Known types: Ready.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

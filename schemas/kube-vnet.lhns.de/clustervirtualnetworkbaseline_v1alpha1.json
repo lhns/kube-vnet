@@ -19,7 +19,7 @@
       "description": "ClusterVirtualNetworkBaselineSpec is the desired cluster-wide baseline.\n\nOne singleton CR named `default` per cluster (enforced by CEL on the type).\nLists vnet memberships every pod in every managed namespace inherits, with\nper-vnet override-permission encoded in the direction value. Bare values\ncannot be overridden by namespace baselines, bindings, or pod labels;\ndefault-* values may.",
       "properties": {
         "memberships": {
-          "description": "Memberships every pod inherits from this cluster baseline. Order is\nnot significant; duplicate vnetRefs surface as a Conflicts condition.",
+          "description": "Memberships every pod inherits from this cluster baseline. Order is\nnot significant; duplicate vnetRefs resolve to the intersection of\ntheir directions.",
           "items": {
             "additionalProperties": false,
             "description": "BaselineMembership is one (vnet, direction) entry inside a baseline's\nmemberships list. Directions accept the full eight-value enum (the four\nbare values plus the four `default-*` variants); see ADR 0031.",
@@ -73,7 +73,7 @@
       "description": "ClusterVirtualNetworkBaselineStatus is the observed state.",
       "properties": {
         "conditions": {
-          "description": "Conditions follow the standard Kubernetes condition pattern.\nKnown types: Ready, Conflicts.",
+          "description": "Conditions follow the standard Kubernetes condition pattern. The\noperator does not set any on baselines yet.",
           "items": {
             "additionalProperties": false,
             "description": "Condition contains details for one aspect of the current state of this API Resource.",

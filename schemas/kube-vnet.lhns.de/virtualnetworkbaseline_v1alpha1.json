@@ -73,7 +73,7 @@
       "description": "VirtualNetworkBaselineStatus is the observed state.",
       "properties": {
         "conditions": {
-          "description": "Conditions follow the standard Kubernetes condition pattern.\nKnown types: Ready, Conflicts, OverrideRejected.\n\nOverrideRejected fires when this baseline tries to override a vnet\nthat the cluster baseline pinned with a bare (non-default-*) direction;\nthe cluster value remains in effect and this baseline's entry is\nignored for that vnet. The condition message names the affected vnet.",
+          "description": "Conditions follow the standard Kubernetes condition pattern. The\noperator does not set any on baselines yet.",
           "items": {
             "additionalProperties": false,
             "description": "Condition contains details for one aspect of the current state of this API Resource.",
