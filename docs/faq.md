@@ -16,7 +16,7 @@ If you're running it in production, do all of:
 
 - Pin a specific `image.tag` and Helm `--version`.
 - Verify cosign signatures (see [`install.md`](getting-started/install.md#verifying-signatures)).
-- Watch the alerts in [`operations.md`](guides/operations.md).
+- Set up the [sample alerts](reference/metrics-and-events.md#sample-alert-rules).
 
 ### What CNIs does it work with?
 
@@ -97,9 +97,11 @@ This is the most common misconception about the API. See [`concepts.md` § Join 
 
 Kubernetes requires CRD groups to be DNS-style (containing at least one dot). `kube-vnet` alone was rejected by the apiserver. The label key prefix (`kube-vnet/...`) is *not* subject to the same rule and stayed as it was.
 
-### Do I need a validating admission webhook?
+### Do I need the admission webhook?
 
-No. The CRD's CEL rule (introduced in Kubernetes 1.25) enforces name validation at admission. The reconciler does a defense-in-depth runtime check. See [ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md).
+Not for validation: the CRD's CEL rule rejects invalid `VirtualNetwork` names ([ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md)), and the chart's `ValidatingAdmissionPolicies` cover labels and reserved names on Kubernetes ≥ 1.30.
+
+The optional pod-resolution webhook (`webhook.enabled=true`, [ADR 0034](adr/0034-admission-webhook-for-pod-resolution.md)) solves a different problem: it stamps membership while the pod is admitted, so a new pod is never briefly denied. The cost is that pod creation in managed namespaces fails while the operator is unreachable. See the [configuration reference](reference/configuration.md#webhook-pod-resolution-admission-webhooks--adr-0034).
 
 ---
 
@@ -109,7 +111,7 @@ No. The CRD's CEL rule (introduced in Kubernetes 1.25) enforces name validation 
 
 Existing `NetworkPolicy` resources stay in place. The apiserver continues serving them; the CNI continues enforcing them. Your data plane is unaffected.
 
-What pauses: change propagation. New vnets aren't reconciled, label changes don't propagate, drift correction doesn't fire. Everything resumes when the operator comes back. See [`operations.md` § When the operator is down](guides/operations.md#when-the-operator-is-down).
+What pauses: change propagation. New vnets aren't reconciled, label changes don't propagate, drift correction doesn't fire, and new pods stay unstamped (so their ingress is denied). With `webhook.enabled=true`, creating pods in managed namespaces fails instead. Everything resumes when the operator comes back. See [`operations.md` § When the operator is down](guides/operations.md#when-the-operator-is-down).
 
 ### How do I run kube-vnet in HA?
 
@@ -127,7 +129,7 @@ If you can `kubectl apply` a `NetworkPolicy` and have it actually enforce, kube-
 
 ### Does kube-vnet need any special privileges I should be aware of?
 
-It needs cluster-wide read on Pods and Namespaces, cluster-wide CRUD on `NetworkPolicy`, and CRUD on its own CRD's status subresource. Full inventory in [`security.md`](security/security.md#rbac-inventory).
+Cluster-wide: CRUD on `NetworkPolicy`, `patch` on Pods (to stamp memberships), create/update/delete on `VirtualNetwork` (the system vnets), read on Services, Namespaces, webhook configurations, `APIService`s and CRDs, and status writes on its own CRDs. No access to Secrets or ConfigMaps. Full inventory in [`security.md`](security/security.md#rbac-inventory).
 
 ### Can I install one operator per namespace?
 
@@ -139,7 +141,7 @@ No. It only owns objects labeled `kube-vnet.system/managed-by=kube-vnet`. Your p
 
 ### What about egress to the public internet?
 
-kube-vnet does not restrict egress. The baseline carries `policyTypes: [Ingress]` only; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. Membership policies still grant egress allows to vnet peers, but generic egress is unrestricted. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](security/security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
+kube-vnet does not restrict egress. The baseline and the membership policies are all `policyTypes: [Ingress]`; egress (DNS, the apiserver, the public internet, other namespaces) is not blocked by the operator. If you need per-workload egress restriction, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]` — see [the per-workload egress allowlist recipe](guides/recipes.md#per-workload-egress-allowlist-via-user-managed-networkpolicy). For threat-model implications see [`security.md`](security/security.md). The rationale is in [ADR 0025](adr/0025-ingress-isolation-rename-egress-unrestricted.md).
 
 ### Why did egress just start working after the upgrade?
 
@@ -147,25 +149,11 @@ Behavior change with the `ingress-isolation` rename. The previous baseline block
 
 ### When I upgrade the operator, do old and new instances fight?
 
-No — **leader election** (enabled by default via `operator.leaderElect: true`) means only the lease holder reconciles. Rollout sequence with `replicas: 1`:
+No. With leader election (`operator.leaderElect: true`, the default) only the lease holder reconciles. During a rolling update the new pod waits as a standby; the old pod exits without releasing the lease, so the new one takes over once the lease expires (controller-runtime default: 15s). Existing policies keep enforcing throughout.
 
-1. Old pod is the leader, reconciling steadily.
-2. Helm's Deployment rollout creates a new pod alongside the old (default `RollingUpdate`, `maxSurge: 1`).
-3. New pod starts, becomes Ready, requests the leader lease — but the old pod still holds it, so the new pod sits idle as a hot standby.
-4. Old pod receives `SIGTERM`. It finishes any in-flight reconcile, releases the lease, and exits.
-5. New pod acquires the lease and starts reconciling.
+If a new version renames a policy, the old and new objects briefly coexist; NetworkPolicy allows are a union, so connectivity doesn't break, and the stale-policy sweep deletes the old one ([ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)).
 
-At no point are two reconcilers writing simultaneously. SSA with the stable `FieldManager: kube-vnet` would otherwise be the conflict point — each operator would try to own its declared fields — but leader election makes this a single-writer system.
-
-**For `replicas > 1` (HA)**: same story — only the leader reconciles, the others are hot standbys. Lease handover is still a single-writer-at-a-time event.
-
-**For `leaderElect: false` with `replicas > 1`** (not recommended): two simultaneous reconcilers with SSA would flap on any field they disagree on. Don't do this; the chart's default is correct.
-
-**During the lease-handover window** (typically <15s): old-named operator-managed policies persist with their pre-rollout content and keep enforcing their rules. New-named policies haven't been emitted yet because the new operator isn't reconciling. Connectivity stays as it was.
-
-**Naming or labeling changes between versions**: harmless. NetworkPolicy semantics are union-of-allows — if the new operator emits a policy with a different name covering the same pods, the *combined* effect is the union of both policies' allows. The next reconcile cycle's owner-ref-based self-heal sweeps the old object (see [ADR 0039](adr/0039-uniform-kind-prefixed-policy-naming.md)). No connectivity break at any point.
-
-See [`operations.md` § "I'm rolling out a new operator version"](guides/operations.md#im-rolling-out-a-new-operator-version) for the playbook side.
+Don't run more than one replica with `leaderElect: false`: two writers would fight over the same fields.
 
 ### I tightened isolation but existing cross-namespace connections still work. Why?
 
@@ -187,7 +175,7 @@ kubectl rollout restart deploy/<source-workload> -n <source-ns>
 kubectl rollout restart daemonset/<source-daemon> -n <source-ns>
 ```
 
-Once every pod from the source side is replaced, its connections to the targets are gone — new connections attempt to open and the policy denies them. Verification: see [troubleshooting.md § "I expected NS isolation but traffic between NS A and NS B still flows"](guides/troubleshooting.md#i-expected-ns-isolation-but-traffic-between-ns-a-and-ns-b-still-flows) for the full diagnostic playbook.
+Once every pod from the source side is replaced, its connections to the targets are gone — new connections attempt to open and the policy denies them. Diagnostic steps: [troubleshooting § pods I expect to be isolated can talk to each other](guides/troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other) (step 6).
 
 ---
 
@@ -195,9 +183,9 @@ Once every pod from the source side is replaced, its connections to the targets 
 
 ### Can a namespace owner just delete the deny baseline?
 
-Yes — if they have `delete networkpolicy` RBAC in their namespace, they can remove the `kube-vnet.base` baseline. The operator restores it within seconds (drift correction) and emits a `Warning PolicyRestored` Event for visibility. There's a small window between deletion and restore where the policy is gone.
+Yes — if they have `delete networkpolicy` RBAC in their namespace, they can remove the `kube-vnet.base` baseline. The operator restores it within seconds (drift correction), but there's a window in which the policy is gone. Baseline restores emit no Event; `PolicyRestored` covers membership policies only, so use the Kubernetes audit log to see baseline deletions.
 
-For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` (cluster-scoped, separate RBAC, higher precedence). Tracked as the future direction in [ADR 0019](adr/0019-baseline-durability.md). For now: monitor the `PolicyRestored` events; alert on repeated occurrences.
+For a hard guarantee, the proper Kubernetes tool is `AdminNetworkPolicy` (cluster-scoped, separate RBAC, higher precedence). Tracked as the future direction in [ADR 0019](adr/0019-baseline-durability.md).
 
 ### How do I verify the image / chart I downloaded is genuine?
 
@@ -229,7 +217,7 @@ Benign. Optimistic-concurrency retries; the controller converges. See [`troubles
 
 ### Why am I seeing "PolicyRestored" warnings?
 
-Someone (or something) deleted an operator-managed policy and the operator restored it. Investigate the source. See [`troubleshooting.md`](guides/troubleshooting.md#i-see-policyrestored-warning-events--is-something-wrong).
+Someone (or something) deleted a membership policy and the operator restored it. Investigate the source. See [`troubleshooting.md`](guides/troubleshooting.md#i-see-policyrestored-warning-events--is-something-wrong).
 
 ### cert-manager (or kyverno / gatekeeper / metrics-server / istio sidecar injector) fails with `context deadline exceeded` — what gives?
 
@@ -267,7 +255,7 @@ Future direction. ANP solves the deny-baseline-durability problem more cleanly t
 
 ### vs. Cilium ClusterMesh / multi-cluster
 
-Out of scope for v1. The original design doc anticipates a `Fleet` extent for cross-cluster networks; the v1 schema rejects `Fleet` so a v2 can extend cleanly. See the design doc's Future Improvements section.
+Out of scope: kube-vnet is single-cluster. The original design doc sketches a cross-cluster `Fleet` extent under Future Improvements; nothing of it is implemented.
 
 ### vs. service mesh (Istio, Linkerd)
 

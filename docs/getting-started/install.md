@@ -1,6 +1,6 @@
 # Install
 
-Three install paths, in order of preference: **Helm** (recommended), **`kubectl apply` of `release.yaml`**, or **`kubectl apply -k config/default`** from the source tree. All three install the same resources — the difference is how you parameterize and upgrade.
+Three install paths, in order of preference: **Helm** (recommended), **`kubectl apply` of `release.yaml`**, or **`kubectl apply -k config/default`** from the source tree. Only the Helm chart seeds the cluster baseline, installs the uninstall cleanup hook, the CoreDNS carve-out and the optional admission webhook, and gates the admission policies on the Kubernetes version.
 
 ---
 
@@ -10,7 +10,7 @@ Three install paths, in order of preference: **Helm** (recommended), **`kubectl 
 
 `>= 1.25`. The CRD uses an `x-kubernetes-validations` (CEL) rule for name validation; CEL became Generally Available in 1.25.
 
-On Kubernetes ≥ 1.30 the chart additionally installs a `ValidatingAdmissionPolicy` (and binding) that rejects Pod create/update when any `kube-vnet/net.*` label has a value not in `[both, ingress, egress, none]` — typos like `kube-vnet/net.X=bothh` (and the removed legacy `true`/`false`/empty aliases) are caught at `kubectl apply`. On clusters older than 1.30 the chart skips the VAP; the operator's runtime `Degraded`/`UnknownDirection` reason still catches the same typos at reconcile time, so isolation correctness is unchanged on older clusters — they just lose the admission-time fast feedback. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
+On Kubernetes ≥ 1.30 the chart also installs three `ValidatingAdmissionPolicies`: one rejects `kube-vnet/net.*` label values other than `both`, `ingress`, `egress`, `none`; one protects the operator-owned `kube-vnet.system/*` labels; one reserves the system vnet names. Below 1.30 the chart skips them and prints a warning. Invalid join-label values are then still ignored at reconcile time and reported (an `InvalidJoinLabelDirection` event on the pod, `InvalidJoiners` on the vnet), but the operator-owned labels are protected only by drift correction — see [threat model F-02](../security/threat-model.md#7-findings-register).
 
 ### CNI that enforces NetworkPolicy
 
@@ -34,7 +34,7 @@ If you're not sure whether your cluster enforces NetworkPolicy, the [e2e tests](
 
 ### Permissions
 
-You need cluster-admin (or equivalent) for the install — the operator needs cluster-wide read on Pods and Namespaces and cluster-wide CRUD on `networkpolicies.networking.k8s.io`. See [`security.md`](../security/security.md) for the full RBAC inventory and rationale.
+You need cluster-admin (or equivalent) for the install: the operator gets a ClusterRole with cluster-wide `NetworkPolicy` CRUD and `pods` patch, among others. See [`security.md`](../security/security.md#rbac-inventory) for the full inventory.
 
 ---
 
@@ -45,14 +45,15 @@ The chart is published as an OCI artifact to `ghcr.io/lhns/charts/kube-vnet`. He
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.1.0 \
-  --namespace kube-vnet-system --create-namespace
+  --namespace kube-vnet-system --create-namespace \
+  --set operator.clusterBaseline.ingressIsolationLevel=cluster   # or namespace | pod
 ```
 
 Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
 
-Per [ADR 0031](../adr/0031-baseline-tier-resolution.md), `operator.clusterBaseline.ingressIsolationLevel` is **required** at install time — pick `pod`, `namespace`, or `cluster` (see below). The chart fails fast if neither it nor `operator.clusterBaseline.memberships` is set when `create=true`. Every managed namespace gets a uniform deny-all baseline; vnet membership (driven by the seeded `ClusterVirtualNetworkBaseline`, plus per-NS `VirtualNetworkBaseline`s and per-pod bindings/labels) is the only thing that opens ingress.
+`operator.clusterBaseline.ingressIsolationLevel` is **required** ([ADR 0031](../adr/0031-baseline-tier-resolution.md)): the chart fails if neither it nor `operator.clusterBaseline.memberships` is set while `create=true`. What the three levels mean: [first-vnet § isolation level](first-vnet.md#2-decide-your-isolation-level--before-you-install).
 
-The chart's default `operator.disabledNamespaces` lists `[kube-system, kube-public, kube-node-lease]`, so the operator stays out of those control-plane namespaces entirely (no baseline, no system vnets, no resolution stamping).
+The default `operator.disabledNamespaces` is `[kube-system]`; the operator stays out of it entirely (no baseline, no system vnets, no resolution stamping). Removing it enrolls `kube-system`, and the chart then renders the CoreDNS carve-out ([ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md)).
 
 #### What the default install means for new namespaces
 
@@ -84,7 +85,10 @@ helm install ... --set operator.clusterBaseline.ingressIsolationLevel=cluster
 helm install ... --set operator.clusterBaseline.ingressIsolationLevel=pod
 
 # Customize the operator-level disabled-namespaces list (operator's own ns is auto-added)
-helm install ... --set 'operator.disabledNamespaces={kube-system,kube-public,kube-node-lease,my-legacy-ns}'
+helm install ... --set 'operator.disabledNamespaces={kube-system,my-legacy-ns}'
+
+# Stamp pod membership at admission (ADR 0034); read the trade-off first
+helm install ... --set webhook.enabled=true --set replicaCount=2
 
 # Expose the metrics endpoint via a Service (off by default)
 helm install ... --set metricsService.enabled=true
@@ -106,19 +110,7 @@ helm upgrade kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 `--reuse-values` keeps the values from the previous install. Drop it (and pass `--values yourfile.yaml`) when you want to change values explicitly.
 
-CRD upgrades: Helm intentionally does **not** upgrade CRDs on `helm upgrade` (Helm's CRD policy). If a release ships a CRD change, apply it explicitly:
-
-```bash
-kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/<tag>/release.yaml \
-  --selector apiextensions.k8s.io/v1=CustomResourceDefinition
-```
-
-Or apply the chart's CRD directly:
-
-```bash
-helm pull oci://ghcr.io/lhns/charts/kube-vnet --version <tag> --untar
-kubectl apply -f kube-vnet/crds/
-```
+The chart ships its CRDs as regular templates (not under `crds/`), so `helm upgrade` updates them too.
 
 ### Uninstalling
 
@@ -126,17 +118,17 @@ kubectl apply -f kube-vnet/crds/
 helm uninstall kube-vnet --namespace kube-vnet-system
 ```
 
-The CRD is **not** removed by `helm uninstall` — Helm preserves CRDs to avoid taking down dependent resources. To remove it:
+A pre-delete hook removes every operator-managed `NetworkPolicy` first, so namespaces return to default-allow ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md); disable with `cleanup.enabled=false` or `--no-hooks`). The four CRDs and the seeded `ClusterVirtualNetworkBaseline` carry `helm.sh/resource-policy: keep` and survive, so a later install resumes with your CRs. To remove them too:
 
 ```bash
-kubectl delete crd virtualnetworks.kube-vnet.lhns.de
+kubectl delete crd virtualnetworks.kube-vnet.lhns.de virtualnetworkbindings.kube-vnet.lhns.de \
+  virtualnetworkbaselines.kube-vnet.lhns.de clustervirtualnetworkbaselines.kube-vnet.lhns.de
 ```
 
-This will cascade-delete every `VirtualNetwork` resource and (because the per-vnet membership policies have owner references in the home namespace) the operator-managed `NetworkPolicy` resources too. Cross-namespace policies (foreign to the home) need to be cleaned up manually if the operator was already gone — the operator normally handles them via its `kube-vnet.system/network` label, but it can't if it's already uninstalled. Cleanup pattern:
+If policies are left over (hook skipped or failed), delete them by label:
 
 ```bash
-kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet -o name \
-  | xargs -I{} kubectl delete -A {}
+kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 ```
 
 ### Testing a dev build
@@ -174,18 +166,14 @@ kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/rele
 This installs:
 
 - The `kube-vnet-system` namespace.
-- The `VirtualNetwork` CRD.
-- The `kube-vnet-controller` ServiceAccount + ClusterRole + ClusterRoleBinding.
-- The leader-election Role + RoleBinding in `kube-vnet-system`.
-- The `kube-vnet-controller` Deployment.
+- The four CRDs.
+- The `kube-vnet-controller` ServiceAccount, `kube-vnet-manager` ClusterRole + binding, and the leader-election Role + RoleBinding.
+- The `kube-vnet-controller` Deployment (default flags: `--disabled-namespaces=kube-system`).
+- The three `ValidatingAdmissionPolicies` — unconditionally, so this path needs Kubernetes ≥ 1.30.
 
-To configure the operator (flags, replicas), you'd edit the rendered manifest before applying or use the Helm install — `release.yaml` is for the simplest case.
+It does **not** create a `ClusterVirtualNetworkBaseline`. Without one, pods get no default memberships — the strictest posture. Apply one yourself, e.g. [sample 09](../../config/samples/09_clustervirtualnetworkbaseline.yaml) (the `namespace` preset). It also ships no uninstall hook: `kubectl delete -f release.yaml` leaves the generated policies behind, so delete them by label first (see [Uninstalling](#uninstalling)).
 
-Uninstall is symmetric:
-
-```bash
-kubectl delete -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml
-```
+To configure the operator (flags, replicas), edit the rendered manifest before applying, or use the Helm install.
 
 ---
 
@@ -258,7 +246,7 @@ The operator binary needs:
 
 The runtime image is `gcr.io/distroless/static:nonroot` (the binary is statically linked Go). No external runtime dependencies; once the image is in your registry, the operator runs offline.
 
-If you use Helm, mirror `oci://ghcr.io/lhns/charts/kube-vnet:<chart-version>` to your internal OCI registry too:
+If you use Helm, mirror `oci://ghcr.io/lhns/charts/kube-vnet:<chart-version>` to your internal OCI registry too, plus the uninstall hook's `registry.k8s.io/kubectl` image (`cleanup.image.*`):
 
 ```bash
 helm pull oci://ghcr.io/lhns/charts/kube-vnet --version 0.1.0
@@ -270,8 +258,8 @@ helm push kube-vnet-0.1.0.tgz oci://internal.example/charts
 ## Sanity-check after install
 
 ```bash
-# Operator running
-kubectl get deploy -n kube-vnet-system kube-vnet-controller
+# Operator running (kustomize/release.yaml installs name it kube-vnet-controller)
+kubectl get deploy -n kube-vnet-system kube-vnet
 
 # CRD registered
 kubectl get crd virtualnetworks.kube-vnet.lhns.de

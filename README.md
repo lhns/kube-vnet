@@ -1,6 +1,6 @@
 # kube-vnet
 
-A Kubernetes operator that lets you declare **named networks** as a first-class resource. Services join a network with a label; the operator generates the underlying `NetworkPolicy` resources so only same-network pods can talk to each other. The output is plain `networking.k8s.io/v1`: no CNI extensions, no lock-in. Uninstall the operator and the generated policies keep working.
+A Kubernetes operator that lets you declare **named networks** as a first-class resource. Services join a network with a label; the operator generates the underlying `NetworkPolicy` resources so only same-network pods can talk to each other. The output is plain `networking.k8s.io/v1`: no CNI extensions, no lock-in. If the operator stops, the generated policies keep enforcing.
 
 ## The idea
 
@@ -168,7 +168,7 @@ Self-contained manifests; `kubectl apply -f` works on a fresh cluster:
 |---|---|
 | [`config/samples/01_same_namespace.yaml`](config/samples/01_same_namespace.yaml) | Default: only pods in the home namespace can join. |
 | [`config/samples/02_two_namespaces.yaml`](config/samples/02_two_namespaces.yaml) | `allowedNamespaces.names: [webapp, monitoring]` (explicit list). |
-| [`config/samples/03_label_selector.yaml`](config/samples/03_label_selector.yaml) | `allowedNamespaces.selector: {{ matchLabels: {{ tier: prod }} }}` (label-based). |
+| [`config/samples/03_label_selector.yaml`](config/samples/03_label_selector.yaml) | `allowedNamespaces.selector: { matchLabels: { tier: prod } }` (label-based). |
 | [`config/samples/04_all_namespaces.yaml`](config/samples/04_all_namespaces.yaml) | `allowedNamespaces.all: true` (wildcard: any namespace). |
 | [`config/samples/05_disabled_namespace.yaml`](config/samples/05_disabled_namespace.yaml) | Per-namespace opt-out via `kube-vnet/disabled=true`. |
 | [`config/samples/06_virtualnetworkbinding.yaml`](config/samples/06_virtualnetworkbinding.yaml) | `VirtualNetworkBinding`: enrolling pods without editing their labels. |

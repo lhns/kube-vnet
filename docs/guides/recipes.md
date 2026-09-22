@@ -4,7 +4,7 @@ Worked end-to-end examples beyond the minimal samples in [`config/samples/`](../
 
 For the conceptual model behind these patterns, see [`concepts.md`](../getting-started/concepts.md).
 
-> **Each recipe relies on the deny-all baseline + opt-in vnet membership model from [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md):** every managed namespace gets a deny-all baseline; pods that join a vnet (via the `kube-vnet/net.<vnet>` label) get additive ingress allows from vnet peers; everything else is denied. See the [deny-all baseline concept](../getting-started/concepts.md#the-deny-all-baseline) for details.
+> **The "✗" outcomes below assume `ingressIsolationLevel=pod`.** Under `namespace`, same-namespace pods also reach each other; under `cluster`, nothing is isolated until you tighten it ([migration recipe](#migrating-an-existing-namespace-to-kube-vnet)). Model: [the deny-all baseline](../getting-started/concepts.md#the-deny-all-baseline).
 
 ---
 
@@ -111,7 +111,7 @@ Resulting connectivity:
 - backend ↔ database (both on `data-tier`)
 - frontend ✗ database (no shared vnet — and the baseline blocks it)
 
-Note that the **backend joins two vnets**. The labels are additive: NetworkPolicies select pods by `Exists <key>`, so a backend pod is matched by both the `web-tier` membership policy and the `data-tier` membership policy.
+Note that the **backend joins two vnets**. Memberships are additive: the backend pods carry both stamps and are selected by both the `web-tier` and the `data-tier` membership policy.
 
 If you also want frontend to reach the internet, accept ingress from a LoadBalancer / Ingress controller, or restrict egress to specific destinations, that's separate. kube-vnet's baseline only restricts ingress; egress is unrestricted. Add a user-managed `NetworkPolicy` for ingress from external sources or for egress allowlists — it composes additively with kube-vnet's policies (see the last two recipes).
 
@@ -271,7 +271,7 @@ Same composition as the three-tier example: the bridge is just a pod that carrie
 
 ## Direction modes: ingress-only and egress-only members
 
-The join label *value* declares which directions a pod participates in: `both` (default), `ingress`, `egress`, or `none`. Use this to model asymmetric workloads precisely instead of granting bidirectional access where only one direction is needed.
+The join label *value* declares which directions a pod participates in: `both`, `ingress`, `egress`, or `none`. Use this to model asymmetric workloads precisely instead of granting bidirectional access where only one direction is needed.
 
 ```yaml
 apiVersion: v1
@@ -322,7 +322,7 @@ spec:
     metadata:
       labels:
         app: app
-        kube-vnet/net.telemetry: both       # default; explicit for clarity
+        kube-vnet/net.telemetry: both
     spec:
       containers: [{ name: app, image: nginx:alpine }]
 ```
@@ -384,7 +384,7 @@ Effect:
 
 - The binding selects pods in `webapp` whose labels match `app: thirdparty-billing-agent`. Those pods are members of `platform/payments` for the binding's `direction` (default `both`).
 - The binding's status reports `Ready=True, PodsAttached` (or `NoPodsMatch`/`VirtualNetworkNotFound`/`NamespaceNotAllowed`/etc; see [`troubleshooting.md`](troubleshooting.md#my-virtualnetworkbinding-doesnt-attach-any-pods)).
-- The resolution controller stamps the canonical FQ system label `kube-vnet.system/net.platform.payments=both` on the selected pods. Those pods are then covered by the regular per-`(vnet, namespace)` membership policy in `webapp` named `kube-vnet.platform.payments-<8hex>` — no separate per-binding policy is emitted (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
+- The resolution controller stamps `kube-vnet.system/net.platform.payments=both` on the selected pods. They are covered by the regular membership policy in `webapp`, `kube-vnet.mem.platform.payments-<8hex>` — there is no per-binding policy ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
 ```bash
 # Inspect bindings cluster-wide.
@@ -419,7 +419,7 @@ Step-by-step:
 # 1. Make sure the operator is installed and healthy — ideally installed
 #    with the adoption-friendly preset, so nothing is isolated yet:
 #      --set operator.clusterBaseline.ingressIsolationLevel=cluster
-kubectl get deploy -n kube-vnet-system kube-vnet-controller
+kubectl get deploy -n kube-vnet-system kube-vnet
 kubectl get cvnbl default -o yaml    # confirm the seeded cluster baseline
 
 # 2. Define the vnets your workloads need. Don't label any pods yet.
@@ -460,9 +460,9 @@ metadata:
   namespace: platform
 spec:
   memberships:
-    - virtualNetworkRef: { name: namespace, namespace: kube-vnet-system }
+    - virtualNetworkRef: { name: namespace }   # omit `namespace:` for system vnets
       direction: none      # drop same-namespace blanket reachability
-    - virtualNetworkRef: { name: cluster, namespace: kube-vnet-system }
+    - virtualNetworkRef: { name: cluster }
       direction: egress    # keep outbound (DNS etc.); accept nothing by default
 EOF
 
@@ -554,19 +554,18 @@ And nothing else (the baseline denies the rest of the ingress; egress is unrestr
 
 **Don't apply the `kube-vnet.system/managed-by=kube-vnet` label to your custom policies.** That label is the operator's claim of ownership; if your policy has it, the operator will treat it as drift on its own resource and may overwrite or delete it. User policies should have any other labels you want, just not that one.
 
-If you accidentally pick a name kube-vnet wants to use (e.g. `kube-vnet` itself, or one of the operator-generated `kube-vnet.<vnet>-<hash>` shapes), the operator surfaces a `NameCollision` Degraded condition and refuses to overwrite — see [`troubleshooting.md`](troubleshooting.md). Rename your policy to resolve.
+Don't give your policies names starting with `kube-vnet.`: the operator server-side-applies its own policies with forced field ownership and would take over a same-named object.
 
 ---
 
 ## Per-workload egress allowlist via user-managed NetworkPolicy
 
-kube-vnet does not restrict egress. The operator's baseline is `policyTypes: [Ingress]` only; membership policies grant egress allows to vnet peers but don't restrict generic egress (DNS, the apiserver, the public internet, other namespaces). For workloads where outbound restriction matters, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]`.
+kube-vnet does not restrict egress: the baseline and the membership policies are all `policyTypes: [Ingress]`. For workloads where outbound restriction matters, write a user-managed `NetworkPolicy` with `policyTypes: [Egress]`. Once it selects a pod, that pod's egress is default-deny — including to its vnet peers, so allow those explicitly.
 
 Example: the `payments` deployment needs to reach (a) its vnet peers, (b) DNS via CoreDNS, and (c) Stripe's API. Nothing else.
 
 ```yaml
-# kube-vnet manages the membership / ingress side. Egress to peers is allowed
-# by the membership policy, but kube-vnet does NOT restrict other egress.
+# kube-vnet manages the membership / ingress side only.
 apiVersion: kube-vnet.lhns.de/v1alpha1
 kind: VirtualNetwork
 metadata: { name: payments, namespace: platform }
@@ -586,9 +585,9 @@ spec:
       containers: [{ name: app, image: nginx:alpine }]
 ---
 # USER-MANAGED. Egress allowlist for payments-svc:
+# - its payments vnet peers (kube-vnet's policies don't grant egress).
 # - DNS to CoreDNS in kube-system.
 # - Stripe API (cluster has a deterministic egress IP — example only).
-# Egress to vnet peers is already permitted by the membership policy.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -601,6 +600,13 @@ spec:
       app: payments-svc
   policyTypes: [Egress]
   egress:
+    # vnet peers that accept ingress, in any namespace (selects the
+    # operator-stamped membership label; reading it is fine)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchExpressions:
+              - { key: kube-vnet.system/net.platform.payments, operator: In, values: [both, ingress] }
     # DNS
     - to:
         - namespaceSelector:
@@ -621,7 +627,7 @@ spec:
         - { protocol: TCP, port: 443 }
 ```
 
-Once any policy selects a pod for `policyTypes: [Egress]`, that pod's egress goes default-deny — only allow rules across all selecting policies are permitted. The membership policy contributes its peer allow; your user policy contributes DNS and Stripe; everything else is blocked.
+Once any policy selects a pod for `policyTypes: [Egress]`, that pod's egress goes default-deny — only allow rules across all selecting policies are permitted. Here that is the vnet peers, DNS and Stripe; everything else is blocked.
 
 For threat-model considerations and the broader case for keeping kube-vnet's scope ingress-only, see [`security.md`](../security/security.md) and [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md). Cluster-level egress firewalls (Calico GlobalNetworkPolicy, Cilium FQDN policy, NAT-gateway allowlists, service-mesh egress proxies) are often the right answer for the cluster-boundary case.
 

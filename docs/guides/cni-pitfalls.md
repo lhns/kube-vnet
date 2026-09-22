@@ -4,7 +4,7 @@ If pods that should be isolated can still reach each other, kube-vnet has likely
 
 This page catalogs the misconfigurations and known bugs that cause silent enforcement failures, with how to confirm each.
 
-For the symptom-first index, see [`../troubleshooting.md`](troubleshooting.md). For policy semantics, see [`../concepts.md`](../getting-started/concepts.md).
+For the symptom-first index, see [`troubleshooting.md`](troubleshooting.md). For policy semantics, see [`concepts.md`](../getting-started/concepts.md).
 
 ## Triage flow
 
@@ -16,7 +16,7 @@ For the symptom-first index, see [`../troubleshooting.md`](troubleshooting.md). 
 
    If the expected baseline + membership policies are missing, the issue is the operator (open the [troubleshooting index](troubleshooting.md)). If they're present, continue.
 
-2. **Confirm your CNI claims to enforce NetworkPolicy.** See [`../install.md`](../getting-started/install.md) for compatible CNIs. Quick check on a node:
+2. **Confirm your CNI claims to enforce NetworkPolicy.** See [`install.md`](../getting-started/install.md#cni-that-enforces-networkpolicy) for compatible CNIs. Quick check on a node:
 
    ```bash
    crictl ps | grep -E 'calico-node|cilium|kube-router'
@@ -190,7 +190,7 @@ option, gate the workload on the real condition with an initContainer rather tha
 
 ## Manual isolation probe recipe
 
-If you've checked all of the above and want to confirm a `NetworkPolicy` is actually being enforced:
+If you've checked all of the above and want to confirm a `NetworkPolicy` is actually being enforced. The outsider is expected to be denied only if nothing else grants it same-namespace ingress — i.e. with `ingressIsolationLevel=pod`, or in a namespace whose `VirtualNetworkBaseline` sets the `namespace` and `cluster` vnets to `egress`/`none`:
 
 ```bash
 NS=<your-vnet-home-ns>

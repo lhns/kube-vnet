@@ -9,18 +9,11 @@ standard `NetworkPolicy` resources.
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --version 0.1.0 \
-  --namespace kube-vnet-system \
-  --create-namespace
+  --namespace kube-vnet-system --create-namespace \
+  --set operator.clusterBaseline.ingressIsolationLevel=cluster   # required: pod | namespace | cluster
 ```
 
-To install a specific image tag (e.g. for a pre-release):
-
-```bash
-helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
-  --set image.tag=v0.1.0-rc.1 \
-  --namespace kube-vnet-system --create-namespace
-```
+`operator.clusterBaseline.ingressIsolationLevel` (or an explicit `operator.clusterBaseline.memberships` map) is required; the chart fails without one. To install a specific image tag, add `--set image.tag=<tag>`.
 
 ## Verify the chart and image (cosign keyless)
 
@@ -40,13 +33,14 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 |---|---|---|
 | `webhook.enabled` | `false` | Stamp pod membership during admission (ADR 0034), closing the window in which a starting pod is denied because it is not yet stamped. **The validating half is `failurePolicy: Fail`: an operator outage blocks pod creation in managed namespaces.** Run 2+ replicas. |
 | `webhook.certSource` | `helm` | `helm` (self-signed CA, reused across upgrades via `lookup`) or `cert-manager` |
-| `webhook.certManager.issuerRef` | `{}` | Issuer for `certSource: cert-manager` |
+| `webhook.certManager.issuerRef` | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`; `name` is required in that mode |
 | `webhook.timeoutSeconds` | `5` | Admission timeout. Resolution is served from cache, so a slow reply means the operator is unhealthy |
 | `image.repository` | `ghcr.io/lhns/kube-vnet` | Operator image repository |
 | `image.tag` | `""` (chart appVersion) | Operator image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
-| `replicaCount` | `1` | Operator replicas (scale to 2+ for HA; leader election always on) |
-| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`) |
+| `replicaCount` | `1` | Operator replicas (2+ for HA, and with `webhook.enabled`) |
+| `operator.disabledNamespaces` | `[kube-system]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`). Removing `kube-system` enrolls it; `dnsCarveout` then keeps CoreDNS reachable |
+| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Source CIDR of the auto-allow for Services the apiserver dials (webhooks, APIServices) |
 | `operator.clusterBaseline.create` | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` |
 | `operator.clusterBaseline.ingressIsolationLevel` | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
@@ -60,7 +54,7 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `resources.*` | small defaults | CPU/memory requests and limits |
 | `nodeSelector` / `tolerations` / `affinity` | empty | Standard Pod scheduling overrides |
 
-See [`values.yaml`](./values.yaml) for the full set.
+Full reference: [`docs/reference/configuration.md`](https://github.com/lhns/kube-vnet/blob/main/docs/reference/configuration.md), or [`values.yaml`](./values.yaml).
 
 ## End-user RBAC
 
@@ -72,10 +66,9 @@ A matching viewer ClusterRole (`<release>-clustervirtualnetworkbaselines-viewer`
 
 ## Defining a VirtualNetwork
 
-Once the chart is installed, the `VirtualNetwork` CRD is registered. See the
-project README for usage and runnable examples:
+Once the chart is installed, the `VirtualNetwork` CRD is registered. Walkthrough and runnable examples:
 
-- <https://github.com/lhns/kube-vnet#how-it-works-a-worked-example>
+- <https://github.com/lhns/kube-vnet/blob/main/docs/getting-started/first-vnet.md>
 - <https://github.com/lhns/kube-vnet/tree/main/config/samples>
 
 ## Uninstall
@@ -84,9 +77,12 @@ project README for usage and runnable examples:
 helm uninstall kube-vnet --namespace kube-vnet-system
 ```
 
-The CRD is **not** removed by `helm uninstall` (Helm intentionally preserves
-CRDs to avoid taking down dependent resources). To remove it:
+A pre-delete hook first removes the operator-managed NetworkPolicies
+(`cleanup.enabled`). The four CRDs and the seeded `ClusterVirtualNetworkBaseline`
+carry `helm.sh/resource-policy: keep` and survive uninstall. To remove the CRDs
+(and with them every kube-vnet custom resource):
 
 ```bash
-kubectl delete crd virtualnetworks.kube-vnet.lhns.de
+kubectl delete crd virtualnetworks.kube-vnet.lhns.de virtualnetworkbindings.kube-vnet.lhns.de \
+  virtualnetworkbaselines.kube-vnet.lhns.de clustervirtualnetworkbaselines.kube-vnet.lhns.de
 ```

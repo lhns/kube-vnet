@@ -38,8 +38,8 @@ The values a new user actually needs to know about (everything else has sensible
 | Value | Default | When to set it |
 |---|---|---|
 | `operator.clusterBaseline.ingressIsolationLevel` | *(none — required)* | Always. The isolation decision from step 2. |
-| `operator.disabledNamespaces` | `[kube-system, kube-public, kube-node-lease]` | Add namespaces the operator should never touch. The release namespace is always excluded implicitly. |
-| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Tighten to your control-plane subnet if your pod network is externally reachable. See [auto-allow](../guides/auto-allow.md#apiserver-reachable-services). |
+| `operator.disabledNamespaces` | `[kube-system]` | Add namespaces the operator should never touch. The release namespace is always excluded implicitly. |
+| `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Tighten to your control-plane subnet if your pod network is externally reachable. See [auto-allow](../guides/auto-allow.md#apiserver-reachable-services-extapiserver). |
 | `replicaCount` | `1` | Set `2` for HA (leader election is already on). |
 
 Other install paths (plain `kubectl apply`, kustomize, air-gapped, signature verification): [install.md](install.md).
@@ -139,7 +139,7 @@ kubectl get networkpolicy -n demo
 # kube-vnet.mem.demo.payments-...   ← the membership policy
 ```
 
-The operator also *stamped* the member pods — look at `server`'s labels and you'll see `kube-vnet.system/net.demo.payments: both` next to your own label. Your `kube-vnet/…` label is the **request**; the operator-owned `kube-vnet.system/…` stamp is the **confirmed membership** the policies select on. You can't set system-prefix labels yourself (an admission policy rejects them).
+The operator also *stamped* the member pods — look at `server`'s labels and you'll see `kube-vnet.system/net.demo.payments: both` next to your own label. Your `kube-vnet/…` label is the **request**; the operator-owned `kube-vnet.system/…` stamp is the **confirmed membership** the policies select on. You can't set system-prefix labels yourself (admission rejects them on Kubernetes ≥ 1.30).
 
 ## 6. Prove it with a probe
 
@@ -175,15 +175,15 @@ metadata:
   namespace: demo
 spec:
   memberships:
-    - virtualNetworkRef: { name: namespace, namespace: kube-vnet-system }
+    - virtualNetworkRef: { name: namespace }   # no `namespace:` — see api.md
       direction: none      # opt out of same-namespace reachability
-    - virtualNetworkRef: { name: cluster, namespace: kube-vnet-system }
+    - virtualNetworkRef: { name: cluster }
       direction: egress    # keep outbound (DNS etc.), accept nothing
 EOF
 # rerun the outsider probe → BLOCKED
 ```
 
-(Adjust `namespace: kube-vnet-system` if you installed into a different release namespace.)
+Leave `virtualNetworkRef.namespace` out for the system vnets: the `namespace` vnet lives in each pod's own namespace, not the release namespace ([Referencing a VirtualNetwork](../reference/api.md#referencing-a-virtualnetwork)).
 
 **Heads-up on already-open connections**: NetworkPolicy is enforced when a connection is *established*. If a connection existed before you tightened anything, Linux conntrack keeps it alive. Restart the client pod if a probe surprisingly succeeds — details in [the FAQ](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why).
 
