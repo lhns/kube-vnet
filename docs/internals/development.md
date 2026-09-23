@@ -148,11 +148,11 @@ Three workflows under `.github/workflows/`:
 - `ci.yaml` — runs on pushes to `main` and on PRs:
   - `unit` — `go vet`, `go build`, `go test ./...`, `make generate manifests render-kustomize-vaps` and fail on any diff or untracked file (catches forgot-to-regenerate)
   - `integration` — envtest suite
-  - `helm` — `helm lint` + `helm template` over each isolation preset, a full-options set, and the admission webhook with both cert sources
+  - `helm` — `helm lint --strict`; `helm template` piped through `kubeconform -strict` (kube-vnet CRs against `schemas/`) for each isolation preset, explicit memberships with the optional extras, the webhook with both cert sources, the network wait, `kube-system` enrolled, everything optional off, and Kubernetes 1.29 (no VAPs); and each value combination the chart refuses must fail with the chart's own message
   - `docker` — builds the image (no push) + Trivy image scan (CRITICAL/HIGH gates the build)
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
 - `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
-  - `e2e-kube-router`, `e2e-calico` — install via kustomize (webhook off)
+  - `e2e-kustomize` — install via kustomize (webhook off), a matrix over kube-router and Calico
   - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with the webhook and network wait on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds the `e2e_webhook` tests and a cert-survives-upgrade check
   - `e2e-helm-namespace` — the `namespace` isolation preset
 - `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
