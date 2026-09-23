@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,6 +120,53 @@ func TestBuildExternalAllowPolicy_NodePort_NamedPort_PodPresent(t *testing.T) {
 	}
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
 		t.Errorf("named port resolved to %d, want 8443", got)
+	}
+}
+
+// Backing pods may map one port name to different numbers, e.g. mid-rollout
+// after a containerPort change; the Service routes to each pod's own number,
+// so every one must be allowed, whatever order the pods are listed in.
+func TestBuildExternalAllowPolicy_NamedPort_PodsDisagree_AllowsEach(t *testing.T) {
+	s := svc("api", "api")
+	s.Spec.Ports = []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromString("http")}}
+	pod := func(port int32) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "api"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+			}}},
+		}
+	}
+	for _, pods := range [][]corev1.Pod{
+		{pod(8080), pod(9090), pod(8080)},
+		{pod(9090), pod(8080)},
+	} {
+		pol, err := buildExternalAllowPolicy(s, pods)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		var got []int
+		for _, p := range pol.Spec.Ingress[0].Ports {
+			got = append(got, p.Port.IntValue())
+		}
+		if !slices.Equal(got, []int{8080, 9090}) {
+			t.Errorf("ports = %v, want [8080 9090]", got)
+		}
+	}
+}
+
+func TestBuildExternalAllowPolicy_DuplicateTargetPort_EmittedOnce(t *testing.T) {
+	s := svc("api", "api")
+	s.Spec.Ports = []corev1.ServicePort{
+		{Name: "a", Port: 80, TargetPort: intstr.FromInt32(8080)},
+		{Name: "b", Port: 8080},
+	}
+	pol, err := buildExternalAllowPolicy(s, nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := len(pol.Spec.Ingress[0].Ports); got != 1 {
+		t.Errorf("got %d ports, want 1: %+v", got, pol.Spec.Ingress[0].Ports)
 	}
 }
 
@@ -337,6 +385,30 @@ func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
 				t.Errorf("predicate = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestBackingPodChanged(t *testing.T) {
+	pod := func(labels map[string]string, phase corev1.PodPhase) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: labels},
+			Status:     corev1.PodStatus{Phase: phase},
+		}
+	}
+	old := pod(map[string]string{"app": "a"}, corev1.PodPending)
+	if !backingPodChanged.Create(event.CreateEvent{Object: old}) {
+		t.Error("create should pass")
+	}
+	// A deleted pod may have been the only one resolving a port number.
+	if !backingPodChanged.Delete(event.DeleteEvent{Object: old}) {
+		t.Error("delete should pass")
+	}
+	// A relabel can move the pod into a Service's selector.
+	if !backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "b"}, corev1.PodPending)}) {
+		t.Error("label change should pass")
+	}
+	if backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "a"}, corev1.PodRunning)}) {
+		t.Error("status-only update should not pass")
 	}
 }
 

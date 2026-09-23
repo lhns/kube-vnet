@@ -15,7 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -309,27 +308,19 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 	if sourceCIDR == "" {
 		sourceCIDR = "0.0.0.0/0"
 	}
-	policyPorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
+	var policyPorts []networkingv1.NetworkPolicyPort
 	for _, port := range ports {
-		var targetPort int32
-		sp, ok := findServicePort(svc, port)
-		if ok {
-			tp, err := resolveTargetPort(sp, svc.Spec.Selector, podsInNS)
-			if err != nil {
+		targetPorts := []int32{port}
+		if sp, ok := findServicePort(svc, port); ok {
+			var err error
+			if targetPorts, err = resolveTargetPorts(sp, svc.Spec.Selector, podsInNS); err != nil {
 				return nil, err
 			}
-			targetPort = tp
-		} else {
-			targetPort = port
 		}
-
-		// The apiserver always dials HTTPS over TCP.
-		proto := corev1.ProtocolTCP
-		portVal := intstr.FromInt32(targetPort)
-		policyPorts = append(policyPorts, networkingv1.NetworkPolicyPort{
-			Protocol: &proto,
-			Port:     &portVal,
-		})
+		for _, tp := range targetPorts {
+			// The apiserver always dials HTTPS over TCP.
+			policyPorts = appendPolicyPort(policyPorts, corev1.ProtocolTCP, tp)
+		}
 	}
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{
@@ -426,7 +417,7 @@ func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
-			builder.WithPredicates(podCreateOnly),
+			builder.WithPredicates(backingPodChanged),
 		).
 		Watches(
 			&admissionregistrationv1.ValidatingWebhookConfiguration{},

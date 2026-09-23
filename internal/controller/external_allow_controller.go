@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"maps"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -198,9 +199,9 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 		return nil, nil
 	}
 
-	ports := make([]networkingv1.NetworkPolicyPort, 0, len(svc.Spec.Ports))
+	var ports []networkingv1.NetworkPolicyPort
 	for _, sp := range svc.Spec.Ports {
-		targetPort, err := resolveTargetPort(sp, svc.Spec.Selector, podsInNS)
+		targetPorts, err := resolveTargetPorts(sp, svc.Spec.Selector, podsInNS)
 		if err != nil {
 			return nil, err
 		}
@@ -208,11 +209,9 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 		if proto == "" {
 			proto = corev1.ProtocolTCP
 		}
-		portVal := intstr.FromInt32(targetPort)
-		ports = append(ports, networkingv1.NetworkPolicyPort{
-			Protocol: &proto,
-			Port:     &portVal,
-		})
+		for _, tp := range targetPorts {
+			ports = appendPolicyPort(ports, proto, tp)
+		}
 	}
 
 	return &networkingv1.NetworkPolicy{
@@ -273,44 +272,48 @@ func isExternallyExposed(svc *corev1.Service) bool {
 	return false
 }
 
-// resolveTargetPort returns the numeric pod-side port for a Service port.
-//
-// Three cases:
-//
-//	type=Int, IntVal=0     — TargetPort unset; defaults to Service Port
-//	                         (standard K8s convention).
-//	type=Int               — Use IntVal directly.
-//	type=String            — Named targetPort; look up the container port
-//	                         named StrVal on any backing pod (matching the
-//	                         Service's selector). Returns errNamedPortUnresolvable
-//	                         if no matching pod or no matching named port.
-func resolveTargetPort(sp corev1.ServicePort, selector map[string]string, pods []corev1.Pod) (int32, error) {
-	switch sp.TargetPort.Type {
-	case intstr.Int:
-		if sp.TargetPort.IntVal == 0 {
-			return sp.Port, nil
+// resolveTargetPorts returns the sorted pod-side ports a Service port reaches.
+// An unset targetPort defaults to the Service port. A named targetPort
+// resolves per backing pod, as the endpoints controller does, so pods that
+// map the name to different numbers (mid-rollout) each get theirs; with no
+// backing pod declaring the name it returns errNamedPortUnresolvable.
+func resolveTargetPorts(sp corev1.ServicePort, selector map[string]string, pods []corev1.Pod) ([]int32, error) {
+	tp := sp.TargetPort
+	if tp.Type == intstr.Int && tp.IntVal != 0 {
+		return []int32{tp.IntVal}, nil
+	}
+	if tp.Type != intstr.String || tp.StrVal == "" {
+		return []int32{sp.Port}, nil
+	}
+	var out []int32
+	for _, p := range pods {
+		if !labelsMatchSelector(p.Labels, selector) {
+			continue
 		}
-		return sp.TargetPort.IntVal, nil
-	case intstr.String:
-		name := sp.TargetPort.StrVal
-		if name == "" {
-			return sp.Port, nil
-		}
-		for _, p := range pods {
-			if !labelsMatchSelector(p.Labels, selector) {
-				continue
-			}
-			for _, c := range p.Spec.Containers {
-				for _, cp := range c.Ports {
-					if cp.Name == name {
-						return cp.ContainerPort, nil
-					}
+		for _, c := range p.Spec.Containers {
+			for _, cp := range c.Ports {
+				if cp.Name == tp.StrVal {
+					out = append(out, cp.ContainerPort)
 				}
 			}
 		}
-		return 0, errNamedPortUnresolvable
 	}
-	return sp.Port, nil
+	if len(out) == 0 {
+		return nil, errNamedPortUnresolvable
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
+// appendPolicyPort appends (proto, port) to ports unless already present.
+func appendPolicyPort(ports []networkingv1.NetworkPolicyPort, proto corev1.Protocol, port int32) []networkingv1.NetworkPolicyPort {
+	for _, p := range ports {
+		if *p.Protocol == proto && p.Port.IntVal == port {
+			return ports
+		}
+	}
+	portVal := intstr.FromInt32(port)
+	return append(ports, networkingv1.NetworkPolicyPort{Protocol: &proto, Port: &portVal})
 }
 
 // labelsMatchSelector returns true if `labels` contains every key/value pair
@@ -363,15 +366,16 @@ func externalAllowPolicyPredicate(sourceKind string) predicate.Predicate {
 	})
 }
 
-// podCreateOnly passes pod creates only: a new pod is the only event that can
-// unblock a previously-unresolvable named targetPort. Updates can't add a
-// container port name without recreating the pod, and deletes only remove
-// candidates. Without this watch the pending case recovers only on the 30s
-// requeue.
-var podCreateOnly = predicate.Funcs{
-	CreateFunc:  func(event.CreateEvent) bool { return true },
-	UpdateFunc:  func(event.UpdateEvent) bool { return false },
-	DeleteFunc:  func(event.DeleteEvent) bool { return false },
+// backingPodChanged passes the pod events that can change how a named
+// targetPort resolves: creates, deletes, and label changes (which move a pod
+// into or out of a Service's selector). Container ports are immutable, so no
+// other update matters.
+var backingPodChanged = predicate.Funcs{
+	CreateFunc: func(event.CreateEvent) bool { return true },
+	UpdateFunc: func(e event.UpdateEvent) bool {
+		return !maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels())
+	},
+	DeleteFunc:  func(event.DeleteEvent) bool { return true },
 	GenericFunc: func(event.GenericEvent) bool { return false },
 }
 
@@ -394,7 +398,7 @@ func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
-			builder.WithPredicates(podCreateOnly),
+			builder.WithPredicates(backingPodChanged),
 		).
 		Complete(r)
 }
