@@ -1,13 +1,5 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-> **Amendment (2026-09-11) — the deferred webhook is implemented.** § "Mutating admission webhook for label stamping" deferred it until users needed sub-second guarantees. One did: a migration Job that does not retry failed its first connection because its pod was not yet stamped. [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented, opt-in via `webhook.enabled`. The "~100ms" admission-to-stamp window quoted below was never measured. The field bound for kube-vnet's share is <=1s on kube-router v2.10.0, where a denial shows as an immediate RST rather than a timeout, and it stretches under load, during an operator restart and with a slow apiserver. The CNI adds its own, often larger, delay on top; see ADR 0034.
-
-> **Amendment (2026-07-26) — the resolution controller also watches `VirtualNetwork`.**
->
-> "A new controller watches the four input sources" missed one: every rule references a vnet, and `filterPermittedRules` drops a rule whose vnet doesn't exist. Nothing re-enqueued the pod when the vnet appeared later, and that was terminal, not a race. The pod watch is change-based (`LabelChanged`/`AnnotationChanged`/`GenerationChanged`), so informer resyncs (`old == new`) are filtered, and the VirtualNetworkReconciler's requeue only counts pods that are already stamped. A pod, Binding or Baseline applied before its vnet (ordinary GitOps ordering) left the pod unstamped and isolated by the baseline until it was edited or recreated. In the field, "rolling the pod fixed it" was the only fix.
->
-> `ResolutionReconciler` now watches `VirtualNetwork` and fans out to the pods in the namespaces the vnet admits. [ADR 0044](0044-trigger-sets-must-cover-read-sets.md) generalises this ("a reconciler's trigger set must cover its read set") and replaced this amendment's original per-source fan-out. The watch carries `GenerationChangedPredicate`: the CRD has a status subresource, so generation tracks spec only, and without the predicate every membership status write would fan out to pods and recreate the reconcile loop removed in `75c14a6`.
-
 Status: Accepted. Later changes:
 
 - Resolution lattice: partially superseded by [ADR 0031](0031-baseline-tier-resolution.md). The conflict surfaces named below (binding `Conflicts` condition, `kube-vnet.system/conflict.<vnet>` annotation, `kube_vnet_resolution_conflicts_total` metric) were never built; conflicts are reported as pod Warning Events instead (ADR 0031's 2026-09-23 amendment).
@@ -15,7 +7,7 @@ Status: Accepted. Later changes:
 - `--elide-baseline-for`: removed by [ADR 0035](0035-removal-of-elide-baseline-for.md); it had no observable effect on connectivity.
 - Operator-owned label keys (`kube-vnet/managed-by`, `kube-vnet/network`, `kube-vnet/role`, `kube-vnet/system`): moved under `kube-vnet.system/` by [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md).
 - Policy names: kind-prefixed by [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) (`kube-vnet.base`, `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`).
-- Mutating admission webhook: deferred here, implemented as opt-in by [ADR 0034](0034-admission-webhook-for-pod-resolution.md).
+- Mutating admission webhook: deferred here, implemented as opt-in by [ADR 0034](0034-admission-webhook-for-pod-resolution.md) (2026-09-11 amendment).
 - Resolution controller trigger set: completed by the 2026-07-26 amendment and [ADR 0044](0044-trigger-sets-must-cover-read-sets.md).
 - System-vnet VAP: guards `CREATE`/`UPDATE` only. `DELETE` is unguarded so namespace teardown can cascade-delete the per-namespace `namespace` vnet (guarding it left namespaces stuck in `Terminating`); user deletes are recovered by the `SystemVnetReconciler`.
 
@@ -26,6 +18,10 @@ Implementation rolled out across commits `66c8688` (ADR draft), `3481b8c` (direc
 The deprecated `--ingress-isolation*` flags and the `IsolationMode` enum remain in the codebase as vestigial input that no longer drives behaviour (the baseline is unconditionally deny-all + elide-list); their full removal is a follow-up cleanup pass and does not block this ADR's acceptance.
 
 Supersedes: [ADR 0023](0023-decoupled-disabled-and-ingress-isolation.md), [ADR 0024](0024-ingress-isolation-mode-and-overrides.md), [ADR 0029](0029-allow-all-baseline-and-system-ns-disabled.md). Partially supersedes [ADR 0006](0006-baseline-default-deny-and-single-opt-out.md) (baseline shapes).
+
+> **Amendment (2026-09-11) — the deferred webhook is implemented.** § "Mutating admission webhook for label stamping" deferred it until users needed sub-second guarantees. One did: a migration Job that does not retry failed its first connection because its pod was not yet stamped. [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is now implemented, opt-in via `webhook.enabled`. The "~100ms" admission-to-stamp window quoted below was never measured. The field bound for kube-vnet's share is <=1s, longer under load, during an operator restart or with a slow apiserver, and the CNI adds its own, often larger, delay on top (see ADR 0034).
+
+> **Amendment (2026-07-26) — the resolution controller also watches `VirtualNetwork`.** "A new controller watches the four input sources" missed one: `filterPermittedRules` drops a rule whose vnet doesn't exist, and nothing re-enqueued the pod when the vnet appeared later. The pod watch is change-based, so informer resyncs are filtered, and the VirtualNetworkReconciler's requeue only counts pods that are already stamped. A pod, Binding or Baseline applied before its vnet (ordinary GitOps ordering) therefore left the pod unstamped and isolated by the baseline until it was edited or recreated. `ResolutionReconciler` now watches `VirtualNetwork` and fans out to the pods in the namespaces the vnet admits; [ADR 0044](0044-trigger-sets-must-cover-read-sets.md) generalises the rule. The watch carries `GenerationChangedPredicate` (generation tracks spec only, since the CRD has a status subresource), so membership status writes don't fan out to pods and recreate the reconcile loop removed in `75c14a6`.
 
 ## Context
 

@@ -1,12 +1,8 @@
 # 0011 — Policy naming and truncation
 
-> **Amendment (2026-07-26) — truncate-and-hash also applies to operator-owned label *values*.**
->
-> The `kube-vnet.system/source` value was built by concatenation (`"svc-" + name`, `"apiserver-" + name`) and never bounded, though label values cap at 63 characters. A Service name over 59 characters (53 behind `apiserver-`) made the server-side apply fail with `metadata.labels: Invalid value`, retried forever, so the policy never appeared. Seen with a 61-character Helm-prefixed OpenTelemetry webhook Service. `SourceLabelValue(prefix, namespace, name)` now applies this ADR's rule at 63 characters, reusing `policyHash`. Values that already fit are unchanged, so nothing is rewritten on upgrade. Every write and every List selector must go through the helper.
->
-> A truncated value can't be parsed back into a Service name: the old `…PolicyToService` map functions would silently enqueue a Service that doesn't exist and stop drift correction. They were replaced by `handler.EnqueueRequestForOwner`, since every such policy has its Service as controller owner. `ExternalAllowReconciler` and `ApiserverReachableReconciler` emit policies with the same owner and role, so the `source-kind` filter moved into the watch predicates (`externalAllowPolicyPredicate`, `apiserverPolPredicate`). HostPort policies have no Service owner and are unaffected.
-
 Status: Accepted. Refined by [ADR 0033](0033-canonical-fq-system-labels.md) and [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md): the `kube-vnet-<vnet>-<ns>` format below is obsolete; names are now kind-prefixed with a hash (`kube-vnet.base`, `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`, `kube-vnet.ext.{svc,host,apiserver}.…-<8hex>`). The truncate-and-hash rule survives unchanged.
+
+> **Amendment (2026-07-26) — truncate-and-hash also bounds operator-owned label values.** The `kube-vnet.system/source` value (`"svc-" + name`, `"apiserver-" + name`) was unbounded. A Service name over 59 characters (53 behind `apiserver-`) broke the 63-character label-value limit, so the apply failed and retried forever and the policy never appeared (seen with a 61-character Helm-prefixed Service). `SourceLabelValue(prefix, namespace, name)` now applies this ADR's rule at 63 characters, reusing `policyHash`; values that already fit are unchanged. Every write and List selector goes through it. A truncated value can't be parsed back into a Service name, so the Service-source policy watches map to their Service with `handler.EnqueueRequestForOwner` instead, and filter by source kind in `externalAllowPolicyPredicate`. HostPort policies have no Service owner and are unaffected.
 
 ## Context
 

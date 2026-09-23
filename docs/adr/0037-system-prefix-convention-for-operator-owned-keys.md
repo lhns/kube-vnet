@@ -1,12 +1,12 @@
 # 0037 — `kube-vnet.system/` prefix convention for operator-owned keys
 
-> **Amendment (2026-09-11, corrected 2026-09-23) — with the admission webhook enabled, pods it admits are protected by a validating webhook instead of this VAP.** A mutating webhook's patch is attributed to the requester, so the VAP's username exemption can't cover admission-time stamping and every pod creation in a managed namespace would be denied ([ADR 0034](0034-admission-webhook-for-pod-resolution.md)). With `webhook.enabled=true` the chart narrows the pods rule of `system-labels-vap.yaml` with a `matchCondition` to the pods the webhooks skip (the excluded namespaces, and pods labelled with the chart's `app.kubernetes.io/name`); the `networkpolicies` and `virtualnetworks` rules are unchanged. The validating webhook requires a pod's `kube-vnet.system/*` labels to equal what resolution produces, which subsumes "users may not set them". The trade: the VAP holds even while the operator is down, whereas the webhook runs `failurePolicy: Fail`, so an operator outage blocks pod creation in managed namespaces. With `webhook.enabled=false` (the default) nothing changes.
-
 Status: Accepted
 
 Date: 2026-06-25
 
 Refines / generalizes: [ADR 0030](0030-unified-vnet-membership-with-resolution.md) (introduced `kube-vnet.system/` for stamped pod labels). Renames the cleanup label from [ADR 0010](0010-cross-namespace-cleanup-via-network-label.md).
+
+> **Amendment (2026-09-11, corrected 2026-09-23) — with the admission webhook enabled, the pods it admits are protected by a validating webhook instead of this VAP.** A mutating webhook's patch is attributed to the requester, so the VAP's username exemption can't cover admission-time stamping and every pod creation in a managed namespace would be denied ([ADR 0034](0034-admission-webhook-for-pod-resolution.md)). With `webhook.enabled=true` the chart narrows the pods rule of `system-labels-vap.yaml` with a `matchCondition` to what the webhooks skip: the excluded namespaces, pods labelled with the chart's `app.kubernetes.io/name`, and `pods/status` everywhere. The `networkpolicies` and `virtualnetworks` rules are unchanged. The validating webhook requires every `kube-vnet.system/*` label a request touches to match resolution, which subsumes "users may not set them". The trade: the VAP holds while the operator is down, whereas the webhook runs `failurePolicy: Fail`, so an operator outage blocks pod creation in managed namespaces. With `webhook.enabled=false` (the default) nothing changes.
 
 ## Context
 
