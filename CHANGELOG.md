@@ -70,12 +70,23 @@ release. Pinning to an exact version is recommended.
   when a pod enters or leaves its selector, instead of on every pod create,
   delete or relabel in the namespace. The operator's own membership stamp no
   longer re-runs them. Emitted policies are unchanged.
+- **No write when a policy is already up to date.** Every `NetworkPolicy`
+  apply now compares with the live policy first and skips the server-side
+  apply if nothing the operator sets differs, so steady-state reconciles no
+  longer send a patch per policy. Edited policies are still restored.
 - Built against controller-runtime v0.25.0 (was v0.24.1) and the Kubernetes
   v0.37 client libraries (was v0.36), with Go 1.27 (was 1.26). No behaviour
   change is expected.
 
 ### Fixed
 
+- **A membership policy that failed to apply in one namespace no longer
+  blocks the others.** The `VirtualNetwork` reconciler stopped at the first
+  failed apply (a quota, admission webhook or RBAC rejection), so every
+  namespace sorting after it got no policy, and the stale-policy sweep was
+  skipped, until the retry. It now applies every namespace, reports each
+  failure (`ApplyFailed` Event, `Ready=False`), sweeps stale policies outside
+  the failed namespaces, and retries.
 - **Two status conditions reported problems that did not exist.**
   - A `VirtualNetworkBinding` that omits `virtualNetworkRef.namespace` — the
     recommended form — reported `Ready=False, VirtualNetworkNotFound` while its

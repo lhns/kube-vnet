@@ -49,13 +49,11 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Disabled namespaces get no baseline: sweep any leftover.
 	if !r.NSFilter.IsManaged(ns) {
-		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, nil)
+		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, nil, nil)
 	}
 
 	desired := DesiredBaseline(ns.Name)
-	desired.SetResourceVersion("")
-	if err := r.Patch(ctx, desired, client.Apply,
-		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	if _, err := applyPolicy(ctx, r.Client, r.Client, desired); err != nil {
 		logger.Error(err, "apply baseline failed")
 		applyErrors.WithLabelValues(ApplyErrorBaseline).Inc()
 		return ctrl.Result{}, err
@@ -64,7 +62,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Sweep baseline-labelled policies under any other name (e.g. from an
 	// older naming scheme).
 	keep := map[client.ObjectKey]bool{client.ObjectKeyFromObject(desired): true}
-	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, keep)
+	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, keep, nil)
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {

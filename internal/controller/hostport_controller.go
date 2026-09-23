@@ -74,7 +74,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Opt-out is Namespace-wide only: the policies are per namespace, not
 	// per pod.
 	if !r.NSFilter.IsManaged(ns) || ExternalAllowOptedOut(ns.Annotations) {
-		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, nil)
+		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, nil, nil)
 	}
 
 	var pods corev1.PodList
@@ -85,14 +85,13 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	keep := map[client.ObjectKey]bool{}
 	for key := range desiredHostPortKeys(pods.Items) {
 		pol := buildHostPortPolicy(ns.Name, key)
-		if err := r.Patch(ctx, pol, client.Apply,
-			client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+		if _, err := applyPolicy(ctx, r.Client, r.Client, pol); err != nil {
 			return ctrl.Result{}, fmt.Errorf("apply host-port policy %s: %w", key, err)
 		}
 		keep[client.ObjectKeyFromObject(pol)] = true
 	}
 	// Sweep the policies of (port, protocol) pairs no longer declared.
-	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, keep)
+	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, keep, nil)
 }
 
 // desiredHostPortKeys returns the set of distinct (port, protocol) tuples

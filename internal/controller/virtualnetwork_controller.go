@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -99,13 +100,13 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
 			clearMembers(req.Namespace, req.Name)
-			return ctrl.Result{}, r.deleteMembershipPolicies(ctx, req.Namespace, req.Name, nil)
+			return ctrl.Result{}, r.deleteMembershipPolicies(ctx, req.Namespace, req.Name, nil, nil)
 		}
 		return ctrl.Result{}, err
 	}
 	if !vnet.DeletionTimestamp.IsZero() {
 		clearMembers(vnet.Namespace, vnet.Name)
-		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
+		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil, nil)
 	}
 
 	// Snapshot the stored status for transition events and for updateStatus's
@@ -145,7 +146,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		setMembers(vnet.Namespace, vnet.Name, 0)
 		// Remove policies from earlier reconciles; a failure must retry, or
 		// the stale grants stay.
-		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
+		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil, nil)
 	}
 
 	members, invalid, err := r.discoverMembers(ctx, vnet)
@@ -160,29 +161,34 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	desiredKeys := make(map[client.ObjectKey]bool, len(out.Policies))
 	policyRefs := make([]vnetv1alpha1.PolicyRef, 0, len(out.Policies))
+	// A failed apply doesn't stop the loop: one namespace's quota, webhook or
+	// RBAC failure must not leave every later namespace without its policy
+	// until the retry. The errors are joined and returned after the rest.
+	var applyErrs []error
+	failedNS := map[string]bool{}
 	for i := range out.Policies {
 		p := &out.Policies[i]
 		desiredKeys[client.ObjectKeyFromObject(p)] = true
 		// Don't apply into a terminating namespace: NamespaceLifecycle
 		// admission rejects the create once the namespace controller has
-		// deleted the policy, and one failed apply aborts this loop for every
-		// later namespace. Its pods still count as members until they are
+		// deleted the policy. Its pods still count as members until they are
 		// gone. The key stays desired so the sweep leaves the namespace alone.
-		if terminating, err := r.namespaceTerminating(ctx, p.Namespace); err != nil {
-			return ctrl.Result{}, err
-		} else if terminating {
+		terminating, err := r.namespaceTerminating(ctx, p.Namespace)
+		if err == nil && terminating {
 			continue
 		}
-		restored, err := r.applyPolicyAndDetectRestore(ctx, p)
+		restored := false
+		if err == nil {
+			restored, err = r.applyPolicyAndDetectRestore(ctx, p)
+		}
 		if err != nil {
+			err = fmt.Errorf("apply %s/%s: %w", p.Namespace, p.Name, err)
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
 			applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Inc()
-			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventApplyFailed, "Apply",
-				"apply %s/%s: %v", p.Namespace, p.Name, err)
-			setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, err.Error())
-			_ = r.updateStatus(ctx, vnet, members, policyRefs, storedStatus)
-			r.emitTransitionEvents(vnet, priorReady, priorDegraded)
-			return ctrl.Result{}, err
+			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventApplyFailed, "Apply", "%v", err)
+			applyErrs = append(applyErrs, err)
+			failedNS[p.Namespace] = true
+			continue
 		}
 		if restored {
 			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
@@ -191,8 +197,13 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
 
-	if err := r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, desiredKeys); err != nil {
-		return ctrl.Result{}, err
+	// The sweep runs even after a failed apply: a stale policy grants access
+	// the vnet no longer allows. Desired keys are never swept, applied or not,
+	// and namespaces with a failed apply are spared entirely, so a policy
+	// under an older name stays until its replacement exists.
+	sweepErr := r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, desiredKeys, failedNS)
+	if sweepErr != nil && len(applyErrs) == 0 {
+		return ctrl.Result{}, sweepErr
 	}
 
 	if len(invalid) > 0 {
@@ -203,16 +214,22 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	} else {
 		setDegraded(vnet, metav1.ConditionFalse, ReasonNoIssues, "")
 	}
-	if len(out.Policies) == 0 {
+	switch {
+	case len(applyErrs) > 0:
+		setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed,
+			fmt.Sprintf("%d of %s failed to apply: %s", len(applyErrs),
+				pluralize(len(out.Policies), "1 NetworkPolicy", "%d NetworkPolicies"),
+				joinErrorMessages(applyErrs)))
+	case len(out.Policies) == 0:
 		setReady(vnet, metav1.ConditionTrue, ReasonNoMembers, "no pods are joining this VirtualNetwork")
-	} else {
+	default:
 		setReady(vnet, metav1.ConditionTrue, ReasonPoliciesGenerated,
 			fmt.Sprintf("%s in %s",
 				pluralize(len(out.Policies), "1 NetworkPolicy", "%d NetworkPolicies"),
 				pluralize(len(members), "1 namespace", "%d namespaces")))
 	}
 
-	if err := r.updateStatus(ctx, vnet, members, policyRefs, storedStatus); err != nil {
+	if err := r.updateStatus(ctx, vnet, members, policyRefs, storedStatus); err != nil && len(applyErrs) == 0 {
 		return ctrl.Result{}, err
 	}
 	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
@@ -223,7 +240,19 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	setMembers(vnet.Namespace, vnet.Name, totalMembers)
 
+	if len(applyErrs) > 0 {
+		return ctrl.Result{}, errors.Join(append(applyErrs, sweepErr)...)
+	}
 	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
+}
+
+// joinErrorMessages joins errs into one line for a condition message.
+func joinErrorMessages(errs []error) string {
+	msgs := make([]string, len(errs))
+	for i, err := range errs {
+		msgs[i] = err.Error()
+	}
+	return strings.Join(msgs, "; ")
 }
 
 // getNamespace fetches a Namespace via the cached client. Returns (nil, nil) if not found.
@@ -348,16 +377,11 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 	return members, invalid, nil
 }
 
-// applyPolicy server-side-applies a NetworkPolicy with the operator's field manager.
-func (r *VirtualNetworkReconciler) applyPolicy(ctx context.Context, p *networkingv1.NetworkPolicy) error {
-	p.SetResourceVersion("")
-	return r.Patch(ctx, p, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
-}
-
-// applyPolicyAndDetectRestore server-side-applies a policy and reports whether
-// it was absent just before, so the caller can emit PolicyRestored (drift
-// correction is otherwise silent, ADR 0019). The check uses the uncached
-// APIReader so a stale cache can't hide a real deletion.
+// applyPolicyAndDetectRestore applies a policy (skipping the write if it is
+// already up to date) and reports whether it was absent just before, so the
+// caller can emit PolicyRestored (drift correction is otherwise silent, ADR
+// 0019). The live read uses the uncached APIReader so a stale cache can't
+// hide a real deletion.
 func (r *VirtualNetworkReconciler) applyPolicyAndDetectRestore(
 	ctx context.Context, p *networkingv1.NetworkPolicy,
 ) (restored bool, err error) {
@@ -365,28 +389,24 @@ func (r *VirtualNetworkReconciler) applyPolicyAndDetectRestore(
 	if r.APIReader != nil {
 		reader = r.APIReader
 	}
-	pre := &networkingv1.NetworkPolicy{}
-	getErr := reader.Get(ctx, client.ObjectKey{Namespace: p.Namespace, Name: p.Name}, pre)
-	wasAbsent := apierrors.IsNotFound(getErr)
-	if getErr != nil && !wasAbsent {
-		return false, getErr
-	}
-	if err := r.applyPolicy(ctx, p); err != nil {
-		return false, err
-	}
-	return wasAbsent, nil
+	return applyPolicy(ctx, r.Client, reader, p)
 }
 
 // deleteMembershipPolicies deletes the vnet's membership policies, in every
-// namespace, except those in keep (nil deletes all). The baseline belongs to
-// NamespaceReconciler and is never touched here.
+// namespace, except those in keep (nil deletes all) and those in the
+// namespaces of spareNS. The baseline belongs to NamespaceReconciler and is
+// never touched here.
 func (r *VirtualNetworkReconciler) deleteMembershipPolicies(
-	ctx context.Context, homeNS, name string, keep map[client.ObjectKey]bool,
+	ctx context.Context, homeNS, name string, keep map[client.ObjectKey]bool, spareNS map[string]bool,
 ) error {
+	var skip func(*networkingv1.NetworkPolicy) bool
+	if len(spareNS) > 0 {
+		skip = func(p *networkingv1.NetworkPolicy) bool { return spareNS[p.Namespace] }
+	}
 	return sweepStalePolicies(ctx, r.Client, []client.ListOption{client.MatchingLabels{
 		LabelManagedBy: LabelManagedByValue,
 		LabelNetwork:   homeNS + "." + name,
-	}}, keep)
+	}}, keep, skip)
 }
 
 // uniquePods flattens a direction → pods map into a sorted, deduplicated list.
