@@ -2,7 +2,7 @@
 
 Full field-level reference for all four kube-vnet CRDs, in this order:
 
-1. [`VirtualNetwork`](#group--version--kind) — a named network
+1. [`VirtualNetwork`](#virtualnetwork) — a named network
 2. [`VirtualNetworkBinding`](#virtualnetworkbinding) — no-label pod attachment
 3. [`VirtualNetworkBaseline`](#virtualnetworkbaseline) — namespace-tier defaults
 4. [`ClusterVirtualNetworkBaseline`](#clustervirtualnetworkbaseline) — cluster-tier defaults
@@ -307,7 +307,7 @@ The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permi
 
 | Status | Reason | Meaning |
 |---|---|---|
-| True | `PodsAttached` | The selector matched at least one pod and the binding is producing the corresponding membership policy. `attachedPods` lists the pod names. |
+| True | `PodsAttached` | The selector matched at least one pod; those pods are stamped as members. `attachedPods` lists the pod names. |
 | True | `NoPodsMatch` | The binding is accepted, but the selector currently matches zero pods in the binding's namespace. |
 | False | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. |
 | False | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
@@ -338,7 +338,7 @@ The binding controller writes only the binding's status.
 | Create | Binding controller validates spec, computes the matching pod set, sets `Ready` accordingly, writes status. The resolution controller re-resolves the selected pods and stamps them. |
 | Pod added/removed in binding's namespace | Binding's controller refreshes `attachedPods`. The resolution controller adjusts each pod's stamped system labels; the regular membership policy reflects the new peer set on next vnet reconcile. |
 | Spec edit | Same as create. |
-| Delete | The resolution controller un-stamps the binding's contribution from each affected pod. The vnet's `deleteMembershipPolicies` step removes any policy no longer in the desired set. |
+| Delete | The resolution controller un-stamps the binding's contribution from each affected pod. The vnet's next reconcile deletes any membership policy no longer needed. |
 
 ## Compatibility
 
@@ -438,7 +438,7 @@ spec:
       direction: default-egress
 ```
 
-(The example above is exactly what `ingressIsolationLevel: namespace` seeds; see [the configuration reference](configuration.md) for all three presets.)
+(The example above is exactly what `ingressIsolationLevel: namespace` seeds; see [the configuration reference](configuration.md#operator) for all three presets.)
 
 ## spec
 
