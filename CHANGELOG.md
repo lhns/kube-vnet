@@ -102,6 +102,18 @@ release. Pinning to an exact version is recommended.
   controller does; ordinary init containers still don't count. A `hostPort` on
   a sidecar still gets no allow: the kubelet never forwards it.
 
+- **Deleting a member namespace stalled the VirtualNetwork.** The namespace
+  controller removes a terminating namespace's NetworkPolicies while its pods
+  are still shutting down; the operator then tried to recreate the membership
+  policy, which Kubernetes refuses in a terminating namespace. Each failure
+  aborted the reconcile, so until the namespace was gone the vnet was
+  `Ready=False` (`ApplyFailed`), emitted an `ApplyFailed` Warning on every
+  backoff retry, and applied no policy in any namespace sorting after the
+  terminating one: new members there were left behind the deny-all baseline.
+  Membership policies now skip terminating namespaces, as the other
+  reconcilers already did. Their pods still count as members until they are
+  gone.
+
 ### Security
 
 - **`kube-vnet.system/*` stamps could be written through `pods/status`.** A

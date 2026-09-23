@@ -163,6 +163,16 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	for i := range out.Policies {
 		p := &out.Policies[i]
 		desiredKeys[client.ObjectKeyFromObject(p)] = true
+		// Don't apply into a terminating namespace: NamespaceLifecycle
+		// admission rejects the create once the namespace controller has
+		// deleted the policy, and one failed apply aborts this loop for every
+		// later namespace. Its pods still count as members until they are
+		// gone. The key stays desired so the sweep leaves the namespace alone.
+		if terminating, err := r.namespaceTerminating(ctx, p.Namespace); err != nil {
+			return ctrl.Result{}, err
+		} else if terminating {
+			continue
+		}
 		restored, err := r.applyPolicyAndDetectRestore(ctx, p)
 		if err != nil {
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
@@ -226,6 +236,15 @@ func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string
 		return nil, err
 	}
 	return ns, nil
+}
+
+// namespaceTerminating reports whether namespace name is being deleted.
+func (r *VirtualNetworkReconciler) namespaceTerminating(ctx context.Context, name string) (bool, error) {
+	ns, err := r.getNamespace(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return ns != nil && ns.DeletionTimestamp != nil, nil
 }
 
 // discoverMembers lists pods cluster-wide and partitions them into the
