@@ -28,15 +28,16 @@ type BaselineMembership struct {
 // default-* values may.
 type ClusterVirtualNetworkBaselineSpec struct {
 	// Memberships every pod inherits from this cluster baseline. Order is
-	// not significant; duplicate vnetRefs surface as a Conflicts condition.
+	// not significant; duplicate vnetRefs resolve to the intersection of
+	// their directions.
 	// +listType=atomic
 	Memberships []BaselineMembership `json:"memberships,omitempty"`
 }
 
 // ClusterVirtualNetworkBaselineStatus is the observed state.
 type ClusterVirtualNetworkBaselineStatus struct {
-	// Conditions follow the standard Kubernetes condition pattern.
-	// Known types: Ready, Conflicts.
+	// Conditions follow the standard Kubernetes condition pattern. The
+	// operator does not set any on baselines yet.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge

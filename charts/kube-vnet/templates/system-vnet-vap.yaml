@@ -44,9 +44,7 @@ drift-correction is the fallback.
 
 See ADR 0030.
 */}}
-{{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
-{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
-{{- if or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30)) }}
+{{- if include "kube-vnet.vapSupported" . }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
@@ -63,9 +61,7 @@ spec:
         resources:   ["virtualnetworks"]
   variables:
     - name: operatorUser
-      expression: {{ printf "\"system:serviceaccount:%s:%s\""
-        (.Release.Namespace)
-        (include "kube-vnet.serviceAccountName" .) | quote }}
+      expression: {{ include "kube-vnet.operatorUsername" . | printf "%q" | quote }}
     # Whether the affected object carries kube-vnet.system/managed-by=kube-vnet.
     # On CREATE only `object` is populated; on UPDATE both `object` (new) and
     # `oldObject` (old) are — we OR them so the guard catches a vnet that

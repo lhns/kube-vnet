@@ -12,10 +12,7 @@ older clusters this template renders nothing; the operator's vnet-status
 
 See ADR 0027 and ADR 0030.
 */}}
-{{- /* VAP is GA in admissionregistration.k8s.io/v1 since Kubernetes 1.30. */ -}}
-{{- $kubeMajor := int .Capabilities.KubeVersion.Major -}}
-{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") -}}
-{{- if or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30)) }}
+{{- if include "kube-vnet.vapSupported" . }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:

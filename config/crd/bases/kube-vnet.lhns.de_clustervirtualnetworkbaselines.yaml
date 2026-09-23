@@ -61,7 +61,8 @@ spec:
               memberships:
                 description: |-
                   Memberships every pod inherits from this cluster baseline. Order is
-                  not significant; duplicate vnetRefs surface as a Conflicts condition.
+                  not significant; duplicate vnetRefs resolve to the intersection of
+                  their directions.
                 items:
                   description: |-
                     BaselineMembership is one (vnet, direction) entry inside a baseline's
@@ -128,8 +129,8 @@ spec:
             properties:
               conditions:
                 description: |-
-                  Conditions follow the standard Kubernetes condition pattern.
-                  Known types: Ready, Conflicts.
+                  Conditions follow the standard Kubernetes condition pattern. The
+                  operator does not set any on baselines yet.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

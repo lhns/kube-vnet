@@ -1,10 +1,8 @@
 kube-vnet is installed.
 
-{{- $kubeMajor := int .Capabilities.KubeVersion.Major }}
-{{- $kubeMinor := int (regexReplaceAll "[^0-9]" .Capabilities.KubeVersion.Minor "") }}
-{{- if not (or (gt $kubeMajor 1) (and (eq $kubeMajor 1) (ge $kubeMinor 30))) }}
+{{- if not (include "kube-vnet.vapSupported" .) }}
 
-WARNING: this cluster is Kubernetes {{ $kubeMajor }}.{{ $kubeMinor }}, older than 1.30, so the three
+WARNING: this cluster is Kubernetes {{ .Capabilities.KubeVersion.Version }}, older than 1.30, so the three
 ValidatingAdmissionPolicies kube-vnet ships were NOT installed. They are the
 admission-time boundary that protects:
 
@@ -33,7 +31,7 @@ On `helm uninstall`, a pre-delete hook removes operator-managed
 NetworkPolicies (`-l kube-vnet.system/managed-by=kube-vnet`) before tearing down
 the controller — without it, the deny-all baselines would keep enforcing
 after the operator is gone. CRDs and CRs (with `helm.sh/resource-policy:
-keep`) survive uninstall as before. To skip the hook (e.g. for a controlled
+keep`) survive uninstall. To skip the hook (e.g. for a controlled
 migration where you want to preserve the existing policy set):
 
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }} --no-hooks

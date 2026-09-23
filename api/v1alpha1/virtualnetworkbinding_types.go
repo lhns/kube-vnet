@@ -64,7 +64,7 @@ type VirtualNetworkBindingSpec struct {
 // VirtualNetworkBindingStatus is the observed state.
 type VirtualNetworkBindingStatus struct {
 	// Conditions follow the standard Kubernetes condition pattern.
-	// Known types: Ready, Degraded.
+	// Known types: Ready.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge

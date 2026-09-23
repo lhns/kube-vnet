@@ -17,13 +17,8 @@ type VirtualNetworkBaselineSpec struct {
 
 // VirtualNetworkBaselineStatus is the observed state.
 type VirtualNetworkBaselineStatus struct {
-	// Conditions follow the standard Kubernetes condition pattern.
-	// Known types: Ready, Conflicts, OverrideRejected.
-	//
-	// OverrideRejected fires when this baseline tries to override a vnet
-	// that the cluster baseline pinned with a bare (non-default-*) direction;
-	// the cluster value remains in effect and this baseline's entry is
-	// ignored for that vnet. The condition message names the affected vnet.
+	// Conditions follow the standard Kubernetes condition pattern. The
+	// operator does not set any on baselines yet.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge

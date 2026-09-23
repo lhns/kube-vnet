@@ -1,33 +1,16 @@
 {{- /*
-Pre-delete hook bundle (ADR 0036).
+Pre-delete hook (ADR 0036): a one-shot Job plus minimal RBAC that deletes
+every operator-generated NetworkPolicy before Helm tears the release down.
+Those policies are created at runtime, not rendered by the chart, so
+`helm uninstall` alone would leave the deny-all baselines enforcing with no
+controller left to maintain them.
 
-`helm uninstall` does NOT remove operator-generated NetworkPolicies — they
-were created at runtime by the operator, not rendered by the chart. Without
-this hook the deny-all baselines and per-vnet membership policies survive
-uninstall and keep enforcing, leaving the cluster in a stuck deny-all state
-with no controller to recover from any state change.
-
-This template ships a one-shot Job + minimal RBAC bundle, all tagged
-`helm.sh/hook: pre-delete`. The Job runs `kubectl delete networkpolicy -A
---selector kube-vnet.system/managed-by=kube-vnet` before Helm tears down the
-release's chart-managed resources. After it succeeds, Helm proceeds with
-the normal uninstall and the cluster collapses back to Kubernetes
-default-allow.
-
-CRDs, CR instances, and the system-vnet CRs are intentionally NOT touched —
-they have `helm.sh/resource-policy: keep` (CRDs, ClusterVirtualNetworkBaseline)
-or are runtime-managed (system vnets) and survive uninstall by design so a
-subsequent `helm install` lands cleanly.
-
-Toggle via `cleanup.enabled` (default true). Disable only for a controlled
-migration where you need to preserve the policy set across a brief operator
-outage — and clean up manually afterwards:
-
-    kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
-
-See ADR 0036 for the full rationale.
+CRDs, CRs and the system vnets are left alone: they carry
+`helm.sh/resource-policy: keep` or are runtime-managed, so a later
+`helm install` lands cleanly.
 */ -}}
 {{- if .Values.cleanup.enabled }}
+{{- $image := printf "%s:%s" .Values.cleanup.image.repository .Values.cleanup.image.tag | quote }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -68,6 +51,13 @@ rules:
   - apiGroups: [""]
     resources: [pods]
     verbs: [get, list, watch]
+  {{- if .Values.webhook.enabled }}
+  # Used by remove-webhooks, before the operator that serves them stops.
+  - apiGroups: [admissionregistration.k8s.io]
+    resources: [mutatingwebhookconfigurations, validatingwebhookconfigurations]
+    resourceNames: [{{ include "kube-vnet.fullname" . }}-pod-resolution]
+    verbs: [get, delete]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -126,8 +116,28 @@ spec:
       #    is async; pods are cascade-deleted by the controller manager).
       # 3. Now delete the policies. Nothing left to race with.
       initContainers:
+        {{- if .Values.webhook.enabled }}
+        {{- /*
+        The admission webhook configurations go first: the validating one is
+        failurePolicy: Fail, and Helm deletes it only after this hook, so once
+        stop-operator runs every pod write in a managed namespace would be
+        rejected until the uninstall ends (or for good, if it fails).
+        */}}
+        - name: remove-webhooks
+          image: {{ $image }}
+          imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
+          command: [kubectl]
+          args:
+            - delete
+            - mutatingwebhookconfiguration,validatingwebhookconfiguration
+            - {{ include "kube-vnet.fullname" . }}-pod-resolution
+            - --ignore-not-found
+            - --wait=false
+          securityContext:
+            {{- include "kube-vnet.cleanupSecurityContext" . | nindent 12 }}
+        {{- end }}
         - name: stop-operator
-          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          image: {{ $image }}
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
           command: [kubectl]
           args:
@@ -140,13 +150,9 @@ spec:
             - --wait=true
             - --timeout=60s
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65532
-            capabilities: { drop: [ALL] }
+            {{- include "kube-vnet.cleanupSecurityContext" . | nindent 12 }}
         - name: wait-for-operator-shutdown
-          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          image: {{ $image }}
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
           command: [kubectl]
           # Component=controller scopes to the operator pods specifically
@@ -162,22 +168,13 @@ spec:
             - {{ .Release.Namespace }}
             - --timeout=60s
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65532
-            capabilities: { drop: [ALL] }
+            {{- include "kube-vnet.cleanupSecurityContext" . | nindent 12 }}
       containers:
         - name: cleanup
-          image: "{{ .Values.cleanup.image.repository }}:{{ .Values.cleanup.image.tag }}"
+          image: {{ $image }}
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
-          # Invoke kubectl directly (no `sh -c` wrapper). The
-          # registry.k8s.io/kubectl image is distroless — it ships the
-          # kubectl binary alone with no shell. The Job's exit code is
-          # kubectl's exit code; the pod's stdout shows what was deleted
-          # (kubectl prints "networkpolicy.networking.k8s.io/<name> deleted"
-          # per match). That's the diagnostic surface we need; no need for
-          # echo wrappers.
+          # The registry.k8s.io/kubectl image is distroless (no shell), so
+          # kubectl is invoked directly; its output lists what was deleted.
           command:
             - kubectl
           args:
@@ -195,10 +192,5 @@ spec:
             limits:
               memory: 64Mi
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65532
-            capabilities:
-              drop: [ALL]
+            {{- include "kube-vnet.cleanupSecurityContext" . | nindent 12 }}
 {{- end }}
