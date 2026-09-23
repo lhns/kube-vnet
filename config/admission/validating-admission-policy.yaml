@@ -8,7 +8,7 @@ metadata:
     helm.sh/chart: kube-vnet-0.1.0
     app.kubernetes.io/name: kube-vnet
     app.kubernetes.io/instance: kube-vnet-controller
-    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/version: "v0.1.0"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: controller
 spec:
@@ -49,7 +49,7 @@ metadata:
     helm.sh/chart: kube-vnet-0.1.0
     app.kubernetes.io/name: kube-vnet
     app.kubernetes.io/instance: kube-vnet-controller
-    app.kubernetes.io/version: "0.1.0"
+    app.kubernetes.io/version: "v0.1.0"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/component: controller
 spec:
