@@ -105,7 +105,8 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Headless / ExternalName / selector-less Services have no podSelector
 	// to mirror.
-	if svc.Spec.ClusterIP == corev1.ClusterIPNone || len(svc.Spec.Selector) == 0 {
+	if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.Type == corev1.ServiceTypeExternalName ||
+		len(svc.Spec.Selector) == 0 {
 		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
 	}
 

@@ -546,6 +546,19 @@ func TestApiserverReachableReconcile_AppliesPolicy(t *testing.T) {
 	}
 }
 
+// The apiserver dials an ExternalName Service's DNS target, not its pods, so
+// a stray selector must not produce a policy for them.
+func TestApiserverReachableReconcile_ExternalName_NoPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	s := optedInService("ns", "webhook")
+	s.Spec.Type = corev1.ServiceTypeExternalName
+	s.Spec.ExternalName = "webhook.example.com"
+	c := reconcileApiserverReachable(t, "ns", "webhook", ns, s)
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("got %d policies for an ExternalName Service, want 0", len(got))
+	}
+}
+
 // NamespaceLifecycle admission rejects creates in a terminating namespace, so
 // applying there would only fail and retry until the namespace is gone.
 func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) {
