@@ -103,18 +103,32 @@ func Serve(ctx context.Context, addr string) error {
 	if err != nil {
 		return err
 	}
+	return serve(ctx, ln)
+}
+
+func serve(ctx context.Context, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
 	}()
+	var backoff time.Duration
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
+			// Back off like net/http does, so an error that persists (such
+			// as running out of file descriptors) doesn't spin the CPU.
+			backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(backoff):
+			}
 			continue
 		}
+		backoff = 0
 		_ = conn.Close()
 	}
 }

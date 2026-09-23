@@ -166,3 +166,35 @@ func TestServe_AcceptsAndWaitReleases(t *testing.T) {
 		t.Fatal("Serve did not stop on cancel")
 	}
 }
+
+// failingListener fails every Accept, counting the calls.
+type failingListener struct {
+	net.Listener
+	mu    sync.Mutex
+	calls int
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	return nil, errors.New("accept: too many open files")
+}
+
+func (l *failingListener) Close() error { return nil }
+
+// A persistent Accept error backs off instead of spinning.
+func TestServe_BacksOffOnAcceptError(t *testing.T) {
+	ln := &failingListener{}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := serve(ctx, ln); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	// 5+10+20+40ms fit in 100ms; a spin would make millions of calls.
+	ln.mu.Lock()
+	defer ln.mu.Unlock()
+	if ln.calls > 10 {
+		t.Errorf("%d Accept calls in 100ms; want a backoff", ln.calls)
+	}
+}
