@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// Image used for test pods. Tiny, has /bin/sh, has wget.
+	// Image used for test pods: agnhost, plus /bin/sh and wget.
 	testImage = "registry.k8s.io/e2e-test-images/agnhost:2.43"
 
 	// Connectivity probe windows.
@@ -146,14 +146,6 @@ func applyYAML(t *testing.T, yaml string) {
 	}
 }
 
-// deleteYAML pipes the given YAML to `kubectl delete -f - --ignore-not-found`.
-func deleteYAML(t *testing.T, yaml string) {
-	t.Helper()
-	cmd := exec.Command("kubectl", "delete", "-f", "-", "--ignore-not-found", "--wait=false")
-	cmd.Stdin = strings.NewReader(yaml)
-	_ = cmd.Run()
-}
-
 // waitForPod waits up to timeout for a pod to be Ready.
 func waitForPod(t *testing.T, ns, name string, timeout time.Duration) {
 	t.Helper()
@@ -197,12 +189,10 @@ func canReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) boo
 	return false
 }
 
-// waitForLabelGone polls the pod until the named metadata label is absent,
-// or until timeout. Used to gate cannotReach assertions on the resolution
-// controller having propagated a relabel — the system label is the same
-// oracle the membership policy's selector matches on. Without this gate,
-// cannotReach (which is fail-fast on success) races the operator and may
-// see a pre-removal wget land before the label has been stripped.
+// waitForLabelGone polls the pod until the named label is absent, or fails
+// after timeout. Gate cannotReach on it after a relabel: cannotReach fails on
+// the first success, so it must not run before the operator has stripped the
+// system label the membership policy selects on.
 func waitForLabelGone(t *testing.T, ns, pod, labelKey string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -216,11 +206,8 @@ func waitForLabelGone(t *testing.T, ns, pod, labelKey string, timeout time.Durat
 	t.Fatalf("timed out waiting for label %s to be removed from %s/%s", labelKey, ns, pod)
 }
 
-// cannotReach returns true if every wget attempt within `timeout` fails.
-// Used to assert deny — needs a long enough window that we're confident
-// policies have converged. Callers asserting deny after a state change
-// (e.g. removing a join label) should first call waitForLabelGone to gate
-// on resolution propagation, otherwise the first poll will race the operator.
+// cannotReach returns true if every wget attempt within timeout fails. Used to
+// assert deny. After a state change, gate it first (see waitForLabelGone).
 func cannotReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

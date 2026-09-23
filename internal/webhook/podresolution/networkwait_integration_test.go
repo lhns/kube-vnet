@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -78,12 +77,4 @@ func TestIntegration_Webhook_NetworkWaitInvalidValueWarns(t *testing.T) {
 	if !strings.Contains(strings.Join(rec.messages, "\n"), `"soon" is not a positive duration`) {
 		t.Errorf("warnings %q do not report the invalid value", rec.messages)
 	}
-}
-
-func names(cs []corev1.Container) []string {
-	out := make([]string, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, c.Name)
-	}
-	return out
 }

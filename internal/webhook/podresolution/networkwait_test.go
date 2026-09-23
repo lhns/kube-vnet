@@ -64,11 +64,7 @@ func TestNetworkWait_Injection(t *testing.T) {
 
 			out, resp := mutateWithResponse(t, &Mutator{d}, "alice", tc.oldPod, tc.pod)
 
-			var got []string
-			for _, ic := range out.Spec.InitContainers {
-				got = append(got, ic.Name)
-			}
-			if !reflect.DeepEqual(got, tc.wantInits) {
+			if got := names(out.Spec.InitContainers); !reflect.DeepEqual(got, tc.wantInits) {
 				t.Errorf("init containers %v, want %v", got, tc.wantInits)
 			}
 			warnings := strings.Join(resp.Warnings, "\n")
@@ -80,6 +76,15 @@ func TestNetworkWait_Injection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// names lists the containers' names, nil for none.
+func names(cs []corev1.Container) []string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 // The injected container runs the operator's network-wait subcommand with the

@@ -211,8 +211,8 @@ func TestIntegration_Webhook_MutatorOutputSurvivesValidator(t *testing.T) {
 	}
 }
 
-// Forging a membership stamp must be impossible, which is what the validating
-// webhook buys back after the VAP's pods rule is dropped.
+// Forging a membership stamp must be impossible: in the webhook's scope the
+// validator, not the system-labels VAP, is what prevents it.
 func TestIntegration_Webhook_ForgedStampRejected(t *testing.T) {
 	ns := webhookNS(t, "web")
 

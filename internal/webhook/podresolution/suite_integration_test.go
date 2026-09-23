@@ -69,12 +69,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	testCfg = cfg
+	failSetup := func(what string, err error) {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", what, err)
+		testutil.StopEnv(testEnv)
+		os.Exit(1)
+	}
 
 	cl, err := client.New(cfg, client.Options{Scheme: itScheme})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "client.New: %v\n", err)
-		_ = testEnv.Stop()
-		os.Exit(1)
+		failSetup("client.New", err)
 	}
 	testClient = cl
 
@@ -91,9 +94,7 @@ func TestMain(m *testing.M) {
 		}),
 	})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "manager: %v\n", err)
-		_ = testEnv.Stop()
-		os.Exit(1)
+		failSetup("manager", err)
 	}
 
 	nsFilter := controller.NewNamespaceFilter(nil)
@@ -106,9 +107,7 @@ func TestMain(m *testing.M) {
 		NSFilter: nsFilter,
 	}
 	if err := resolutionReconciler.SetupWithManager(mgr); err != nil {
-		fmt.Fprintf(os.Stderr, "setup resolution reconciler: %v\n", err)
-		_ = testEnv.Stop()
-		os.Exit(1)
+		failSetup("setup resolution reconciler", err)
 	}
 
 	Register(mgr.GetWebhookServer(), Deps{

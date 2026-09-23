@@ -24,6 +24,12 @@ func newValidator(t *testing.T, c client.Client) *Validator {
 
 func validate(t *testing.T, v *Validator, user string, oldPod, newPod *corev1.Pod) admission.Response {
 	t.Helper()
+	return v.Handle(context.Background(), admissionRequest(t, user, oldPod, newPod))
+}
+
+// admissionRequest is user's CREATE of newPod, or an UPDATE when oldPod is set.
+func admissionRequest(t *testing.T, user string, oldPod, newPod *corev1.Pod) admission.Request {
+	t.Helper()
 	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 		Operation: admissionv1.Create,
 		Namespace: newPod.Namespace,
@@ -34,7 +40,7 @@ func validate(t *testing.T, v *Validator, user string, oldPod, newPod *corev1.Po
 		req.Operation = admissionv1.Update
 		req.OldObject = runtime.RawExtension{Raw: mustJSON(t, oldPod)}
 	}
-	return v.Handle(context.Background(), req)
+	return req
 }
 
 func mustJSON(t *testing.T, o any) []byte {
