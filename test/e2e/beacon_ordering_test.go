@@ -100,7 +100,10 @@ func TestExperiment_BeaconOrdering(t *testing.T) {
 	// peer selector that matches every pod, on a port nothing listens on. So
 	// every new pod joins each policy's peer set (Calico's IP sets, Cilium's
 	// selector cache, kube-router's ipsets) on every node, and nothing opens
-	// the server's port 80 or the beacons.
+	// the server's port 80 or the beacons. The policies share loadPorts ports:
+	// Cilium keeps one policy map entry per peer identity and port for each
+	// endpoint, and a distinct port per policy overflows that map (16k
+	// entries) at about 1000 policies.
 	for i := 0; i < cfg.Policies; i += 100 {
 		var docs []string
 		for j := i; j < min(i+100, cfg.Policies); j++ {
@@ -119,8 +122,9 @@ func TestExperiment_BeaconOrdering(t *testing.T) {
 			docs = append(docs, probePod(ns, name, worker, cfg, remote, server, local))
 		}
 		applyYAML(t, strings.Join(docs, "---\n"))
+		deadline := time.Now().Add(5 * time.Minute)
 		for _, name := range names {
-			results = append(results, awaitProbe(t, ns, name, cfg.Interval))
+			results = append(results, awaitProbe(t, ns, name, deadline))
 		}
 	}
 	churned := stopChurn()
@@ -217,7 +221,7 @@ spec:
               - {key: %s, operator: DoesNotExist}
       ports:
         - {protocol: TCP, port: %d}
-`, name, ns, name, 20000+port%40000)
+`, name, ns, name, 20000+port%loadPorts)
 }
 
 // startChurn creates perSecond policies every second and deletes those from
@@ -280,12 +284,15 @@ func kubectlStdin(stdin string, args ...string) error {
 	return nil
 }
 
-// awaitProbe waits for the probe's RESULT line.
-func awaitProbe(t *testing.T, ns, pod string, interval time.Duration) podResult {
+// loadPorts is how many distinct ports the load policies use.
+const loadPorts = 20
+
+// awaitProbe waits until deadline for the probe's RESULT line.
+func awaitProbe(t *testing.T, ns, pod string, deadline time.Time) podResult {
 	t.Helper()
 	r := podResult{Pod: pod, BeaconMs: -1, VnetMs: -1, LocalMs: -1, DeltaMs: math.NaN()}
 	var logs string
-	for deadline := time.Now().Add(5 * time.Minute); time.Now().Before(deadline); time.Sleep(time.Second) {
+	for ; time.Now().Before(deadline); time.Sleep(time.Second) {
 		logs, _ = kubectl(t, "logs", "-n", ns, pod, "-c", "probe")
 		for _, line := range strings.Split(logs, "\n") {
 			raw, ok := strings.CutPrefix(strings.TrimSpace(line), "RESULT ")
@@ -312,7 +319,7 @@ func awaitProbe(t *testing.T, ns, pod string, interval time.Duration) podResult 
 			return r
 		}
 	}
-	t.Errorf("%s: no result within 5m; logs:\n%s", pod, logs)
+	t.Errorf("%s: no result in time; logs:\n%s", pod, logs)
 	return r
 }
 
