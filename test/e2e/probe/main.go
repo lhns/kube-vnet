@@ -101,7 +101,8 @@ func main() {
 	defer tick.Stop()
 	deadline := start.Add(*maxWait)
 	var doneAt time.Time
-	for now := range tick.C {
+	// The first round goes out at once, the rest on the ticker.
+	for now := start; ; now = <-tick.C {
 		mu.Lock()
 		all := true
 		for i := range names {

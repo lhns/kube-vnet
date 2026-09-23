@@ -51,9 +51,9 @@ jobs:
       E2E_CNI: ${{ matrix.cni }}
       E2E_EXPERIMENT_PROBES: ${{ inputs.probes || '20' }}
       E2E_EXPERIMENT_BURST: ${{ inputs.burst || '5' }}
-      E2E_EXPERIMENT_POLICIES: ${{ inputs.policies || '300' }}
-      E2E_EXPERIMENT_CHURN: ${{ inputs.churn || '10' }}
-      E2E_EXPERIMENT_INTERVAL: ${{ inputs.interval || '20ms' }}
+      E2E_EXPERIMENT_POLICIES: ${{ inputs.policies || '1000' }}
+      E2E_EXPERIMENT_CHURN: ${{ inputs.churn || '20' }}
+      E2E_EXPERIMENT_INTERVAL: ${{ inputs.interval || '5ms' }}
       E2E_EXPERIMENT_OUT: ${{ github.workspace }}/experiment-out
     steps:
       - uses: actions/checkout@v7
