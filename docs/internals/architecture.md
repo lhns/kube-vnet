@@ -51,7 +51,7 @@ Source: `internal/controller/virtualnetwork_controller.go`. For each enqueued vn
 4. Validates the name (DNS-1123 label; defense in depth behind the CRD's CEL rule, [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md)). On failure: `Ready=False`/`Degraded=True`, reason `InvalidName`.
 5. Checks the home namespace via `NSFilter.IsManaged`; system vnets are exempt. If unmanaged: `HomeNamespaceExcluded`, and leftover policies are cleaned up.
 6. **Discovers members** (`discoverMembers`) over all pods:
-   - An advisory scan of `kube-vnet/net.*` join labels records `InvalidJoiner`s (`UnknownDirection`, `NamespaceExcluded`, `NamespaceNotAllowed`) for the `Degraded` condition. It never decides membership.
+   - An advisory scan of `kube-vnet/net.*` join labels records `InvalidJoiner`s (`UnknownDirection`, `NamespaceExcluded`, `NamespaceNotAllowed`) for the `Degraded` condition. The bare form counts only in the vnet's home namespace (from anywhere for `cluster`), so a bad `kube-vnet/net.namespace` label degrades only the pod's own `namespace` vnet. It never decides membership.
    - Membership comes only from the stamped `kube-vnet.system/net.*` label. Pods without the `resolved-generation` annotation are skipped (fail-closed during the stamping window), and a stamp is trusted only if the pod's namespace is still managed and still permitted by `allowedNamespaces`.
 7. Generates the desired policies (`Generate`).
 8. Applies each with `applyPolicyAndDetectRestore`: an uncached `Get` detects a missing policy (→ `PolicyRestored` Event), then server-side apply with field owner `kube-vnet` and `ForceOwnership`. On error: `kube_vnet_apply_errors_total{kind="membership_policy"}`, an `ApplyFailed` Event, `Ready=False`.
