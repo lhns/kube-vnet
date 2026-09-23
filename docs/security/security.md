@@ -109,7 +109,7 @@ Every release ships SPDX-JSON SBOMs for both the image and the chart. They're at
 You can also generate one yourself:
 
 ```bash
-syft ghcr.io/lhns/kube-vnet:v0.1.0 -o spdx-json
+syft ghcr.io/lhns/kube-vnet:v<version> -o spdx-json
 ```
 
 ### Vulnerability scanning
@@ -124,7 +124,7 @@ Both jobs fail the build on `CRITICAL` or `HIGH` severity findings (`ignore-unfi
 For your own deployments, run Trivy or Grype against the deployed image periodically:
 
 ```bash
-trivy image ghcr.io/lhns/kube-vnet:v0.1.0 --severity CRITICAL,HIGH
+trivy image ghcr.io/lhns/kube-vnet:v<version> --severity CRITICAL,HIGH
 ```
 
 ### Dependency updates
@@ -188,7 +188,7 @@ If you want to prevent namespace owners from doing this, withhold `update namesp
 
 Conditionally yes. kube-vnet enforces tenant isolation **at the NetworkPolicy layer**, which is good but not a hard tenant boundary. Strict multi-tenancy needs more (admission control, RBAC partitioning, quota, possibly virtual clusters). Treat kube-vnet as one layer of defense in a broader multi-tenancy strategy.
 
-The deny-baseline durability concern (next section) is especially relevant in multi-tenant clusters because tenants typically have NetworkPolicy CRUD in their own namespaces.
+The deny-baseline durability concern ([below](#the-adminnetworkpolicy-future)) is especially relevant in multi-tenant clusters because tenants typically have NetworkPolicy CRUD in their own namespaces.
 
 ### Does the operator log secrets?
 
@@ -200,7 +200,7 @@ No. The operator never reads Secrets, ConfigMaps with sensitive data, or pod env
 
 Stock `NetworkPolicy` is namespace-local. A namespace owner with `delete networkpolicy` RBAC can remove kube-vnet's deny baseline; the operator restores it within seconds, but the window exists.
 
-The proper Kubernetes-native answer is `policy.networking.k8s.io/v1 AdminNetworkPolicy` (ANP):
+The proper Kubernetes-native answer is `AdminNetworkPolicy` (ANP, `policy.networking.k8s.io`):
 
 - **Cluster-scoped resource** — namespace-level RBAC has no authority over it.
 - **Distinct API group** — ANP RBAC is granted separately from `NetworkPolicy` RBAC, so cluster admins can grant NP wide while keeping ANP locked down.
