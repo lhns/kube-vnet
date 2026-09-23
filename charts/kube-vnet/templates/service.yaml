@@ -1,4 +1,7 @@
 {{- if .Values.metricsService.enabled }}
+{{- if not (include "kube-vnet.metricsEnabled" .) }}
+{{- fail "metricsService.enabled requires metrics: operator.metricsBindAddress is \"0\", which disables them" }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:

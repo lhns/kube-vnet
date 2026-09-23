@@ -97,6 +97,8 @@ operator:
   # Enable leader election. Recommended on; harmless overhead with one replica
   # and required for safe multi-replica HA.
   leaderElect: true
+  # "0" disables the metrics endpoint: no metrics port is rendered, and
+  # metricsService/podMonitor then refuse to render.
   metricsBindAddress: ":8080"
   healthProbeBindAddress: ":8081"
 

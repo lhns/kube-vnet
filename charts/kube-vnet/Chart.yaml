@@ -6,7 +6,9 @@ description: |
   pods can communicate.
 type: application
 version: 0.1.0
-appVersion: "0.1.0"
+# The operator image tag, verbatim: releases tag images v<version>. The
+# release workflow overrides it with --app-version (the pushed image tag).
+appVersion: "v0.1.0"
 kubeVersion: ">=1.25.0-0"
 keywords:
   - networkpolicy

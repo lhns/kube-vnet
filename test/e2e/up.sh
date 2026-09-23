@@ -15,7 +15,8 @@ esac
 CLUSTER_NAME=${CLUSTER_NAME:-kube-vnet-e2e-${CNI}}
 IMG=${IMG:-kube-vnet:e2e}
 CALICO_VERSION=${CALICO_VERSION:-v3.28.0}
-KUBE_ROUTER_MANIFEST=${KUBE_ROUTER_MANIFEST:-https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml}
+KUBE_ROUTER_VERSION=${KUBE_ROUTER_VERSION:-v2.11.1}
+KUBE_ROUTER_MANIFEST=${KUBE_ROUTER_MANIFEST:-https://raw.githubusercontent.com/cloudnativelabs/kube-router/${KUBE_ROUTER_VERSION}/daemonset/kubeadm-kuberouter.yaml}
 
 # Resolve the script's own directory and the repo root.
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -30,7 +31,10 @@ fi
 case "$CNI" in
   kube-router)
     echo "==> installing kube-router"
-    kubectl apply -f "$KUBE_ROUTER_MANIFEST"
+    # The manifest leaves the image untagged (latest); pin it to the release.
+    curl -fsSL "$KUBE_ROUTER_MANIFEST" \r
+      | sed "s|image: docker.io/cloudnativelabs/kube-router\$|&:${KUBE_ROUTER_VERSION}|" \r
+      | kubectl apply -f -
     echo "==> waiting for kube-router DaemonSet"
     kubectl rollout status -n kube-system ds/kube-router --timeout=180s
     kubectl wait --for=condition=Ready node --all --timeout=180s

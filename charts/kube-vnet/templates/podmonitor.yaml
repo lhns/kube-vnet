@@ -1,4 +1,7 @@
 {{- if .Values.podMonitor.enabled }}
+{{- if not (include "kube-vnet.metricsEnabled" .) }}
+{{- fail "podMonitor.enabled requires metrics: operator.metricsBindAddress is \"0\", which disables them" }}
+{{- end }}
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:

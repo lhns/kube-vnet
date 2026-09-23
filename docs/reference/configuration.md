@@ -12,7 +12,7 @@ Defined in `cmd/main.go`. The chart sets them from the `operator.*` and `webhook
 
 | Flag | Type | Default | Description |
 |---|---|---|---|
-| `--metrics-bind-address` | string | `:8080` | Address the Prometheus metrics endpoint listens on. `0` disables it (binary only — the chart derives the container port from this value). |
+| `--metrics-bind-address` | string | `:8080` | Address the Prometheus metrics endpoint listens on. `0` disables it. |
 | `--health-probe-bind-address` | string | `:8081` | Address the `/healthz` and `/readyz` endpoints listen on. |
 | `--leader-elect` | bool | `false` (binary) / `true` (chart) | Enable leader election. Required for safe multi-replica HA. The chart sets it on by default; the bare binary defaults to off so local `make run` doesn't need a leader-election RBAC. |
 | `--disabled-namespaces` | string (comma-separated) | `kube-system` | Namespaces the operator never touches (no baseline, no system vnets, no resolution stamping). The operator's own namespace (read from the `POD_NAMESPACE` env via the downward API) is always added implicitly — which is why the release namespace holds no per-namespace `namespace` system vnet. Mirrors the per-namespace `kube-vnet/disabled=true` annotation. See [ADR 0007](../adr/0007-operator-level-excluded-namespaces.md), [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md), [ADR 0042](../adr/0042-coredns-ingress-carveout-and-kube-system-enrollment.md). |
@@ -80,7 +80,7 @@ Mirror of `charts/kube-vnet/values.yaml`, plus `nameOverride`/`fullnameOverride`
 | `operator.clusterBaseline.ingressIsolationLevel` | string (`pod` / `namespace` / `cluster`) | `""` (required if `create=true` and `memberships` unset) | Preset for the two system vnets: `cluster` → `namespace=default-both, cluster=default-both`; `namespace` → `namespace=default-both, cluster=default-egress`; `pod` → both `default-egress`. Mutually exclusive with `memberships`. |
 | `operator.clusterBaseline.memberships` | map `<vnet-key>: <direction>` | `null` | Explicit override map. Keys: bare for the system vnets (rendered with no `namespace:` — `cluster` is the cluster-wide singleton, `namespace` resolves to each pod's *own* namespace; [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md)), `<namespace>.<name>` for user vnets. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.leaderElect` | bool | `true` | → `--leader-elect`. Recommended on; harmless with one replica and required for safe multi-replica HA. |
-| `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. |
+| `operator.metricsBindAddress` | string | `:8080` | → `--metrics-bind-address`. The container port is taken from it; `"0"` disables metrics, renders no metrics port, and makes `metricsService.enabled` or `podMonitor.enabled` fail the render. |
 | `operator.healthProbeBindAddress` | string | `:8081` | → `--health-probe-bind-address`. |
 
 ### `webhook.*` (pod-resolution admission webhooks — ADR 0034)
