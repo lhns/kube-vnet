@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -77,6 +78,28 @@ func TestDiscoverMembers_EligibilityAndDiagnostics(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotInvalid, wantInvalid) {
 		t.Errorf("invalid = %v, want %v", gotInvalid, wantInvalid)
+	}
+}
+
+// Disabling a vnet's home namespace drops its policies and status members, so
+// the members gauge must drop to zero too instead of keeping its last count.
+func TestReconcile_HomeNamespaceExcluded_ZeroesMembersGauge(t *testing.T) {
+	home := testutil.Namespace("gauge-home", map[string]string{AnnotationDisabled: "true"}, nil)
+	vnet := mkVnet("v", "gauge-home", nil)
+	c := fake.NewClientBuilder().
+		WithScheme(testutil.Scheme(t, networkingv1.AddToScheme)).
+		WithObjects(home, vnet).
+		WithStatusSubresource(&vnetv1alpha1.VirtualNetwork{}).
+		Build()
+	r := &VirtualNetworkReconciler{Client: c, NSFilter: NewNamespaceFilter(nil)}
+	setMembers("gauge-home", "v", 2) // left by an earlier, managed reconcile
+	t.Cleanup(func() { clearMembers("gauge-home", "v") })
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(vnet)}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := promtestutil.ToFloat64(membersByNetwork.WithLabelValues("gauge-home/v")); got != 0 {
+		t.Errorf("members gauge = %v, want 0", got)
 	}
 }
 
