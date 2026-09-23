@@ -12,74 +12,56 @@ release. Pinning to an exact version is recommended.
 
 ### Added
 
-- **Optional admission webhook that stamps pod membership synchronously
+- **Optional admission webhook that stamps pod membership at admission
   (`webhook.enabled`, default off).** Membership policies select pods by the
   `kube-vnet.system/net.*` label the operator stamps *after* the apiserver
-  persists a pod. Until it lands the pod matches no membership policy and the
-  deny-all baseline applies — field-measured at under a second on kube-router
-  v2.10.0, which is enough to fail the first connection of a client that does
-  not retry, and where a denial presents as an immediate `Connection refused`
-  rather than a timeout. With the webhook enabled, resolution runs inside the
-  apiserver's write path, so a pod is a member from the instant it exists, on
-  both create and relabel. Implements [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
+  persists a pod; until then the deny-all baseline applies. That window is
+  under a second, but enough to fail the first connection of a client that
+  does not retry (on kube-router an immediate `Connection refused`). With the
+  webhook, resolution runs in the apiserver's write path, so a pod is a member
+  from the instant it exists, on create and relabel. This removes kube-vnet's
+  share of the startup delay, not the CNI's; for that, see the network wait
+  below. Implements [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
 
-  This removes kube-vnet's share of the startup delay, not the CNI's. On
-  kube-router, which rewrites its iptables rules on every pod event, a
-  production cluster still saw first connections fail for 2-4 s with the
-  webhook on. Clients that connect at startup still need to retry, or use the
-  network wait below.
+  **Read before enabling.** The validating half is `failurePolicy: Fail`, so
+  `kube-vnet.system/*` labels stay unforgeable while the operator is
+  unreachable, at the cost that an operator outage blocks pod creation and
+  update in managed namespaces. `kube-system`, `kube-public`,
+  `kube-node-lease`, the release namespace and `operator.disabledNamespaces`
+  are exempt, so the cluster, the operator and what it doesn't manage can
+  always recover. Run 2+ replicas. The mutating half is `failurePolicy: Ignore`
+  and falls back to the previous behaviour.
 
-  A `kube-vnet.system/*` stamp the request itself supplies is left for the
-  validating webhook to judge, so a forged value is rejected with a message —
-  as without the webhook — rather than silently corrected.
+  For the pods it sees, the validating webhook takes over from the
+  system-labels `ValidatingAdmissionPolicy` and checks more: the labels must
+  equal what resolution produces. A forged stamp in the request is rejected
+  with a message, as without the webhook. The policy keeps covering the pods
+  the webhooks skip. With the webhook off the chart renders as before.
 
-  **Read before enabling.** The validating half runs `failurePolicy: Fail` to
-  keep today's guarantee that `kube-vnet.system/*` labels cannot be forged even
-  while the operator is unreachable; the cost is that an operator outage blocks
-  pod creation in managed namespaces. `kube-system`, `kube-public`,
-  `kube-node-lease`, the release namespace and every namespace in
-  `operator.disabledNamespaces` are excluded, so the cluster, the operator and
-  what it doesn't manage (typically the CNI and cert-manager) can always
-  recover. Run 2+ replicas. The mutating half is
-  `failurePolicy: Ignore` and degrades to the previous behaviour.
-
-  When enabled, the validating webhook takes over from the system-labels
-  `ValidatingAdmissionPolicy` for the pods it admits: a mutating webhook's
-  patch is attributed to the requester, not to the operator, so the policy's
-  exemption could not cover it. The webhook enforces a stronger property in its
-  place — the labels must equal what resolution produces, which CEL cannot
-  check because it cannot resolve. The policy keeps checking the pods the
-  webhooks skip (the excluded namespaces, and pods carrying the chart's
-  `app.kubernetes.io/name` label), so no pod is left unprotected. Its
-  networkpolicies and virtualnetworks rules are unchanged, and with the webhook
-  off the chart renders exactly as before.
-
-  `helm uninstall` deletes the two webhook configurations before stopping the
-  operator, so pod admission is not blocked while it shuts down. With
-  `certSource: helm` the generated serving certificate is kept across
-  `helm upgrade`; any `certSource` other than `helm` or `cert-manager` fails
-  the render instead of installing a webhook the apiserver cannot call.
+  `helm uninstall` removes the webhook configurations before stopping the
+  operator. With `certSource: helm` the serving certificate survives
+  `helm upgrade`; an unknown `certSource` fails the render.
 
 - **Network wait for pods whose first connection must succeed
   (`webhook.networkWait.enabled`, default off, requires the webhook).** A pod
   annotated `kube-vnet/network-max-wait: "30s"` gets an injected init
   container that holds its app until every node has applied its NetworkPolicy
   rules, and never longer than that maximum; then the app starts anyway. The
-  chart ships a tiny beacon DaemonSet, one TCP listener per node behind a
-  chart-owned NetworkPolicy open to every pod. The wait releases once every
-  beacon accepts the pod. On kube-router, which applies all of a node's rules
-  in one pass, that means the pod's vnet rules are live. On other CNIs it is a
-  strong hint, still bounded by the maximum. An invalid value, or the
-  annotation on a cluster without the feature, gives a `kubectl` warning and
-  no wait. Implements [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
+  chart ships a small beacon DaemonSet, one TCP listener per node behind a
+  chart-owned NetworkPolicy open to every pod; the wait ends once every beacon
+  accepts the pod. On kube-router, which applies all of a node's rules in one
+  pass, that means the pod's vnet rules are live; on other CNIs it is a strong
+  hint, still bounded by the maximum. An invalid value, or the annotation
+  with the webhook on but the wait off, gives a `kubectl` warning and no wait.
+  Implements [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
 
 - **A pod left out of a vnet by conflicting rules now says why.** When a
   binding, baseline and pod label disagree, resolution intersects them or
-  keeps a baseline's pinned value — correct and fail-closed, but until now
-  silent: the pod simply wasn't a member. It now gets a `ResolutionConflict`
-  or `OverrideRejected` Warning naming the rules and the result, visible in
-  `kubectl describe pod`. This replaces the annotation, metric and baseline
-  conditions ADR 0031 described, which were never built.
+  keeps a baseline's pinned value — fail-closed, but until now silent. The pod
+  now gets a `ResolutionConflict` or `OverrideRejected` Warning naming the
+  rules and the result, visible in `kubectl describe pod`. This replaces the
+  annotation, metric and baseline conditions ADR 0031 described, which were
+  never built.
 
 ### Changed
 
@@ -88,13 +70,6 @@ release. Pinning to an exact version is recommended.
   change is expected.
 
 ### Fixed
-
-- **`kube-vnet.system/*` stamps could be written through `pods/status`.** A
-  status write keeps the request's labels, and the system-labels policy
-  checked only `pods`. Anyone allowed to write pod status — a node, or a
-  controller granted `pods/status` — could stamp a pod into a vnet or onto a
-  host-port policy until the operator stripped it. The policy now covers
-  `pods/status`; ordinary status writes are unaffected.
 
 - **Two status conditions reported problems that did not exist.**
   - A `VirtualNetworkBinding` that omits `virtualNetworkRef.namespace` — the
@@ -120,10 +95,14 @@ release. Pinning to an exact version is recommended.
   binding CRD `Degraded`. Baselines have no conditions yet; bindings only
   `Ready`.
 
-- **e2e: the helm-uninstall cleanup assertion slept a fixed 5s and then checked
-  once.** On a loaded runner that is a spurious failure — the same
-  wait-a-guessed-duration mistake the webhook above exists to remove. It now
-  polls for the condition.
+### Security
+
+- **`kube-vnet.system/*` stamps could be written through `pods/status`.** A
+  status write keeps the request's labels, and the system-labels policy
+  checked only `pods`. Anyone allowed to write pod status — a node, or a
+  controller granted `pods/status` — could stamp a pod into a vnet or onto a
+  host-port policy until the operator stripped it. The policy now covers
+  `pods/status`; ordinary status writes are unaffected.
 
 ## [0.7.3] — 2026-09-02
 
