@@ -6,7 +6,7 @@ description: >-
 
 inputs:
   cni:
-    description: kube-router or calico
+    description: kube-router, calico or cilium
     required: true
   cluster-name:
     description: Name of the kind cluster to load the image into
@@ -21,8 +21,8 @@ runs:
         CNI: ${{ inputs.cni }}
       run: |
         case "$CNI" in
-          kube-router|calico) ;;
-          *) echo "unknown cni: $CNI (want kube-router or calico)"; exit 1 ;;
+          kube-router|calico|cilium) ;;
+          *) echo "unknown cni: $CNI (want kube-router, calico or cilium)"; exit 1 ;;
         esac
 
     - name: install kube-router
@@ -62,6 +62,18 @@ runs:
         kubectl rollout status -n calico-system deploy/calico-typha            --timeout=300s
         kubectl rollout status -n calico-system ds/calico-node                 --timeout=300s
         kubectl rollout status -n calico-system ds/csi-node-driver             --timeout=300s
+        kubectl wait --for=condition=Ready node --all --timeout=180s
+
+    - name: install Cilium
+      if: inputs.cni == 'cilium'
+      shell: bash
+      run: |
+        set -euxo pipefail
+        helm repo add cilium https://helm.cilium.io
+        helm install cilium cilium/cilium --version 1.20.2 --namespace kube-system \
+          --set ipam.mode=kubernetes --set operator.replicas=1 --set image.pullPolicy=IfNotPresent
+        kubectl rollout status -n kube-system ds/cilium --timeout=300s
+        kubectl rollout status -n kube-system deploy/cilium-operator --timeout=300s
         kubectl wait --for=condition=Ready node --all --timeout=180s
 
     - name: build operator image

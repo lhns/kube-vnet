@@ -6,7 +6,7 @@ description: >-
 
 inputs:
   cni:
-    description: kube-router or calico
+    description: kube-router, calico or cilium
     required: true
 
 runs:
@@ -24,6 +24,8 @@ runs:
         echo "===== $CNI logs ====="
         if [ "$CNI" = calico ]; then
           kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
+        elif [ "$CNI" = cilium ]; then
+          kubectl logs -n kube-system ds/cilium --tail=200 || true
         else
           kubectl logs -n kube-system ds/kube-router --tail=200 || true
         fi
