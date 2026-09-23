@@ -62,101 +62,6 @@ jobs:
           echo "===== networkpolicies ====="
           kubectl get networkpolicy -A -o yaml || true
 
-  # The admission webhook lane (ADR 0034). kube-router, because that is the CNI
-  # the resolution race was observed on and it boots in ~30s. Every other lane
-  # runs with webhook.enabled=false, so the default install stays covered too.
-  e2e-webhook:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
-
-      - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.15.0
-        with:
-          cluster_name: kube-vnet-e2e-wh
-          config: test/e2e/kind-config.yaml
-          wait: 60s
-
-      - name: install kube-router, build + load the operator image
-        uses: ./.github/actions/e2e-setup
-        with:
-          cni: kube-router
-          cluster-name: kube-vnet-e2e-wh
-
-      - name: deploy operator with the admission webhook enabled
-        run: |
-          set -euxo pipefail
-          helm install kube-vnet charts/kube-vnet \
-            --namespace kube-vnet-system --create-namespace \
-            --set fullnameOverride=kube-vnet-controller \
-            --set operator.clusterBaseline.ingressIsolationLevel=pod \
-            --set webhook.enabled=true \
-            --set image.repository=kube-vnet \
-            --set image.tag=e2e \
-            --set image.pullPolicy=Never \
-            --wait --timeout 3m
-          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
-            -n kube-vnet-system --timeout=180s
-
-      - name: assert the webhook is actually installed
-        run: |
-          set -euxo pipefail
-          # The validating webhook is failurePolicy: Fail, so if it were
-          # missing the tests below would pass for the wrong reason.
-          kubectl get mutatingwebhookconfiguration kube-vnet-controller-pod-resolution
-          kubectl get validatingwebhookconfiguration kube-vnet-controller-pod-resolution
-          # The system-labels policy must leave pods in the webhook's scope
-          # alone: with the mutator running it would reject every pod creation
-          # in a managed namespace. Its match condition limits it to the pods
-          # the webhook excludes.
-          if ! kubectl get validatingadmissionpolicy \
-               kube-vnet-controller-system-labels-protected \
-               -o jsonpath='{.spec.matchConditions[*].name}' \
-               | tr ' ' '\n' | grep -qx 'pod-outside-webhook-scope'; then
-            echo "FAIL: the system-labels VAP covers all pods while the webhook is enabled."
-            exit 1
-          fi
-
-      - name: run webhook e2e tests
-        run: go test -tags e2e_webhook ./test/e2e/... -count=1 -v -timeout 15m
-
-      - name: the helm-generated serving cert survives an upgrade
-        run: |
-          set -euxo pipefail
-          # An upgrade must neither delete nor regenerate the Secret: the
-          # operator would lose its serving cert or no longer match caBundle.
-          ca() {
-            kubectl get secret kube-vnet-controller-webhook-cert -n kube-vnet-system \
-              -o jsonpath='{.data.ca\.crt}'
-          }
-          before=$(ca)
-          helm upgrade kube-vnet charts/kube-vnet --namespace kube-vnet-system \
-            --reuse-values --wait --timeout 3m
-          after=$(ca)
-          if [ -z "$before" ] || [ "$before" != "$after" ]; then
-            echo "FAIL: webhook cert Secret missing or rotated after helm upgrade."
-            exit 1
-          fi
-
-      - name: dump diagnostics on failure
-        if: failure()
-        run: |
-          echo "===== events ====="
-          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
-          echo "===== operator logs ====="
-          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
-          echo "===== webhook configurations ====="
-          kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration -o yaml || true
-          echo "===== pods with stamps ====="
-          kubectl get pods -A --show-labels || true
-          echo "===== networkpolicies ====="
-          kubectl get networkpolicy -A -o yaml || true
-
   e2e-calico:
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -206,14 +111,28 @@ jobs:
           echo "===== networkpolicies ====="
           kubectl get networkpolicy -A -o yaml || true
 
-  # e2e-helm uses the same kind+Calico setup as e2e-calico but installs the
-  # operator via `helm install` instead of `kubectl apply -k config/default`.
-  # Catches drift between the kustomize manifests (which controller-gen
-  # owns) and the chart templates (hand-maintained), such as a chart
-  # ClusterRole missing verbs the operator needs.
+  # The helm-installed operator, in both modes, running the same full suite
+  # and the same install/upgrade/uninstall checks. Installing via helm also
+  # catches drift between the kustomize manifests (controller-gen owns them)
+  # and the hand-maintained chart templates.
+  #
+  # The webhook entry runs on kube-router, the CNI the startup race was
+  # observed on. The kustomize lanes above cover kube-router and Calico with
+  # the webhook off; kustomize has no webhook.
   e2e-helm:
+    name: e2e-helm (${{ matrix.cni }}, webhook ${{ matrix.webhook && 'on' || 'off' }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cni: calico
+            webhook: false
+          - cni: kube-router
+            webhook: true
+    env:
+      CLUSTER: kube-vnet-e2e-helm-${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -227,15 +146,15 @@ jobs:
       - name: create kind cluster (no default CNI)
         uses: helm/kind-action@v1.15.0
         with:
-          cluster_name: kube-vnet-e2e-helm
+          cluster_name: ${{ env.CLUSTER }}
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install Calico, build + load the operator image
+      - name: install ${{ matrix.cni }}, build + load the operator image
         uses: ./.github/actions/e2e-setup
         with:
-          cni: calico
-          cluster-name: kube-vnet-e2e-helm
+          cni: ${{ matrix.cni }}
+          cluster-name: ${{ env.CLUSTER }}
 
       - name: deploy operator (helm)
         run: |
@@ -247,6 +166,7 @@ jobs:
             --namespace kube-vnet-system --create-namespace \
             --set fullnameOverride=kube-vnet-controller \
             --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=${{ matrix.webhook }} \
             --set image.repository=kube-vnet \
             --set image.tag=e2e \
             --set image.pullPolicy=Never \
@@ -254,8 +174,29 @@ jobs:
           kubectl wait --for=condition=Available deploy/kube-vnet-controller \
             -n kube-vnet-system --timeout=180s
 
+      - name: assert the webhook is actually installed
+        if: matrix.webhook
+        run: |
+          set -euxo pipefail
+          # The validating webhook is failurePolicy: Fail, so if it were
+          # missing the tests below would pass for the wrong reason.
+          kubectl get mutatingwebhookconfiguration kube-vnet-controller-pod-resolution
+          kubectl get validatingwebhookconfiguration kube-vnet-controller-pod-resolution
+          # The system-labels policy must leave pods in the webhook's scope
+          # alone: with the mutator running it would reject every pod creation
+          # in a managed namespace. Its match condition limits it to the pods
+          # the webhook excludes.
+          if ! kubectl get validatingadmissionpolicy \
+               kube-vnet-controller-system-labels-protected \
+               -o jsonpath='{.spec.matchConditions[*].name}' \
+               | tr ' ' '\n' | grep -qx 'pod-outside-webhook-scope'; then
+            echo "FAIL: the system-labels VAP covers all pods while the webhook is enabled."
+            exit 1
+          fi
+
+
       - name: run e2e tests
-        run: go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
+        run: go test -tags ${{ matrix.webhook && 'e2e,e2e_webhook' || 'e2e' }} ./test/e2e/... -count=1 -v -timeout 15m
 
       - name: external-allow accessibility check
         run: |
@@ -298,7 +239,7 @@ jobs:
               exit 1
             }
 
-          NODE_IP=$(docker inspect kube-vnet-e2e-helm-control-plane \
+          NODE_IP=$(docker inspect "$CLUSTER-control-plane" \
             -f '{{.NetworkSettings.Networks.kind.IPAddress}}')
 
           # Wait for kube-proxy to program the NodePort iptables rule.
@@ -366,20 +307,15 @@ jobs:
           # disabledNamespaces) applies the deny-all baseline to CoreDNS,
           # whose :53 ClusterIP is matched by no auto-allow family. The
           # chart's dnsCarveout NetworkPolicy must keep :53 open so cluster
-          # DNS survives. On this cluster kube-system holds only CoreDNS +
-          # hostNetwork kube-proxy (Calico lives in calico-system), so
-          # enrolling it is safe to exercise.
+          # DNS survives. Besides CoreDNS, kube-system holds only hostNetwork
+          # pods (kube-proxy, and kube-router in that entry), which
+          # NetworkPolicy does not select, so enrolling it is safe to exercise.
           #
           # Upgrade the release to manage kube-system (empty disabledNamespaces,
           # so only the implicit operator NS stays disabled), then assert the
           # carve-out renders, the baseline applies, and DNS still resolves.
           helm upgrade kube-vnet charts/kube-vnet \
-            --namespace kube-vnet-system \
-            --set fullnameOverride=kube-vnet-controller \
-            --set operator.clusterBaseline.ingressIsolationLevel=pod \
-            --set image.repository=kube-vnet \
-            --set image.tag=e2e \
-            --set image.pullPolicy=Never \
+            --namespace kube-vnet-system --reuse-values \
             --set-json 'operator.disabledNamespaces=[]' \
             --wait --timeout 180s
 
@@ -418,6 +354,26 @@ jobs:
           fi
           kubectl delete pod dnsprobe -n default --ignore-not-found
           echo "OK: cluster DNS survives kube-system enrollment (carve-out working)."
+
+      - name: the helm-generated serving cert survives an upgrade
+        if: matrix.webhook
+        run: |
+          set -euxo pipefail
+          # An upgrade must neither delete nor regenerate the Secret: the
+          # operator would lose its serving cert or no longer match caBundle.
+          ca() {
+            kubectl get secret kube-vnet-controller-webhook-cert -n kube-vnet-system \
+              -o jsonpath='{.data.ca\.crt}'
+          }
+          before=$(ca)
+          helm upgrade kube-vnet charts/kube-vnet --namespace kube-vnet-system \
+            --reuse-values --wait --timeout 3m
+          after=$(ca)
+          if [ -z "$before" ] || [ "$before" != "$after" ]; then
+            echo "FAIL: webhook cert Secret missing or rotated after helm upgrade."
+            exit 1
+          fi
+
 
       - name: helm uninstall + assert cleanup
         run: |

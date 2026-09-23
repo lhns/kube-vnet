@@ -5,6 +5,7 @@ package podresolution
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func webhookPodRules() []admissionregistrationv1.RuleWithOperations {
 }
 
 func testMutatingWebhook() *admissionregistrationv1.MutatingWebhookConfiguration {
-	path := "/mutate-v1-pod"
+	path := MutatePath
 	sideEffects := admissionregistrationv1.SideEffectClassNone
 	failurePolicy := admissionregistrationv1.Ignore
 	return &admissionregistrationv1.MutatingWebhookConfiguration{
@@ -80,7 +81,7 @@ func testMutatingWebhook() *admissionregistrationv1.MutatingWebhookConfiguration
 }
 
 func testValidatingWebhook() *admissionregistrationv1.ValidatingWebhookConfiguration {
-	path := "/validate-v1-pod"
+	path := ValidatePath
 	sideEffects := admissionregistrationv1.SideEffectClassNone
 	failurePolicy := admissionregistrationv1.Fail
 	return &admissionregistrationv1.ValidatingWebhookConfiguration{
@@ -109,7 +110,7 @@ func testValidatingWebhook() *admissionregistrationv1.ValidatingWebhookConfigura
 func webhookNS(t *testing.T, vnetName string) string {
 	t.Helper()
 	ns := uniqueNS(t, "wh")
-	mustCreate(t, makeNamespace(ns, map[string]string{webhookOptInLabel: "true"}))
+	mustCreate(t, makeNamespace(ns, nil, map[string]string{webhookOptInLabel: "true"}))
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: vnetName},
 	})
@@ -156,7 +157,7 @@ func TestIntegration_Webhook_StampsDuringAdmission(t *testing.T) {
 // becomes a member once the reconciler catches up.
 func TestIntegration_Webhook_WithoutWebhook_StampArrivesLate(t *testing.T) {
 	ns := uniqueNS(t, "nowh")
-	mustCreate(t, makeNamespace(ns, nil)) // no opt-in label
+	mustCreate(t, makeNamespace(ns, nil, nil)) // no opt-in label
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web"},
 	})
@@ -225,6 +226,26 @@ func TestIntegration_Webhook_ForgedStampRejected(t *testing.T) {
 	}
 	if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
 		t.Fatalf("expected a denial, got %T: %v", err, err)
+	}
+}
+
+// A wrong value for a vnet the pod really is in is also forgery. Without the
+// webhook the admission policy rejects it; with it, the mutator leaves the
+// request's value alone so the validator rejects it the same way, rather than
+// the value being silently corrected.
+func TestIntegration_Webhook_WrongValueForMemberVnetRejected(t *testing.T) {
+	ns := webhookNS(t, "web")
+
+	pod := makePod(ns, "wrong-value", map[string]string{
+		"kube-vnet/net.web":                           "both",
+		controller.LabelSystemNetPrefix + ns + ".web": "egress",
+	})
+	err := testClient.Create(context.Background(), pod)
+	if err == nil {
+		t.Fatalf("a wrong stamp value was admitted (labels %v)", pod.Labels)
+	}
+	if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), `resolves to "both"`) {
+		t.Fatalf("expected the validator's denial naming the resolved value, got %v", err)
 	}
 }
 

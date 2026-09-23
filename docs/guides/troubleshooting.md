@@ -217,12 +217,20 @@ The classic shape: a migration or backup Job fails immediately, and the same Job
 in front of it works. Adding the sleep is not the fix — it is a guess at a duration you do not
 control.
 
-**What is happening.** Membership policies select pods by the `kube-vnet.system/net.*` label the
-operator stamps *after* the apiserver persists the pod. Until that stamp lands, the pod matches
-no membership policy and the deny-all baseline applies. Field-measured at **under a second**, but
-it stretches under load, during an operator restart, and with a slow apiserver. The permanent fix
-is the admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)),
-which stamps inside the apiserver's write path so the pod is a member from the instant it exists.
+**What is happening.** Two delays add up before a new pod's traffic is allowed:
+
+1. **kube-vnet's.** Membership policies select pods by the `kube-vnet.system/net.*` label the
+   operator stamps *after* the apiserver persists the pod. Until that stamp lands, the pod
+   matches no membership policy and the deny-all baseline applies. Field-measured at under a
+   second; it stretches under load, during an operator restart, and with a slow apiserver. The
+   admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md))
+   removes this one: it stamps inside the apiserver's write path.
+2. **The CNI's.** The CNI then has to program the pod's IP into its rules. On kube-router this is
+   a full iptables rewrite on every pod event, measured at 2-4 s end to end on a production
+   cluster, and it grows with the number of NetworkPolicies. No kube-vnet setting removes it.
+
+So the webhook helps, but a client that connects the moment it starts still has to retry, or wait
+for the condition below.
 
 **Before diagnosing, establish what a denial looks like on your CNI.** This is the step people
 skip, and getting it wrong sends you after the wrong bug — a refusal reads like "nothing is

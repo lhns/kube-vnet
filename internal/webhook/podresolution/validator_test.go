@@ -19,15 +19,7 @@ import (
 const operatorUser = "system:serviceaccount:kube-vnet-system:kube-vnet-controller"
 
 func newValidator(t *testing.T, c client.Client) *Validator {
-	t.Helper()
-	nsFilter := controller.NewNamespaceFilter(nil)
-	return &Validator{
-		Resolver:         &controller.Resolver{Reader: c, NSFilter: nsFilter},
-		Reader:           c,
-		NSFilter:         nsFilter,
-		Decoder:          admission.NewDecoder(testScheme(t)),
-		OperatorUsername: operatorUser,
-	}
+	return &Validator{newDeps(t, c)}
 }
 
 func validate(t *testing.T, v *Validator, user string, oldPod, newPod *corev1.Pod) admission.Response {
@@ -135,7 +127,7 @@ func TestValidator_AcceptsMutatorOutput(t *testing.T) {
 				t.Fatalf("DesiredLabels: %v", err)
 			}
 			mutated := tc.pod.DeepCopy()
-			applyDesiredPreservingUnknown(mutated, desired, nil)
+			controller.SyncStamps(mutated, desired, nil)
 
 			if resp := validate(t, newValidator(t, c), "alice", nil, mutated); !resp.Allowed {
 				t.Fatalf("the validator rejected the mutator's own output: %+v\n"+
@@ -227,14 +219,7 @@ func TestValidator_OperatorServiceAccount_Exempt(t *testing.T) {
 func TestValidator_StampInUnmanagedNamespace_Denied(t *testing.T) {
 	base := pod("kube-system", nil)
 	c := newClient(t, nil, base)
-	nsFilter := controller.NewNamespaceFilter([]string{"kube-system"})
-	v := &Validator{
-		Resolver:         &controller.Resolver{Reader: c, NSFilter: nsFilter},
-		Reader:           c,
-		NSFilter:         nsFilter,
-		Decoder:          admission.NewDecoder(testScheme(t)),
-		OperatorUsername: operatorUser,
-	}
+	v := &Validator{newDeps(t, c, "kube-system")}
 
 	forged := withLabels(base, map[string]string{"kube-vnet.system/net.kube-system.web": "both"})
 	if resp := validate(t, v, "alice", nil, forged); resp.Allowed {

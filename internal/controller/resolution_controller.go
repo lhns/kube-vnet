@@ -248,17 +248,13 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 // marks it resolved. No write happens when both are already in place.
 func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, desired map[string]string) error {
 	patched := pod.DeepCopy()
-	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, desired)
+	labelsChanged := SyncStamps(patched, desired, nil)
 	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] != "" {
 		return nil
 	}
-	if patched.Annotations == nil {
-		patched.Annotations = map[string]string{}
-	}
-	patched.Annotations[AnnotationResolvedGeneration] = fmt.Sprintf("%d", pod.Generation)
-	// Set on the patch path only; writing it unconditionally would make every
+	// Marked on the patch path only; marking unconditionally would make every
 	// reconcile of a webhook-stamped pod an API write.
-	patched.Annotations[AnnotationResolvedBy] = ResolvedByController
+	MarkResolved(patched, ResolvedByController)
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
 }
 
@@ -278,15 +274,11 @@ func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 // annotations from a pod in a disabled namespace.
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	patched := pod.DeepCopy()
-	// Empty desired-set → syncManagedLabels removes every managed label.
-	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, nil)
-	_, hasGen := pod.Annotations[AnnotationResolvedGeneration]
-	_, hasBy := pod.Annotations[AnnotationResolvedBy]
-	if !labelsChanged && !hasGen && !hasBy {
+	labelsChanged := SyncStamps(patched, nil, nil) // nothing desired: remove all
+	markersChanged := ClearResolved(patched)
+	if !labelsChanged && !markersChanged {
 		return ctrl.Result{}, nil
 	}
-	delete(patched.Annotations, AnnotationResolvedGeneration)
-	delete(patched.Annotations, AnnotationResolvedBy)
 	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
 		return ctrl.Result{}, err
 	}

@@ -6,14 +6,13 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
+	"github.com/lhns/kube-vnet/internal/testutil"
 )
 
 // These tests pin the NotFound-vs-transient error contract of the
@@ -25,21 +24,9 @@ import (
 
 var errInjected = errors.New("injected transient apiserver error")
 
-func resolutionSchemeForTest(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	if err := corev1.AddToScheme(s); err != nil {
-		t.Fatalf("corev1.AddToScheme: %v", err)
-	}
-	if err := vnetv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("vnetv1alpha1.AddToScheme: %v", err)
-	}
-	return s
-}
+var resolutionSchemeForTest = testutil.Scheme
 
-func testPod(ns string) *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "p"}}
-}
+func testPod(ns string) *corev1.Pod { return testutil.Pod(ns, "p", nil) }
 
 func TestClusterBaselineRules_TransientErrorPropagates(t *testing.T) {
 	scheme := resolutionSchemeForTest(t)

@@ -6,19 +6,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
-	goruntime "runtime"
-	"syscall"
 	"testing"
-	"time"
 
-	"k8s.io/apimachinery/pkg/util/rand"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -34,6 +26,7 @@ import (
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 	"github.com/lhns/kube-vnet/internal/controller"
+	"github.com/lhns/kube-vnet/internal/testutil"
 )
 
 // This suite lives here rather than in internal/controller because the
@@ -118,27 +111,12 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Wired exactly as cmd/main.go wires it: one Resolver, two handlers.
-	resolver := &controller.Resolver{Reader: mgr.GetClient(), NSFilter: nsFilter}
-	decoder := admission.NewDecoder(mgr.GetScheme())
-	operatorUser := controller.ServiceAccountUsername("kube-vnet-system-test", "kube-vnet-controller")
-	mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{
-		Handler: &Mutator{
-			Resolver:         resolver,
-			Reader:           mgr.GetClient(),
-			NSFilter:         nsFilter,
-			Decoder:          decoder,
-			OperatorUsername: operatorUser,
-		},
-	})
-	mgr.GetWebhookServer().Register("/validate-v1-pod", &admission.Webhook{
-		Handler: &Validator{
-			Resolver:         resolver,
-			Reader:           mgr.GetClient(),
-			NSFilter:         nsFilter,
-			Decoder:          decoder,
-			OperatorUsername: operatorUser,
-		},
+	Register(mgr.GetWebhookServer(), Deps{
+		Resolver:         &controller.Resolver{Reader: mgr.GetClient(), NSFilter: nsFilter},
+		Reader:           mgr.GetClient(),
+		NSFilter:         nsFilter,
+		Decoder:          admission.NewDecoder(mgr.GetScheme()),
+		OperatorUsername: controller.ServiceAccountUsername("kube-vnet-system-test", "kube-vnet-controller"),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,79 +126,21 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	// On Windows envtest's Stop() leaves the apiserver and etcd running.
-	// Reap only this process's children, never every etcd on the box: another
-	// repo's suite is a sibling process and killing its apiserver mid-run
-	// looks like a flake over there and is near-impossible to trace back here.
-	stop := func() {
+	os.Exit(testutil.Run(m, func() {
 		cancel()
-		_ = testEnv.Stop()
-		if goruntime.GOOS == "windows" {
-			script := fmt.Sprintf(
-				`Get-CimInstance Win32_Process -Filter "ParentProcessId=%d" | `+
-					`Where-Object { $_.Name -in 'etcd.exe','kube-apiserver.exe' } | `+
-					`ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-				os.Getpid())
-			_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Run()
-		}
-	}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		stop()
-		os.Exit(130)
-	}()
-
-	code := func() (rc int) {
-		defer stop()
-		return m.Run()
-	}()
-	os.Exit(code)
+		testutil.StopEnv(testEnv)
+	}))
 }
 
-func eventually(t *testing.T, timeout time.Duration, fn func() error) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		lastErr = fn()
-		if lastErr == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("eventually: %v", lastErr)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-func uniqueNS(t *testing.T, prefix string) string {
-	t.Helper()
-	return prefix + "-" + rand.String(5)
-}
+// Shared with the controller suite through internal/testutil.
+var (
+	eventually    = testutil.Eventually
+	uniqueNS      = testutil.UniqueNS
+	makePod       = testutil.Pod
+	makeNamespace = testutil.Namespace
+)
 
 func mustCreate(t *testing.T, obj client.Object) {
 	t.Helper()
-	if err := testClient.Create(context.Background(), obj); err != nil {
-		t.Fatalf("create %T %s/%s: %v", obj, obj.GetNamespace(), obj.GetName(), err)
-	}
-}
-
-func makeNamespace(name string, labels map[string]string) *corev1.Namespace {
-	merged := map[string]string{"kubernetes.io/metadata.name": name}
-	for k, v := range labels {
-		merged[k] = v
-	}
-	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: merged}}
-}
-
-func makePod(ns, name string, labels map[string]string) *corev1.Pod {
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: labels},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "app", Image: "registry.k8s.io/pause:3.10"}},
-		},
-	}
+	testutil.MustCreate(t, testClient, obj)
 }
