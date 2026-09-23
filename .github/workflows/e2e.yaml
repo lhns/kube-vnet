@@ -357,7 +357,7 @@ jobs:
 
   # The network wait (ADR 0045) on the CNIs other than kube-router, which runs
   # these tests in its e2e-helm entry. Only the TestNetworkWait tests run here;
-  # E2E_CNI lets them skip what doesn't hold on a CNI.
+  # E2E_CNI names the CNI in their logs. Results: ADR 0045's amendment.
   e2e-network-wait:
     name: e2e-network-wait (${{ matrix.cni }})
     runs-on: ubuntu-latest

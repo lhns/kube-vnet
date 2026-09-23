@@ -105,9 +105,10 @@ func TestNetworkWait_NotInjectedWithoutAnnotation(t *testing.T) {
 // doesn't know as a pod.
 //
 // A hostNetwork pod's source is its node's IP, which no NetworkPolicy peer
-// {namespaceSelector: {}} covers, so the beacon on the other node should
-// refuse it. The beacon on its own node is the control: CNIs let a node reach
-// its local pods, so that connection shows the pod can reach a beacon at all.
+// {namespaceSelector: {}} covers, so the beacon on the other node must deny
+// it: kube-router refuses, Calico and Cilium drop. The beacon on its own node
+// is the control: CNIs let a node reach its local pods, so that connection
+// shows the pod can reach a beacon at all.
 // A normal pod on the same node must be accepted by the remote beacon. All
 // three are observed and logged before anything is asserted, so one run shows
 // how a CNI behaves.
