@@ -27,10 +27,12 @@ spec:
   failurePolicy: Fail
   matchConstraints:
     resourceRules:
+      # pods/status too: a status write keeps the request's labels, so
+      # without it anyone with status rights could stamp themselves in.
       - apiGroups:   [""]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
-        resources:   ["pods"]
+        resources:   ["pods", "pods/status"]
       - apiGroups:   ["networking.k8s.io"]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
@@ -53,6 +55,10 @@ spec:
   is excluded by its namespace, or by carrying the chart's
   app.kubernetes.io/name label; on UPDATE the webhook is skipped only when
   both the old and the new pod carry it.
+
+  pods/status is always policed here, never by the webhook: the kubelet
+  writes status constantly, and a failurePolicy: Fail webhook would stop
+  pods reporting status whenever the operator is down.
   */}}
   {{- $nameKey := quote "app.kubernetes.io/name" }}
   {{- $name := include "kube-vnet.name" . | quote }}
@@ -60,6 +66,7 @@ spec:
     - name: pod-outside-webhook-scope
       expression: |
         request.resource.resource != "pods" ||
+        request.subResource == "status" ||
         request.namespace in {{ include "kube-vnet.webhookExcludedNamespaces" . }} ||
         (
           {{ $nameKey }} in object.metadata.?labels.orValue({}) &&

@@ -15,10 +15,12 @@ spec:
   failurePolicy: Fail
   matchConstraints:
     resourceRules:
+      # pods/status too: a status write keeps the request's labels, so
+      # without it anyone with status rights could stamp themselves in.
       - apiGroups:   [""]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
-        resources:   ["pods"]
+        resources:   ["pods", "pods/status"]
       - apiGroups:   ["networking.k8s.io"]
         apiVersions: ["v1"]
         operations:  ["CREATE", "UPDATE"]
