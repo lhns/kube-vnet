@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -159,10 +160,11 @@ func TestEmitTransitionEvents_IndependentOfStatusWrite(t *testing.T) {
 	}
 }
 
-type fakeRecorder struct{ reasons []string }
+type fakeRecorder struct{ reasons, notes []string }
 
-func (f *fakeRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, reason, _, _ string, _ ...interface{}) {
+func (f *fakeRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, reason, _, note string, args ...interface{}) {
 	f.reasons = append(f.reasons, reason)
+	f.notes = append(f.notes, fmt.Sprintf(note, args...))
 }
 
 // Reconcile mutates vnet.Status (setReady/setDegraded) before calling

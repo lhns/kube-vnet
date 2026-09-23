@@ -50,6 +50,14 @@ release. Pinning to an exact version is recommended.
   `helm upgrade`; any `certSource` other than `helm` or `cert-manager` fails
   the render instead of installing a webhook the apiserver cannot call.
 
+- **A pod left out of a vnet by conflicting rules now says why.** When a
+  binding, baseline and pod label disagree, resolution intersects them or
+  keeps a baseline's pinned value — correct and fail-closed, but until now
+  silent: the pod simply wasn't a member. It now gets a `ResolutionConflict`
+  or `OverrideRejected` Warning naming the rules and the result, visible in
+  `kubectl describe pod`. This replaces the annotation, metric and baseline
+  conditions ADR 0031 described, which were never built.
+
 ### Fixed
 
 - **`kube-vnet.system/*` stamps could be written through `pods/status`.** A

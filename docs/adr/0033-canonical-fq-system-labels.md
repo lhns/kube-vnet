@@ -5,7 +5,7 @@ Status: Accepted. Later changes:
 - Policy names gain a kind segment per [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md): `kube-vnet.<homeNS>.<vnet>-<8hex>` → `kube-vnet.mem.<homeNS>.<vnet>-<8hex>`, and `kube-vnet.cluster-<8hex>` → `kube-vnet.mem.cluster-<8hex>`. Label keys are unchanged.
 - The "Baseline elide-list translation" section and the other `--elide-baseline-for` references are obsolete: [ADR 0035](0035-removal-of-elide-baseline-for.md) removed the flag.
 - [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md): the `<anything>.cluster` → `cluster` collapse still governs join labels and stamped identity, but a `virtualNetworkRef` is permission-checked on its fully-qualified key first (a wrong `<ns>.cluster` is denied as not-found) and collapsed only afterwards.
-- `ReasonResolutionConflict` is declared but never set, and the per-pod conflict annotation and metric do not exist; see [ADR 0031](0031-baseline-tier-resolution.md)'s 2026-09-23 amendment. Conflicts are still intersected fail-closed.
+- `ResolutionConflict` below was never set as a vnet `Degraded` reason, and the per-pod annotation and metric were never built. It is now a Warning Event on the pod; see [ADR 0031](0031-baseline-tier-resolution.md)'s 2026-09-23 amendment.
 
 Date: 2026-05-06
 

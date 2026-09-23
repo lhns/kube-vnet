@@ -41,7 +41,6 @@ const (
 	ReasonNamespaceNotAllowed   = "NamespaceNotAllowed"
 	ReasonNamespaceExcluded     = "NamespaceExcluded"
 	ReasonUnknownDirection      = "UnknownDirection"
-	ReasonResolutionConflict    = "ResolutionConflict"
 	ReasonNoIssues              = "NoIssues"
 )
 

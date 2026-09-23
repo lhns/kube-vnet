@@ -156,6 +156,8 @@ Most common case. Walk through these in order:
 
    **Direction value.** The value must be `both`, `ingress`, `egress`, or `none`. An unknown value (e.g. a typo `"bothh"`) is rejected at admission, or — without the VAP — ignored with an `InvalidJoinLabelDirection` pod event.
 
+   **Another rule disagrees.** If a binding or baseline also names the vnet, the directions combine: same-tier rules intersect (`ingress` and `egress` give no membership), and a baseline's bare value can't be overridden. `kubectl describe pod` shows a `ResolutionConflict` or `OverrideRejected` Warning naming the rules involved.
+
 2. **Is the pod's namespace operator-excluded?**
 
    ```bash

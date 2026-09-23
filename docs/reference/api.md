@@ -168,7 +168,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
 
-`ResolutionConflict` is defined as a constant but not currently set: conflicting directions from different sources are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) without being reported on the vnet. The reason constants live in `internal/controller/virtualnetwork_controller.go` (the `Reason*` block).
+Conflicting directions from different sources are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) and reported as `ResolutionConflict` / `OverrideRejected` Warning Events on the pod, not on the vnet. The reason constants live in `internal/controller/virtualnetwork_controller.go` (the `Reason*` block).
 
 ### `status.members`
 

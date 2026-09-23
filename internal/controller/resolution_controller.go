@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -108,7 +109,7 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Resolve through the shared Resolver — the same code path the
 	// admission webhook runs, so a pod stamped at admission reconciles to
 	// an identical label set and this pass is a no-op (ADR 0034).
-	desired, _, err := r.resolver().DesiredLabels(ctx, pod)
+	desired, res, err := r.resolver().DesiredLabels(ctx, pod)
 	if err != nil {
 		logger.Error(err, "build resolution layers")
 		return ctrl.Result{}, err
@@ -119,8 +120,41 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Error(err, "apply resolution")
 		return ctrl.Result{}, err
 	}
+	r.warnNarrowedMembership(pod, res)
 
 	return ctrl.Result{}, nil
+}
+
+// warnNarrowedMembership emits a Warning on the pod for each conflict and
+// rejected override. Only the reconciler emits: it runs for every pod, the
+// webhook included, and admission is not a place to write to the apiserver.
+func (r *ResolutionReconciler) warnNarrowedMembership(pod *corev1.Pod, res ResolutionResult) {
+	if r.Recorder == nil {
+		return
+	}
+	for _, c := range res.Conflicts {
+		parts := make([]string, 0, len(c.Participants))
+		for _, p := range c.Participants {
+			parts = append(parts, fmt.Sprintf("%s=%s", p.Source, p.Direction))
+		}
+		sort.Strings(parts)
+		r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, ReasonResolutionConflict, "Resolve",
+			"rules in the %s tier disagree on %q (%s) and intersect to %q%s",
+			c.Scope, c.Vnet, strings.Join(parts, ", "), c.Effective, notAMember(c.Effective))
+	}
+	for _, o := range res.OverrideRejected {
+		r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, ReasonOverrideRejected, "Resolve",
+			"the %s tier tried to set %q to %q, but the %s tier pins it to %q; "+
+				"use a default-* value there to allow overrides",
+			o.AttemptedScope, o.Vnet, o.AttemptedDir, o.BlockingScope, o.BlockingDir)
+	}
+}
+
+func notAMember(d Direction) string {
+	if d.Bare() == DirectionNone {
+		return ": the pod is not a member"
+	}
+	return ""
 }
 
 // ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
@@ -140,6 +174,19 @@ const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
 // vnet-owner-facing mirror is the vnet's `UnknownDirection`/`InvalidJoiners`
 // condition, which fires only when the named vnet exists.
 const ReasonInvalidJoinLabelDirection = "InvalidJoinLabelDirection"
+
+// Event reasons for the two ways resolution silently narrows a pod's
+// membership (ADR 0031). Both results are correct and fail closed; without
+// these the only symptom is a pod that is not a member, with nothing saying
+// why.
+const (
+	// ReasonResolutionConflict: rules in the same tier gave different
+	// directions for one vnet and were intersected.
+	ReasonResolutionConflict = "ResolutionConflict"
+	// ReasonOverrideRejected: a lower tier tried to change a direction an
+	// upper tier pinned with a bare value.
+	ReasonOverrideRejected = "OverrideRejected"
+)
 
 // notJoinableHint returns a targeted suggestion when a ref names one of the
 // reserved system vnets, whose namespace semantics trip people up. It is

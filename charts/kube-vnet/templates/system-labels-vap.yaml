@@ -66,7 +66,7 @@ spec:
     - name: pod-outside-webhook-scope
       expression: |
         request.resource.resource != "pods" ||
-        request.subResource == "status" ||
+        request.?subResource.orValue("") == "status" ||
         request.namespace in {{ include "kube-vnet.webhookExcludedNamespaces" . }} ||
         (
           {{ $nameKey }} in object.metadata.?labels.orValue({}) &&

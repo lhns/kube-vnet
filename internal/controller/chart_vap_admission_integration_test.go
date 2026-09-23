@@ -3,6 +3,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -165,7 +167,7 @@ func TestIntegration_VAP_SystemLabels_StatusSubresource(t *testing.T) {
 	stamp := LabelSystemNetPrefix + ns + ".web"
 
 	awaitVAPActive(t, userClient, func() client.Object {
-		return makePod(ns, fmt.Sprintf("probe-%d", time.Now().UnixNano()%100000),
+		return makePod(ns, "probe-"+rand.String(5),
 			map[string]string{stamp: "both"})
 	})
 
@@ -197,6 +199,84 @@ func TestIntegration_VAP_SystemLabels_StatusSubresource(t *testing.T) {
 		updated.Status.Message = "kubelet-style status update"
 		if err := userClient.Status().Patch(ctx, updated, client.MergeFrom(&cur)); err != nil {
 			t.Fatalf("an ordinary status write was denied: %v", err)
+		}
+	})
+}
+
+// The webhook-on variant of the system-labels VAP carries a matchCondition
+// the kustomize copy (rendered with the webhook off) does not have, so it is
+// rendered from the chart here. A matchCondition that errors is a denial
+// under failurePolicy: Fail, so the first case is the important one: an
+// ordinary pod must still be admitted.
+func TestIntegration_VAP_SystemLabels_WebhookVariant(t *testing.T) {
+	ctx := context.Background()
+	rendered := helmTemplate(t, "kube-vnet-controller",
+		"--namespace", "kube-vnet-system",
+		"--set", "fullnameOverride=kube-vnet-controller",
+		"--set", "operator.clusterBaseline.ingressIsolationLevel=namespace",
+		"--set", "webhook.enabled=true",
+		"--show-only", "templates/system-labels-vap.yaml")
+	objs := decodeObjects(t, bytes.NewReader(rendered))
+	if len(objs) < 2 {
+		t.Fatalf("expected VAP + Binding, got %d objects", len(objs))
+	}
+	for _, obj := range objs {
+		if err := testClient.Create(ctx, obj); err != nil {
+			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
+		}
+		t.Cleanup(func() { _ = testClient.Delete(context.Background(), obj) })
+	}
+	mustGrantRBAC(t, "vap-test-wh-pods", "", "pods", "alice@example.com")
+	mustGrantRBAC(t, "vap-test-wh-pods-status", "", "pods/status", "alice@example.com")
+	userClient := mustImpersonate(t, "alice@example.com")
+
+	// kube-public is one of the namespaces the webhook skips, so this policy
+	// polices pods there.
+	const excluded = "kube-public"
+	stampIn := func(ns string) map[string]string {
+		return map[string]string{LabelSystemNetPrefix + ns + ".web": "both"}
+	}
+	awaitVAPActive(t, userClient, func() client.Object {
+		return makePod(excluded, "probe-"+rand.String(5), stampIn(excluded))
+	})
+
+	ns := uniqueNS(t, "vap-wh")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+
+	t.Run("ordinary pod is admitted", func(t *testing.T) {
+		p := makePod(ns, "plain", map[string]string{"app": "x"})
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("a pod with no system labels was denied: %v", err)
+		}
+	})
+
+	t.Run("stamp in an excluded namespace is denied", func(t *testing.T) {
+		p := makePod(excluded, "forged-"+rand.String(5), stampIn(excluded))
+		err := userClient.Create(ctx, p)
+		if err == nil {
+			_ = testClient.Delete(ctx, p)
+			t.Fatal("a forged stamp was admitted in a namespace the webhook skips")
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("expected a VAP denial, got %v", err)
+		}
+	})
+
+	t.Run("stamp via status is denied", func(t *testing.T) {
+		var cur corev1.Pod
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "plain"}, &cur); err != nil {
+			t.Fatalf("get pod: %v", err)
+		}
+		forged := cur.DeepCopy()
+		for k, v := range stampIn(ns) {
+			forged.Labels[k] = v
+		}
+		err := userClient.Status().Patch(ctx, forged, client.MergeFrom(&cur))
+		if err == nil {
+			t.Fatal("a stamp was written through pods/status")
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("expected a VAP denial, got %v", err)
 		}
 	})
 }
