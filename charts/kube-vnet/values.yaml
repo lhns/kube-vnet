@@ -65,9 +65,9 @@ operator:
     # Set to false if you manage that CR outside Helm (Argo, GitOps, kubectl).
     create: true
 
-    # When create=true: set EXACTLY ONE of `ingressIsolationLevel` or
-    # `memberships`. Both → install fails (ambiguous). Neither → install
-    # fails (no default; force a deliberate security choice).
+    # When create=true, set exactly one of `ingressIsolationLevel` or
+    # `memberships`; the install fails on both (ambiguous) or neither (there
+    # is no default, so the security posture is always a deliberate choice).
     #
     # ingressIsolationLevel — preset for the common cases. One of:
     #   pod       — namespace=default-egress, cluster=default-egress
@@ -81,11 +81,10 @@ operator:
 
     # memberships — explicit override for users whose desired baseline
     # doesn't match any preset. Map of <vnet-key> → <direction>:
-    #   bare name (e.g. `namespace`, `cluster`) → system vnet. Rendered with
-    #     NO `namespace:` attribute: `cluster` is the cluster-wide singleton,
-    #     and `namespace` resolves to each pod's OWN namespace (the operator
-    #     creates one in every managed namespace — never in the release
-    #     namespace, which is unmanaged). See ADR 0043.
+    #   bare name (e.g. `namespace`, `cluster`) → system vnet. Rendered
+    #     without a `namespace:` attribute: `cluster` is the cluster-wide
+    #     singleton, and `namespace` resolves to each pod's own namespace.
+    #     See ADR 0043.
     #   <namespace>.<name>                       → user vnet in that NS.
     # Direction is the eight-value enum (bare or default-*).
     # Bare directions are enforced; default-* are override-able by lower tiers.
@@ -110,7 +109,7 @@ operator:
 # the same shape the auto-allow families use. It carries only chart labels, so
 # the operator never touches it.
 dnsCarveout:
-  # Rendered automatically when `namespace` below is NOT in
+  # Rendered automatically when `namespace` below is not in
   # operator.disabledNamespaces (i.e. cluster DNS is being managed).
   #   null  → auto (render iff the DNS namespace is managed)  [default]
   #   false → never render
@@ -137,7 +136,7 @@ dnsCarveout:
 # ClusterRole within a namespace gets read+write on those CRDs in that
 # namespace; `view` gets read.
 #
-# ClusterVirtualNetworkBaseline (cluster-scoped) is NOT aggregated — only
+# ClusterVirtualNetworkBaseline (cluster-scoped) is not aggregated — only
 # cluster-admin can write it by default. The chart also ships an unbound
 # editor + viewer pair for that resource so a cluster-admin can delegate
 # read or write via their own ClusterRoleBinding.
@@ -238,10 +237,10 @@ cleanup:
 # program a new pod (seconds on kube-router), so startup connections must
 # retry either way.
 #
-# READ BEFORE ENABLING. The validating half runs with failurePolicy: Fail,
-# preserving the guarantee that kube-vnet.system/* labels cannot be forged
-# even while the operator is unreachable. The cost is that an operator
-# outage BLOCKS POD CREATION in managed namespaces. kube-system, kube-public,
+# The validating half runs with failurePolicy: Fail, preserving the
+# guarantee that kube-vnet.system/* labels cannot be forged even while the
+# operator is unreachable. The cost is that an operator outage blocks pod
+# creation in managed namespaces. kube-system, kube-public,
 # kube-node-lease, this release's namespace and every namespace in
 # operator.disabledNamespaces are excluded, so the cluster, the operator and
 # what it doesn't manage (typically the CNI) can always recover. Run at least
@@ -249,7 +248,7 @@ cleanup:
 #
 # The mutating half is failurePolicy: Ignore — it is an acceleration, and if
 # it is unreachable pods simply land unstamped and the controller stamps them
-# as it does today.
+# as it does without the webhook.
 webhook:
   enabled: false
   # helm         — self-signed CA generated at install time and reused across

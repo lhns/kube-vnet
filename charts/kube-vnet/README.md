@@ -31,7 +31,7 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 
 | Key | Default | Description |
 |---|---|---|
-| `webhook.enabled` | `false` | Stamp pod membership during admission (ADR 0034), closing the window in which a starting pod is denied because it is not yet stamped. **The validating half is `failurePolicy: Fail`: an operator outage blocks pod creation in managed namespaces.** Run 2+ replicas. |
+| `webhook.enabled` | `false` | Stamp pod membership during admission (ADR 0034), closing the window in which a starting pod is denied because it is not yet stamped. The validating half is `failurePolicy: Fail`: an operator outage blocks pod creation in managed namespaces. Run 2+ replicas. |
 | `webhook.certSource` | `helm` | `helm` (self-signed CA, reused across upgrades via `lookup`) or `cert-manager` |
 | `webhook.certManager.issuerRef` | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`; `name` is required in that mode |
 | `webhook.timeoutSeconds` | `5` | Admission timeout. Resolution is served from cache, so a slow reply means the operator is unhealthy |
@@ -41,15 +41,16 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `replicaCount` | `1` | Operator replicas (2+ for HA, and with `webhook.enabled`) |
 | `operator.disabledNamespaces` | `[kube-system]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`). Removing `kube-system` enrolls it; `dnsCarveout` then keeps CoreDNS reachable |
+| `dnsCarveout.enabled` | `null` (auto) | Render the NetworkPolicy that keeps CoreDNS reachable on `:53`: automatically when `dnsCarveout.namespace` is managed, or forced with `true`/`false` (ADR 0042) |
 | `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Source CIDR of the auto-allow for Services the apiserver dials (webhooks, APIServices) |
 | `operator.clusterBaseline.create` | `true` | Whether the chart seeds the singleton `ClusterVirtualNetworkBaseline` named `default` |
-| `operator.clusterBaseline.ingressIsolationLevel` | `""` (REQUIRED if `create=true` and `memberships` unset) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
+| `operator.clusterBaseline.ingressIsolationLevel` | `""` (required unless `memberships` is set) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.leaderElect` | `true` | Enable leader election |
 | `rbac.aggregate` | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to manage all RBAC outside Helm. |
 | `cleanup.enabled` | `true` | Run a pre-delete hook that removes operator-managed NetworkPolicies on `helm uninstall`. Without it the deny-all baselines survive uninstall and keep enforcing. See ADR 0036. |
-| `cleanup.image.repository` | `registry.k8s.io/kubectl` | Image for the pre-delete hook Job. Published by the Kubernetes SIG Release team — no single-vendor dependency. |
-| `cleanup.image.tag` | `"v1.30.0"` | Tag for the pre-delete hook image. Pin to a known-good kubectl version (uses `v`-prefixed semver per `registry.k8s.io/kubectl`). |
+| `cleanup.image.repository` | `registry.k8s.io/kubectl` | Image for the pre-delete hook Job |
+| `cleanup.image.tag` | `"v1.30.0"` | Tag for the pre-delete hook image (`v`-prefixed, as `registry.k8s.io/kubectl` publishes them) |
 | `metricsService.enabled` | `false` | Expose `/metrics` via a Service |
 | `podMonitor.enabled` | `false` | Create a `PodMonitor` for the Prometheus operator |
 | `resources.*` | small defaults | CPU/memory requests and limits |
@@ -61,7 +62,7 @@ Full reference: [`docs/reference/configuration.md`](https://github.com/lhns/kube
 
 By default (`rbac.aggregate: true`) the chart ships ClusterRoles aggregated into the upstream `admin`, `edit`, and `view` ClusterRoles for `VirtualNetwork`, `VirtualNetworkBinding`, and `VirtualNetworkBaseline`. Anyone bound to one of those upstream roles within a namespace automatically gains the corresponding access on the kube-vnet CRDs in that namespace — no extra bindings to create.
 
-`ClusterVirtualNetworkBaseline` (cluster-scoped) is **not** aggregated; only cluster-admin can write it by default. The chart ships an unbound `<release>-clustervirtualnetworkbaselines-editor` ClusterRole for cluster-admins to bind explicitly via their own `ClusterRoleBinding` if they want to delegate cluster-baseline editing to a platform-team user/group. **Bind carefully**: the cluster baseline drives every namespace's default ingress posture.
+`ClusterVirtualNetworkBaseline` (cluster-scoped) is **not** aggregated; only cluster-admin can write it by default. The chart ships an unbound `<release>-clustervirtualnetworkbaselines-editor` ClusterRole for cluster-admins to bind explicitly via their own `ClusterRoleBinding` if they want to delegate cluster-baseline editing to a platform-team user/group. Bind it carefully: the cluster baseline drives every namespace's default ingress posture.
 
 A matching viewer ClusterRole (`<release>-clustervirtualnetworkbaselines-viewer`) lets dashboards and audit tooling read the cluster baseline without write access.
 

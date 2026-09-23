@@ -133,11 +133,11 @@ polices pods in exactly these namespaces instead (see system-labels-vap.yaml).
 {{/*
 Selectors shared by both pod-resolution webhook configurations (ADR 0034).
 
-They MUST be identical on the mutating and validating sides: a pod the
+They must be identical on the mutating and validating sides: a pod the
 mutator skips but the validator judges would be checked against a resolution
 that was never applied.
 
-`kube-vnet/disabled=true` is an ANNOTATION and so cannot be expressed as a
+`kube-vnet/disabled=true` is an annotation and so cannot be expressed as a
 namespaceSelector; the handlers re-check it through the same NamespaceFilter
 the reconcilers use, which is why that check is duplicated in Go.
 

@@ -19,7 +19,6 @@ sources:
 maintainers:
   - name: Pierre Kisters
     url: https://github.com/lhns
-icon: ""
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/operator: "true"

@@ -3,19 +3,19 @@ Pod-resolution admission webhooks (ADR 0034).
 
 Two handlers, deliberately asymmetric:
 
-  * MUTATING, failurePolicy: Ignore — stamps kube-vnet.system/net.* onto the
+  * Mutating, failurePolicy: Ignore — stamps kube-vnet.system/net.* onto the
     pod during admission so it is a member before it ever runs. It is an
     acceleration, not a gate: if it is unreachable, admission proceeds, the
     pod lands unstamped, the deny-all baseline keeps it unreachable rather
     than over-permissive, and the reconciler stamps it moments later.
 
-  * VALIDATING, failurePolicy: Fail — enforces that those labels are the ones
+  * Validating, failurePolicy: Fail — enforces that those labels are the ones
     resolution actually produces. For the pods it sees, it replaces the
     pods rule of the system-labels VAP, which cannot survive the mutator: a
-    mutating webhook's patch is attributed to the REQUESTER, never to the
+    mutating webhook's patch is attributed to the requester, never to the
     operator's ServiceAccount, so the VAP's username exemption would reject
-    every pod creation in a managed namespace. Fail preserves that VAP's posture — a
-    forged stamp is impossible even while the operator is unreachable — at
+    every pod creation in a managed namespace. Fail preserves that VAP's
+    posture — a forged stamp is impossible even while the operator is unreachable — at
     the cost of blocking pod creation in managed namespaces during an
     operator outage. That trade is deliberate; see values.yaml.
 

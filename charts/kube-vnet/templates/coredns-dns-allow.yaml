@@ -7,8 +7,8 @@ CoreDNS and its :53 ClusterIP — matched by none of the auto-allow families —
 goes deny-all, killing cluster DNS. This NetworkPolicy is additive to that
 baseline (NetworkPolicies OR) and re-opens :53 from everywhere.
 
-It is a CHART-shipped policy, not operator-managed: it carries only the
-standard chart labels (app.kubernetes.io/*), NOT kube-vnet.system/*, so the
+It is chart-shipped, not operator-managed: it carries only the standard
+chart labels (app.kubernetes.io/*), not kube-vnet.system/*, so the
 operator's baseline/membership/external sweeps never see or delete it.
 
 DNS is universal reachability, not vnet segmentation — every pod (and
