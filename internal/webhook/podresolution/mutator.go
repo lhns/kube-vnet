@@ -35,15 +35,23 @@ type Mutator struct {
 	Reader   client.Reader
 	NSFilter *controller.NamespaceFilter
 	Decoder  admission.Decoder
+	// OperatorUsername is the operator ServiceAccount's username. Its own
+	// patches already carry the resolved labels; mutating them would only
+	// overwrite resolved-by and hide that the reconciler did the stamping.
+	OperatorUsername string
 }
 
 func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.Response {
+	if m.OperatorUsername != "" && req.UserInfo.Username == m.OperatorUsername {
+		return admission.Allowed("operator ServiceAccount")
+	}
+
 	pod := &corev1.Pod{}
 	if err := m.Decoder.Decode(req, pod); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
-	// The webhook's namespaceSelector cannot express --disabled-namespaces.
+	// The namespaceSelector cannot express the kube-vnet/disabled annotation.
 	managed, err := namespaceManaged(ctx, m.Reader, m.NSFilter, req.Namespace)
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
