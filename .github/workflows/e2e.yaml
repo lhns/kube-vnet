@@ -131,6 +131,8 @@ jobs:
             webhook: false
           - cni: kube-router
             webhook: true
+    env:
+      CLUSTER: kube-vnet-e2e-helm-${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -144,7 +146,7 @@ jobs:
       - name: create kind cluster (no default CNI)
         uses: helm/kind-action@v1.15.0
         with:
-          cluster_name: kube-vnet-e2e-helm-${{ matrix.cni }}
+          cluster_name: ${{ env.CLUSTER }}
           config: test/e2e/kind-config.yaml
           wait: 60s
 
@@ -152,7 +154,7 @@ jobs:
         uses: ./.github/actions/e2e-setup
         with:
           cni: ${{ matrix.cni }}
-          cluster-name: kube-vnet-e2e-helm-${{ matrix.cni }}
+          cluster-name: ${{ env.CLUSTER }}
 
       - name: deploy operator (helm)
         run: |
@@ -237,7 +239,7 @@ jobs:
               exit 1
             }
 
-          NODE_IP=$(docker inspect kube-vnet-e2e-helm-control-plane \
+          NODE_IP=$(docker inspect "$CLUSTER-control-plane" \
             -f '{{.NetworkSettings.Networks.kind.IPAddress}}')
 
           # Wait for kube-proxy to program the NodePort iptables rule.
