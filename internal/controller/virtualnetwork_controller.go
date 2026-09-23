@@ -145,9 +145,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
 		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
-		// Clean up any policies that may exist from a previous reconcile.
-		_ = r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
-		return ctrl.Result{}, nil
+		// Remove policies from earlier reconciles; a failure must retry, or
+		// the stale grants stay.
+		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
 	}
 
 	members, invalid, err := r.discoverMembers(ctx, vnet)
