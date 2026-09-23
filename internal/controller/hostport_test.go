@@ -1,11 +1,15 @@
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func podWithHostPorts(name string, ports ...corev1.ContainerPort) *corev1.Pod {
@@ -161,5 +165,42 @@ func TestDesiredHostPortStamps_LabelFormat(t *testing.T) {
 	}
 	if !stamps[want2] {
 		t.Errorf("missing %q", want2)
+	}
+}
+
+// reconcileHostPort runs one reconcile of ns holding pods and returns the
+// names of the policies in ns afterwards.
+func reconcileHostPort(t *testing.T, ns *corev1.Namespace, pods ...*corev1.Pod) []string {
+	t.Helper()
+	objs := []client.Object{ns}
+	for _, p := range pods {
+		objs = append(objs, p)
+	}
+	c := autoAllowClient(t, objs...)
+	r := &HostPortReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: ns.Name}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	var names []string
+	for _, p := range listPolicies(t, c, ns.Name) {
+		names = append(names, p.Name)
+	}
+	return names
+}
+
+func TestHostPortReconcile_AppliesPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
+	if got := reconcileHostPort(t, ns, p); len(got) != 1 {
+		t.Errorf("got policies %v, want 1", got)
+	}
+}
+
+// NamespaceLifecycle admission rejects creates in a terminating namespace, so
+// applying there would only fail and retry until the namespace is gone.
+func TestHostPortReconcile_TerminatingNamespace_NoApply(t *testing.T) {
+	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
+	if got := reconcileHostPort(t, terminatingNamespace("ns"), p); len(got) != 0 {
+		t.Errorf("applied %v into a terminating namespace", got)
 	}
 }

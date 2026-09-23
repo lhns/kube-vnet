@@ -1,14 +1,24 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/managedfields"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -327,5 +337,71 @@ func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
 				t.Errorf("predicate = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// autoAllowClient returns a fake client holding objs, with every type the
+// auto-allow reconcilers read registered.
+func autoAllowClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme, networkingv1.AddToScheme, admissionregistrationv1.AddToScheme,
+		apiregistrationv1.AddToScheme, apiextensionsv1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithTypeConverters(managedfields.NewDeducedTypeConverter()).Build()
+}
+
+// terminatingNamespace returns a Namespace that is being deleted.
+func terminatingNamespace(name string) *corev1.Namespace {
+	now := metav1.Now()
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: name, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}}
+}
+
+// listPolicies returns the NetworkPolicies in ns.
+func listPolicies(t *testing.T, c client.Client, ns string) []networkingv1.NetworkPolicy {
+	t.Helper()
+	var list networkingv1.NetworkPolicyList
+	if err := c.List(context.Background(), &list, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list policies: %v", err)
+	}
+	return list.Items
+}
+
+// reconcileExternalAllow runs one reconcile of Service ns/name against objs
+// and returns the client.
+func reconcileExternalAllow(t *testing.T, ns, name string, objs ...client.Object) client.Client {
+	t.Helper()
+	c := autoAllowClient(t, objs...)
+	r := &ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return c
+}
+
+// NamespaceLifecycle admission rejects creates in a terminating namespace, so
+// applying there would only fail and retry until the namespace is gone.
+func TestExternalAllowReconcile_TerminatingNamespace_NoApply(t *testing.T) {
+	c := reconcileExternalAllow(t, "ns", "web", terminatingNamespace("ns"), svc("web", "ns"))
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("applied %d policies into a terminating namespace", len(got))
+	}
+}
+
+// Sanity check for the fake-client harness: a live namespace does get the
+// policy.
+func TestExternalAllowReconcile_AppliesPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	c := reconcileExternalAllow(t, "ns", "web", ns, svc("web", "ns"))
+	if got := listPolicies(t, c, "ns"); len(got) != 1 {
+		t.Errorf("got %d policies, want 1", len(got))
 	}
 }

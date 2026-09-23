@@ -71,6 +71,10 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, err
 	}
+	// NamespaceLifecycle admission rejects creates in a terminating namespace.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
 
 	// Three opt-out gates: NS in --disabled-namespaces or annotated
 	// kube-vnet/disabled=true; NS annotated kube-vnet/external-allow=false;

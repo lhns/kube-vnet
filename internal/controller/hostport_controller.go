@@ -66,6 +66,10 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 		return ctrl.Result{}, err
 	}
+	// NamespaceLifecycle admission rejects creates in a terminating namespace.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
 
 	// Opt-out is Namespace-wide only: the policies are per namespace, not
 	// per pod.

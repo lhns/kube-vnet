@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -8,8 +9,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ---- extractors ----
@@ -503,6 +507,51 @@ func TestApiserverReachableOptedIn(t *testing.T) {
 		if got := ApiserverReachableOptedIn(c.annotations); got != c.want {
 			t.Errorf("ApiserverReachableOptedIn(%v) = %v, want %v", c.annotations, got, c.want)
 		}
+	}
+}
+
+// ---- Reconcile ----
+
+// reconcileApiserverReachable runs one reconcile of Service ns/name against
+// objs and returns the client.
+func reconcileApiserverReachable(t *testing.T, ns, name string, objs ...client.Object) client.Client {
+	t.Helper()
+	c := autoAllowClient(t, objs...)
+	r := &ApiserverReachableReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return c
+}
+
+// optedInService returns a Service annotated apiserver-reachable.
+func optedInService(ns, name string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns, Name: name,
+			Annotations: map[string]string{AnnotationApiserverReachable: "true"},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "x"},
+			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(8443)}},
+		},
+	}
+}
+
+func TestApiserverReachableReconcile_AppliesPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	c := reconcileApiserverReachable(t, "ns", "webhook", ns, optedInService("ns", "webhook"))
+	if got := listPolicies(t, c, "ns"); len(got) != 1 {
+		t.Errorf("got %d policies, want 1", len(got))
+	}
+}
+
+// NamespaceLifecycle admission rejects creates in a terminating namespace, so
+// applying there would only fail and retry until the namespace is gone.
+func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) {
+	c := reconcileApiserverReachable(t, "ns", "webhook", terminatingNamespace("ns"), optedInService("ns", "webhook"))
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("applied %d policies into a terminating namespace", len(got))
 	}
 }
 

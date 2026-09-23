@@ -92,6 +92,10 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
+	// NamespaceLifecycle admission rejects creates in a terminating namespace.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
 
 	// Same opt-out gates as ExternalAllowReconciler.
 	if !r.NSFilter.IsManaged(ns) ||
