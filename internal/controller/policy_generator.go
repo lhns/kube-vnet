@@ -20,28 +20,23 @@ import (
 const (
 	// LabelK8sManagedBy is the Kubernetes recommended managed-by label,
 	// stamped (with LabelManagedByValue) on every operator-emitted resource
-	// purely for ecosystem convention — dashboards and `kubectl get -l
-	// app.kubernetes.io/managed-by=kube-vnet` work as users expect.
+	// for ecosystem convention only.
 	//
-	// INFORMATIONAL ONLY. Never select, sweep, or gate any operation on
-	// this key: it is user-writable by design and cannot be VAP-protected
-	// (Helm stamps it on every chart-managed object cluster-wide), so a
-	// user could add it to a third-party policy and our sweeps would
-	// delete an object we don't own. LabelManagedBy (kube-vnet.system/
-	// prefix, admission-protected per ADR 0037) is the sole authoritative
-	// ownership signal.
+	// Never select, sweep, or gate any operation on it: it is user-writable
+	// and cannot be VAP-protected (Helm stamps it cluster-wide), so a user
+	// could add it to a third-party policy and a sweep would delete an object
+	// we don't own. LabelManagedBy (admission-protected, ADR 0037) is the
+	// sole ownership signal.
 	LabelK8sManagedBy = "app.kubernetes.io/managed-by"
 
-	// LabelManagedBy marks operator-owned NetworkPolicy resources AND
-	// operator-created VirtualNetwork CRs (the system `namespace` and
-	// `cluster` vnets). Same key, same value, across both resource types —
-	// one canonical sentinel for "this object is operator-managed".
+	// LabelManagedBy marks operator-owned NetworkPolicies and the
+	// operator-created system VirtualNetworks (`namespace`, `cluster`).
 	LabelManagedBy = "kube-vnet.system/managed-by"
-	// LabelManagedByValue is the value of LabelManagedBy on operator-owned policies.
+	// LabelManagedByValue is the value of LabelManagedBy on operator-owned objects.
 	LabelManagedByValue = "kube-vnet"
 	// LabelNetwork identifies the VirtualNetwork that owns a policy: "<homeNS>.<vnet>".
 	LabelNetwork = "kube-vnet.system/network"
-	// LabelRole distinguishes membership policies from the baseline.
+	// LabelRole distinguishes membership, baseline and external-allow policies.
 	LabelRole = "kube-vnet.system/role"
 	// LabelRoleMembership marks per-VirtualNetwork membership policies.
 	LabelRoleMembership = "membership"
@@ -101,14 +96,8 @@ const (
 	// (k8s >=1.22) — used for namespaceSelector matching.
 	NamespaceMetadataNameLabel = "kubernetes.io/metadata.name"
 
-	// DNSAppLabelKey/Value match the standard CoreDNS pod label.
-	DNSAppLabelKey   = "k8s-app"
-	DNSAppLabelValue = "kube-dns"
-	// KubeSystemNamespace is the well-known namespace housing CoreDNS.
-	KubeSystemNamespace = "kube-system"
-
-	// DefaultLabelPrefix is the default label key prefix for the join labels and
-	// operator-internal labels. Configurable at runtime.
+	// DefaultLabelPrefix is the prefix of user-facing keys: join labels
+	// (`kube-vnet/net.*`) and annotations.
 	DefaultLabelPrefix = "kube-vnet/"
 
 	// FieldManager is the server-side-apply field manager name used by the operator.
@@ -118,7 +107,6 @@ const (
 	// NetworkPolicy carries one of these as the second dot-segment of its
 	// name, making the kind visible at a glance instead of implicit in
 	// segment count. Format: `kube-vnet.<kind>.<identity>-<8hex>`.
-	PolicyKindBaseline   = "base"
 	PolicyKindMembership = "mem"
 	PolicyKindExternal   = "ext"
 
@@ -141,14 +129,8 @@ const (
 // values are advisory.
 //
 // Pod-tier values (pod label and `VirtualNetworkBinding.spec.direction`)
-// accept only the bare four — the `default-*` prefix is meaningless at the
-// leaf tier and is rejected at admission (CRD CEL) and at runtime (label
-// parser). Any other value (including the legacy `true`/`false`/empty-string
-// aliases that earlier ADRs honored) is rejected by ParseDirection. The
-// direction-value VAP shipped via the chart also rejects unknown values at
-// admission. Callers that hit ok=false from ParseDirection should surface the
-// value as an InvalidJoiner with reason UnknownDirection. See ADR 0030, the
-// ADR 0021 2026-05-05 addendum, and ADR 0031.
+// accept only the bare four (ParseBareDirection); `default-*` is meaningless
+// at the leaf tier. See ADR 0030 and ADR 0031.
 type Direction string
 
 const (
@@ -164,11 +146,8 @@ const (
 	DirectionDefaultNone    Direction = "default-none"
 )
 
-// ParseDirection normalizes a label value to a Direction. Returns ok=false
-// for any value other than the eight enum constants. The legacy aliases
-// `true`, `false`, and the empty string are no longer accepted (dropped per
-// ADR 0030; see the ADR 0021 2026-05-05 addendum). The direction-value VAP
-// rejects them at admission too.
+// ParseDirection parses a label value into a Direction. Returns ok=false for
+// any value other than the eight Direction constants.
 func ParseDirection(value string) (Direction, bool) {
 	switch value {
 	case "both":
@@ -240,13 +219,9 @@ type InvalidJoiner struct {
 
 // GenerateInput is the pure input to the policy generator.
 //
-// MembersByNS is keyed by namespace, then by Direction. Per ADR 0033, every
-// member is selected via a single canonical FQ system label key
-// (`kube-vnet.system/net.<homeNS>.<vnet>`), regardless of whether the pod's
-// stamp came from a user label, a `VirtualNetworkBinding`, or a baseline.
-// Bindings no longer produce a separate generator-input axis; they stamp the
-// same canonical system label as everything else and are picked up here as
-// regular members.
+// MembersByNS is keyed by namespace, then by Direction. Every member is
+// selected by the one canonical system label (SystemLabelKey, ADR 0033),
+// whichever source — join label, binding, or baseline — stamped it.
 type GenerateInput struct {
 	VNet        *vnetv1alpha1.VirtualNetwork
 	MembersByNS map[string]map[Direction][]string
@@ -255,21 +230,6 @@ type GenerateInput struct {
 // GenerateOutput holds the desired NetworkPolicies.
 type GenerateOutput struct {
 	Policies []networkingv1.NetworkPolicy
-}
-
-// JoinLabelKey returns the label key a pod sets to join the given VirtualNetwork
-// from inPodNS. For pods in the home namespace the bare form
-// "<prefix>net.<vnet>" works. The prefixed form
-// "<prefix>net.<homeNS>.<vnet>" works in any namespace including the home one.
-//
-// This is the user-facing input scheme (per ADR 0022 — both forms are
-// accepted on inputs). The resolution controller normalizes both to the
-// canonical FQ form on the operator-output side; see SystemLabelKey.
-func JoinLabelKey(prefix, homeNS, vnet, inPodNS string) string {
-	if inPodNS == homeNS {
-		return prefix + "net." + vnet
-	}
-	return prefix + "net." + homeNS + "." + vnet
 }
 
 // SystemLabelKey returns the canonical operator-stamped label key for a
@@ -304,8 +264,7 @@ func PolicyName(vnet, homeNS string) string {
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.
 // Inputs are joined with `\x00` — forbidden in DNS-1123 labels and Kubernetes
 // resource names — so distinct (parts...) tuples always produce distinct
-// pre-hash strings. SHA-256 is overkill for collision avoidance at this size
-// but matches what `truncatePolicyName` already uses for overflow disambiguation.
+// pre-hash strings.
 //
 // This is an *identity* hash (inputs are class + identifying fields), not a
 // content hash of the rendered NetworkPolicy spec. Names stay stable across
@@ -332,15 +291,10 @@ func truncatePolicyName(name string) string {
 
 // SourceLabelValue builds the `kube-vnet.system/source` value identifying the
 // object a generated policy came from, bounded to the 63-character label-value
-// limit. This is ADR 0011's truncate-and-hash applied to a LABEL rather than a
-// name — the same convention, a tighter budget (63, not 253).
+// limit: ADR 0011's truncate-and-hash applied to a label value.
 //
-// Policy *names* were capped from the start while this value was built by plain
-// concatenation, so a long enough Service name produced an invalid label: the
-// apiserver rejected the apply, and the reconciler retried it forever.
-//
-// Callers must use this for BOTH writing the label and building any selector
-// that queries it (see deletePolicyByServiceKey) — if the two disagree, deletes
+// Callers must use this both for writing the label and for any selector that
+// queries it (see deletePolicyByServiceKey); if the two disagree, deletes
 // silently match nothing and leave policies orphaned. The hash covers
 // namespace/name so two truncated-to-identical names stay distinguishable.
 //
@@ -360,59 +314,37 @@ func SourceLabelValue(prefix, namespace, name string) string {
 	return prefix + name[:keep] + suffix
 }
 
-// Direction value helpers for selector LabelSelectorRequirement values.
+// Direction values for the membership policy's label selectors.
 var (
-	// selfValuesReceiver matches pods that ACCEPT ingress: `both`,
-	// `ingress`, plus the legacy `true` alias (which means `both`).
-	// Used as the policy's own podSelector In-values for the single
-	// merged self-policy per (ns, form). Egress-only members are not
-	// included — they don't accept ingress, so they don't need a self-
-	// policy at all.
+	// selfValuesReceiver selects the pods a membership policy applies to:
+	// those that accept ingress. Egress-only members need no policy.
 	selfValuesReceiver = []string{string(DirectionBoth), string(DirectionIngress)}
 
-	// peerInitiatorValues matches peers that can INITIATE traffic
-	// (potential sources of ingress to me). Used in ingress.from.
+	// peerInitiatorValues selects the peers that may initiate traffic;
+	// used in ingress.from.
 	peerInitiatorValues = []string{string(DirectionBoth), string(DirectionEgress)}
 )
 
-// hasReceiver reports whether the (form, direction-map) tuple has any
-// pod that accepts ingress (`both` or `ingress`). Used to decide whether
-// to emit a self-policy at all.
+// hasReceiver reports whether any pod in byDir accepts ingress, i.e. whether
+// its namespace needs a membership policy.
 func hasReceiver(byDir map[Direction][]string) bool {
 	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionIngress]) > 0
 }
 
-// hasInitiator reports whether the (form, direction-map) tuple has any
-// pod that can initiate traffic (egress-capable: both or egress). Used
-// to decide whether to emit a peer entry that other pods' ingress.from
-// rules will reference.
+// hasInitiator reports whether any pod in byDir can initiate traffic, i.e.
+// whether its namespace appears as an ingress.from peer.
 func hasInitiator(byDir map[Direction][]string) bool {
 	return len(byDir[DirectionBoth]) > 0 || len(byDir[DirectionEgress]) > 0
 }
 
-// dirHasIngress reports whether a binding's direction should produce a
-// self-policy. Bindings with `egress` or `none` direction get no self-
-// policy (they accept no ingress).
-func dirHasIngress(d Direction) bool { return d == DirectionBoth || d == DirectionIngress }
-
 // Generate returns the desired NetworkPolicy set for a VirtualNetwork.
 //
-// Membership policies are ingress-only (PolicyTypes: [Ingress]). The operator
-// never restricts egress (ADR 0025: ingress-isolation-only model). A pod
-// joining a vnet still resolves DNS, reaches the apiserver, talks to the
-// internet — exactly the pre-membership posture for egress.
+// Membership policies are ingress-only; the operator never restricts egress
+// (ADR 0025).
 //
-// Per ADR 0033, exactly one membership policy is produced per
-// (vnet, member-namespace) — namely each namespace where at least one pod
-// has direction `both` or `ingress` for the canonical system label
-// `kube-vnet.system/net.<homeNS>.<vnet>`. Egress-only members produce no
-// self-policy (they accept no ingress and we don't restrict egress) but
-// still appear in other namespaces' policies as `from:` peers.
-//
-// `VirtualNetworkBinding`-driven members are handled identically to label-
-// driven members: the resolution controller stamps the canonical system
-// label on selected pods, and they show up in MembersByNS like everything
-// else. No per-binding policy is emitted.
+// One policy is produced per member namespace that has at least one pod
+// accepting ingress (`both` or `ingress`). Egress-only members get no policy
+// but still appear as `from:` peers in the other namespaces' policies.
 //
 // Owner references are set only on policies in the home namespace
 // (Kubernetes rejects cross-namespace owner refs).

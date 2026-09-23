@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -146,5 +147,37 @@ func TestFilterPermittedRules_NotPermittedStillDropsSilently(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Errorf("rule for missing vnet should be dropped, got %v", out)
+	}
+}
+
+// Disabling a namespace removes every trace of resolution from its pods,
+// including the resolved-by marker, not just the stamps.
+func TestResolutionReconciler_DisabledNamespace_StripsAllMarkers(t *testing.T) {
+	ns := mkNamespace("off", nil)
+	ns.Annotations = map[string]string{AnnotationDisabled: "true"}
+	pod := testPod("off")
+	pod.Labels = map[string]string{LabelSystemNetPrefix + "off.v": "both", "app": "web"}
+	pod.Annotations = map[string]string{
+		AnnotationResolvedGeneration: "1",
+		AnnotationResolvedBy:         ResolvedByAdmission,
+	}
+	c := fake.NewClientBuilder().WithScheme(resolutionSchemeForTest(t)).WithObjects(ns, pod).Build()
+	r := &ResolutionReconciler{Client: c, NSFilter: NewNamespaceFilter(nil)}
+
+	key := client.ObjectKeyFromObject(pod)
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	var got corev1.Pod
+	if err := c.Get(context.Background(), key, &got); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if len(got.Labels) != 1 || got.Labels["app"] != "web" {
+		t.Errorf("labels = %v, want only app=web", got.Labels)
+	}
+	for _, a := range []string{AnnotationResolvedGeneration, AnnotationResolvedBy} {
+		if v, ok := got.Annotations[a]; ok {
+			t.Errorf("annotation %s=%q survived", a, v)
+		}
 	}
 }

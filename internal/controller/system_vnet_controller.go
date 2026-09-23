@@ -20,10 +20,8 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// System vnet names. These are reserved — a user-authored VirtualNetwork with
-// the same name in a managed namespace will collide with the operator-managed
-// system vnet (which is recreated on delete). On upgrade, users with such
-// names need to rename their vnets.
+// System vnet names. These are reserved for the operator-managed system
+// vnets; the reserved-name VAP rejects user-authored vnets with them.
 const (
 	SystemVnetNamespace = "namespace"
 	SystemVnetCluster   = "cluster"
@@ -62,22 +60,15 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
-	// A terminating namespace is being torn down; the Kubernetes namespace
-	// controller deletes its resources, including the per-NS `namespace`
-	// system vnet (the VAP no longer blocks that DELETE). Don't re-ensure the
-	// vnet here — recreating it would fight the teardown and only fail via
-	// NamespaceLifecycle admission (can't create in a terminating namespace),
-	// logging spurious apply errors.
+	// Don't recreate the vnet in a terminating namespace: it would fight the
+	// teardown and fail NamespaceLifecycle admission.
 	if ns.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
 
-	// Per-namespace `namespace` system vnet: present in managed namespaces,
-	// deleted in disabled ones (per ADR 0033's hard cleanup guarantee).
-	// Note this is the per-NS `namespace` vnet only — the `cluster` vnet
-	// lives in the operator's release namespace (which is itself in the
-	// implicit disabled list as a privilege boundary) and is handled below
-	// independently.
+	// The per-namespace `namespace` vnet exists in managed namespaces only
+	// (ADR 0033). The operator namespace is unmanaged but holds `cluster`,
+	// handled below.
 	if r.NSFilter.IsManaged(ns) {
 		if err := r.ensureNamespaceSystemVnet(ctx, ns.Name); err != nil {
 			logger.Error(err, "ensure namespace system vnet failed")
@@ -90,14 +81,9 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// Cluster system vnet: only when reconciling the operator's namespace.
-	// (Reconciling on every namespace event would be redundant; we want the
-	// trigger to come from the operator's namespace specifically.) The
-	// cluster vnet's home namespace is the operator namespace, which is
-	// implicitly added to disabledNamespaces by cmd/main.go as a privilege
-	// boundary; VirtualNetworkReconciler.Reconcile short-circuits the
-	// home-namespace-excluded check on the kube-vnet.system/managed-by label so the
-	// vnet still reconciles to Ready.
+	// The cluster vnet lives in the operator namespace. That namespace is
+	// unmanaged, so VirtualNetworkReconciler exempts system vnets from its
+	// home-namespace check.
 	if ns.Name == r.OperatorNamespace {
 		if err := r.ensureClusterSystemVnet(ctx); err != nil {
 			logger.Error(err, "ensure cluster system vnet failed")
@@ -113,15 +99,8 @@ func (r *SystemVnetReconciler) ensureNamespaceSystemVnet(ctx context.Context, ns
 	return r.applySystemVnet(ctx, desired)
 }
 
-// deleteNamespaceSystemVnet deletes the per-NS `namespace` system vnet in
-// `ns`. Called when a namespace transitions to disabled — the per-NS vnet
-// should not linger because (a) no pods will be reconciled into it and
-// (b) the reserved-name VAP guarantees only the operator could have created
-// it, so the deletion is unambiguous. Per ADR 0033's hard cleanup guarantee.
-//
-// The `cluster` system vnet is *not* swept here — it lives in the operator's
-// release namespace (always in the implicit disabled list as a privilege
-// boundary) and is intentionally exempt.
+// deleteNamespaceSystemVnet deletes the per-namespace `namespace` system vnet
+// in a disabled namespace (ADR 0033).
 func (r *SystemVnetReconciler) deleteNamespaceSystemVnet(ctx context.Context, ns string) error {
 	logger := log.FromContext(ctx).WithValues("namespace", ns)
 	v := &vnetv1alpha1.VirtualNetwork{}
@@ -131,10 +110,8 @@ func (r *SystemVnetReconciler) deleteNamespaceSystemVnet(ctx context.Context, ns
 		}
 		return err
 	}
-	// Defense in depth: only delete if it carries the system label (i.e. the
-	// operator created it). A user-authored vnet named `namespace` would be
-	// rejected by the reserved-name VAP, but this guard protects against the
-	// VAP being absent (older clusters) or disabled.
+	// Only delete what the operator created, in case the reserved-name VAP
+	// is absent or disabled.
 	if v.Labels[LabelManagedBy] != LabelManagedByValue {
 		return nil
 	}
@@ -181,9 +158,8 @@ func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vne
 }
 
 func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Drift-correct: a VirtualNetwork delete event labelled kube-vnet.system/managed-by=kube-vnet
-	// re-enqueues its namespace (or the operator namespace if it was the cluster
-	// vnet) so the system vnet is recreated on the next reconcile pass.
+	// Drift correction: an event on a system vnet re-enqueues its namespace,
+	// which recreates the vnet if it was deleted.
 	systemPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		l := obj.GetLabels()
 		return l[LabelManagedBy] == LabelManagedByValue
@@ -200,9 +176,7 @@ func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// systemVnetToNamespace maps a system VirtualNetwork event back to a reconcile
-// request keyed on the vnet's namespace. (The namespace reconciler is keyed
-// on cluster-scoped namespace name.)
+// systemVnetToNamespace maps a system VirtualNetwork event to its namespace.
 func systemVnetToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
 	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }

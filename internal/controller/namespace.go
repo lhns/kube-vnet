@@ -47,9 +47,6 @@ func ApiserverReachableOptedIn(annotations map[string]string) bool {
 }
 
 // NamespaceFilter decides whether kube-vnet manages a given namespace.
-// (The "what shape is the baseline" question that earlier versions answered
-// here is gone — under ADR 0030 + ADR 0035 the baseline is unconditionally
-// deny-all selecting every pod; there's no shape knob.)
 type NamespaceFilter struct {
 	// Excluded is the operator-level exclusion list (from --disabled-namespaces).
 	Excluded map[string]bool
@@ -67,13 +64,6 @@ func NewNamespaceFilter(excluded []string) *NamespaceFilter {
 		set[n] = true
 	}
 	return &NamespaceFilter{Excluded: set}
-}
-
-// IsManagedName returns false if the namespace name is in the operator-level
-// exclusion list. Use IsManaged when you have the Namespace object (it
-// additionally honors the per-namespace annotation).
-func (f *NamespaceFilter) IsManagedName(name string) bool {
-	return !f.Excluded[name]
 }
 
 // IsManaged returns false if the namespace is in the operator-level excluded

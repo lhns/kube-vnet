@@ -22,23 +22,26 @@ import (
 
 // Condition reasons surfaced on VirtualNetworkBinding.status.conditions.
 const (
-	ReasonBindingPodsAttached       = "PodsAttached"
-	ReasonBindingNoPodsMatch        = "NoPodsMatch"
-	ReasonBindingVNetNotFound       = "VirtualNetworkNotFound"
+	ReasonBindingPodsAttached        = "PodsAttached"
+	ReasonBindingNoPodsMatch         = "NoPodsMatch"
+	ReasonBindingVNetNotFound        = "VirtualNetworkNotFound"
 	ReasonBindingNamespaceNotAllowed = "NamespaceNotAllowed"
-	ReasonBindingNamespaceExcluded  = "NamespaceExcluded"
-	ReasonBindingUnknownDirection   = "UnknownDirection"
-	ReasonBindingInvalidSelector    = "InvalidSelector"
+	ReasonBindingNamespaceExcluded   = "NamespaceExcluded"
+	ReasonBindingUnknownDirection    = "UnknownDirection"
+	ReasonBindingInvalidSelector     = "InvalidSelector"
 )
 
 // VirtualNetworkBindingReconciler maintains the binding's own status. The
-// effect of the binding on NetworkPolicies is the VirtualNetworkReconciler's
-// responsibility (it watches bindings via a mapper).
+// binding's effect on membership comes from resolution, which stamps the
+// selected pods.
 type VirtualNetworkBindingReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
 	NSFilter *NamespaceFilter
+	// OperatorNamespace is where the `cluster` system vnet lives; a ref to it
+	// that omits the namespace resolves there.
+	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
@@ -83,10 +86,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 
 	// Locate target VirtualNetwork.
 	vnet := &vnetv1alpha1.VirtualNetwork{}
-	vnetKey := client.ObjectKey{
-		Namespace: b.Spec.VirtualNetworkRef.Namespace,
-		Name:      b.Spec.VirtualNetworkRef.Name,
-	}
+	vnetKey := bindingTarget(b, r.OperatorNamespace)
 	if err := r.Get(ctx, vnetKey, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
 			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotFound,
@@ -97,7 +97,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	// Check vnet's allowedNamespaces permits this binding's namespace.
-	allowed, err := nsPermits(ctx, r.Client, vnet, b.Namespace)
+	allowed, err := PermitsForVnet(ctx, r.Client, vnet, b.Namespace)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -147,34 +147,7 @@ func (r *VirtualNetworkBindingReconciler) writeStatus(
 }
 
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {
-	upsertBindingCondition(b, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
-}
-
-func upsertBindingCondition(b *vnetv1alpha1.VirtualNetworkBinding, c metav1.Condition) {
-	now := metav1.Now()
-	for i, existing := range b.Status.Conditions {
-		if existing.Type == c.Type {
-			if existing.Status != c.Status {
-				c.LastTransitionTime = now
-			} else {
-				c.LastTransitionTime = existing.LastTransitionTime
-			}
-			b.Status.Conditions[i] = c
-			return
-		}
-	}
-	c.LastTransitionTime = now
-	b.Status.Conditions = append(b.Status.Conditions, c)
-}
-
-// nsPermits routes the binding's allowedNamespaces decision through the
-// shared PermitsForVnet helper — the single source of truth in
-// permits.go. This was previously a hand-rolled reimplementation that
-// was missing the cluster-vnet short-circuit and agreed with the shared
-// logic only via the `AllowedNamespaces{All:true}` coupling on the
-// cluster system vnet.
-func nsPermits(ctx context.Context, c client.Client, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	return PermitsForVnet(ctx, c, vnet, ns)
+	upsertCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
 
 func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -184,13 +157,9 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(r.vnetToBindings),
 		).
-		// This reconcile also reads pods (status.attachedPods) and its own
-		// namespace (IsManaged, plus the labels nsPermits may match on), and
-		// watched neither — so with no requeue either, the status froze at
-		// whatever was true when the binding was last reconciled. Both mappings
-		// are trivial because a binding only ever selects pods in its own
-		// namespace, and both namespace-derived inputs key on that same
-		// namespace. See ADR 0044.
+		// The reconcile also reads pods (status.attachedPods) and the binding's
+		// namespace (IsManaged, and the labels PermitsForVnet may match on);
+		// both key on the binding's own namespace. See ADR 0044.
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),
@@ -235,11 +204,26 @@ func (r *VirtualNetworkBindingReconciler) vnetToBindings(ctx context.Context, ob
 	out := []reconcile.Request{}
 	for i := range bindings.Items {
 		b := &bindings.Items[i]
-		if b.Spec.VirtualNetworkRef.Name == v.Name && b.Spec.VirtualNetworkRef.Namespace == v.Namespace {
+		if bindingTarget(b, r.OperatorNamespace) == client.ObjectKeyFromObject(v) {
 			out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
 				Namespace: b.Namespace, Name: b.Name,
 			}})
 		}
 	}
 	return out
+}
+
+// bindingTarget returns the VirtualNetwork a binding refers to, inferring an
+// omitted ref namespace as canonicalVnetKey does: the binding's own namespace,
+// or operatorNS for the `cluster` singleton.
+func bindingTarget(b *vnetv1alpha1.VirtualNetworkBinding, operatorNS string) client.ObjectKey {
+	ref := b.Spec.VirtualNetworkRef
+	ns := ref.Namespace
+	if ns == "" {
+		ns = b.Namespace
+		if ref.Name == SystemVnetCluster {
+			ns = operatorNS
+		}
+	}
+	return client.ObjectKey{Namespace: ns, Name: ref.Name}
 }

@@ -104,7 +104,7 @@ kube-vnet/
     │                                         policy_generator.go::Generate,
     │                                         SSA-applies the resulting
     │                                         NetworkPolicies, runs
-    │                                         deleteStale cleanup tail-step,
+    │                                         deleteMembershipPolicies tail-step,
     │                                         maintains vnet status conditions
     │                                         (Ready / Degraded)
     ├── namespace_reconciler.go .............. NamespaceReconciler: watches
@@ -220,8 +220,8 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
               │     specs                                   │  peer rules,
               │  3. SSA-apply each policy with              │  cluster vnet
               │     FieldManager="kube-vnet"                │  has bare name
-              │  4. deleteStale() — list policies by        │  per ADR 0033
-              │     kube-vnet.system/network=<homeNS>.<vnet>       │
+              │  4. deleteMembershipPolicies() — list by    │  per ADR 0033
+              │     kube-vnet.system/network=<homeNS>.<vnet>│
               │     label, delete anything not in           │
               │     desired set (hard cleanup, ADR 0033)    │
               │  5. updateStatus — Ready / Degraded         │

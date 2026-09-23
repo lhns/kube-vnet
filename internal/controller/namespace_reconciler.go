@@ -17,24 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// NamespaceReconciler is the *sole owner* of the baseline NetworkPolicy
-// lifecycle. Per ADR 0030 the baseline is uniformly deny-all selecting every
-// pod in every managed namespace; there are no per-mode shapes and no
-// elide-list exemptions (ADR 0035 removed the elide flag — it had no
-// observable effect on connectivity since NetworkPolicy union semantics
-// make the baseline's deny-all redundant for pods that are already covered
-// by a membership policy's allows).
-//
-// For each Namespace event:
-//   - If the namespace is excluded (`--disabled-namespaces`) or annotated
-//     `kube-vnet/disabled=true`, ensure no baseline is present.
-//   - Otherwise apply the deny-all baseline.
-//
-// The reconciler also watches `NetworkPolicy` events scoped to baseline
-// policies (label `kube-vnet.system/role=baseline`) so a manual delete of the
-// baseline is detected and the policy is re-applied within one reconcile
-// cycle. This mirrors the drift-correction behavior the
-// VirtualNetworkReconciler provides for membership policies.
+// NamespaceReconciler is the sole owner of the baseline NetworkPolicy: the
+// deny-all ingress policy (DesiredBaseline) in every managed namespace, and
+// none in unmanaged ones. It also watches baseline policies, so a deleted
+// baseline is re-applied.
 type NamespaceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -55,36 +41,20 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Terminating namespace: don't re-apply the baseline into it. The
-	// namespace controller is deleting the baseline (NetworkPolicy deletes
-	// are never VAP-blocked, so this was never a teardown blocker); re-
-	// applying would just fail via NamespaceLifecycle admission and log
-	// noise on every namespace deletion.
+	// Don't re-apply into a terminating namespace: NamespaceLifecycle
+	// admission would reject it, logging an error on every deletion.
 	if ns.DeletionTimestamp != nil {
 		return ctrl.Result{}, nil
 	}
 
-	// Disabled namespaces get no kube-vnet objects at all — bypass
-	// DesiredBaseline (which now always returns a non-nil policy) and sweep
-	// any leftovers.
+	baselines := inNamespacePolicyLabels(ns.Name, map[string]string{LabelRole: LabelRoleBaseline})
+
+	// Disabled namespaces get no baseline: sweep any leftover.
 	if !r.NSFilter.IsManaged(ns) {
-		var existing networkingv1.NetworkPolicyList
-		if err := r.List(ctx, &existing,
-			client.InNamespace(ns.Name),
-			client.MatchingLabels{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleBaseline},
-		); err != nil {
-			return ctrl.Result{}, err
-		}
-		for i := range existing.Items {
-			if err := r.Delete(ctx, &existing.Items[i]); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
+		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, nil)
 	}
 
 	desired := DesiredBaseline(ns.Name)
-
 	desired.SetResourceVersion("")
 	if err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
@@ -93,19 +63,10 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	}
 
-	// Self-heal: any baseline-labeled policy in this NS whose name doesn't
-	// match the desired one (legacy `kube-vnet` literals, renamed baselines,
-	// orphans from a previous reconciler version) gets swept by name.
-	keep := map[client.ObjectKey]bool{
-		{Namespace: ns.Name, Name: BaselinePolicyName}: true,
-	}
-	if err := sweepStalePolicies(ctx, r.Client,
-		inNamespacePolicyLabels(ns.Name, map[string]string{LabelRole: LabelRoleBaseline}),
-		keep,
-	); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	// Sweep baseline-labelled policies under any other name (e.g. from an
+	// older naming scheme).
+	keep := map[client.ObjectKey]bool{client.ObjectKeyFromObject(desired): true}
+	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, baselines, keep)
 }
 
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {

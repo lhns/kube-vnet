@@ -130,3 +130,30 @@ func TestPermits_NamesAndSelectorUnion(t *testing.T) {
 		t.Errorf("neither should not match")
 	}
 }
+
+// A bare `kube-vnet/net.namespace` label names the pod's own namespace vnet.
+// Only `cluster` is reachable by its bare name from every namespace, so a
+// malformed label in one namespace must not be reported on the `namespace`
+// vnet of every other namespace.
+func TestDiscoverMembers_BareNamespaceLabel_OnlyDiagnosedAtHome(t *testing.T) {
+	pod := func(ns string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns, Name: "p",
+			Labels: map[string]string{DefaultLabelPrefix + "net." + SystemVnetNamespace: "bogus"},
+		}}
+	}
+	r := newReconciler(mkNamespace("a", nil), mkNamespace("b", nil), pod("a"), pod("b"))
+
+	for _, vnet := range []*vnetv1alpha1.VirtualNetwork{
+		mkVnet(SystemVnetNamespace, "a", nil),
+		mkVnet(SystemVnetNamespace, "b", nil),
+	} {
+		_, invalid, err := r.discoverMembers(context.Background(), vnet)
+		if err != nil {
+			t.Fatalf("discoverMembers: %v", err)
+		}
+		if len(invalid) != 1 || invalid[0].PodNamespace != vnet.Namespace {
+			t.Errorf("%s/%s: invalid = %+v, want only the pod in %q", vnet.Namespace, vnet.Name, invalid, vnet.Namespace)
+		}
+	}
+}

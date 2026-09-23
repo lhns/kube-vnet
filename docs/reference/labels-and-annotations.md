@@ -147,7 +147,7 @@ Don't put `kube-vnet.system/*` labels on your own objects — on clusters with t
 |---|---|
 | **On** | Every membership policy (`kube-vnet.mem.*`). Not on the baseline or auto-allow policies. |
 | **Meaning** | "This NetworkPolicy belongs to `<homeNS>/<vnet-name>`." |
-| **Used by** | `cleanupForDeleted` and `deleteStale`, which select a vnet's policies cluster-wide — the substitute for cross-namespace owner references. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md). |
+| **Used by** | `deleteMembershipPolicies`, which selects a vnet's policies cluster-wide — the substitute for cross-namespace owner references. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md). |
 
 ### `kube-vnet.system/role`
 

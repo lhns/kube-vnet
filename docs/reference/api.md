@@ -237,7 +237,7 @@ No webhook validates `VirtualNetwork` objects; the CEL rule covers the only know
 | Create | Reconciler enqueues; with no members, status becomes `Ready=True, NoMembers` and no policies are generated. |
 | Pod stamped / unstamped | The resolution controller changes the pod's `kube-vnet.system/net.*` label; the pod watch enqueues the vnet; the membership policy for that namespace is created, updated, or deleted. |
 | Spec edit | Reconciler enqueues; new desired state computed; SSA reconciles; stale policies (e.g. for namespaces no longer in `allowedNamespaces`) deleted. |
-| Delete | `cleanupForDeleted` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all, including in foreign namespaces. |
+| Delete | `deleteMembershipPolicies` lists policies cluster-wide by `kube-vnet.system/network=<homeNS>.<name>` and deletes them all, including in foreign namespaces. |
 
 The `kube-vnet.base` baseline is independent of every vnet: it exists in each managed namespace for as long as the namespace is managed. For the reconciliation algorithm see [`architecture.md`](../internals/architecture.md).
 
@@ -338,7 +338,7 @@ The binding controller writes only the binding's status.
 | Create | Binding controller validates spec, computes the matching pod set, sets `Ready` accordingly, writes status. The resolution controller re-resolves the selected pods and stamps them. |
 | Pod added/removed in binding's namespace | Binding's controller refreshes `attachedPods`. The resolution controller adjusts each pod's stamped system labels; the regular membership policy reflects the new peer set on next vnet reconcile. |
 | Spec edit | Same as create. |
-| Delete | The resolution controller un-stamps the binding's contribution from each affected pod. The vnet's `deleteStale` step removes any policy no longer in the desired set. |
+| Delete | The resolution controller un-stamps the binding's contribution from each affected pod. The vnet's `deleteMembershipPolicies` step removes any policy no longer in the desired set. |
 
 ## Compatibility
 

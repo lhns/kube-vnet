@@ -7,8 +7,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -24,7 +22,7 @@ import (
 )
 
 // LabelSystemNetPrefix is the prefix on operator-stamped membership labels:
-// `kube-vnet.system/net.<vnet>=<direction>`. Generator selectors match on
+// `kube-vnet.system/net.<VnetKey>=<direction>`. Generator selectors match on
 // these (not on the user-input `kube-vnet/net.<vnet>` labels). See ADR 0030.
 const LabelSystemNetPrefix = "kube-vnet.system/net."
 
@@ -125,7 +123,6 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-
 // ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
 // baseline/binding/label rule names a vnet the pod's namespace cannot join.
 // It is deliberately uniform across system and user vnets (ADR 0043): the
@@ -146,8 +143,7 @@ const ReasonInvalidJoinLabelDirection = "InvalidJoinLabelDirection"
 
 // notJoinableHint returns a targeted suggestion when a ref names one of the
 // reserved system vnets, whose namespace semantics trip people up. It is
-// PURE FORMATTING — it must never influence control flow, or the per-kind
-// special-casing ADR 0043 removed would creep back in.
+// formatting only and must never influence control flow (ADR 0043).
 func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
 	switch ref.Name {
 	case SystemVnetCluster:
@@ -167,8 +163,7 @@ func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
 // a vnet hosted elsewhere and should use the prefixed form. suffix is the label
 // key's tail (the part after `kube-vnet/net.`); a dot means it's already the
 // prefixed `<homeNS>.<name>` form (fully covered by notJoinableNote — no hint),
-// and the reserved system-vnet names are legitimately bare. Folded in from the
-// retired JoinLabelDiagnosticReconciler (ADR 0027).
+// and the reserved system-vnet names are legitimately bare.
 func bareJoinLabelHint(labelKey, suffix string) string {
 	if strings.Contains(suffix, ".") ||
 		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
@@ -179,24 +174,18 @@ func bareJoinLabelHint(labelKey, suffix string) string {
 		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
 }
 
-
 // CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
 // or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
 // cluster-singleton exception per ADR 0033 (Amendment):
 //
 //   - cluster (bare or prefixed `<X>.cluster`) → `cluster`
-//     The cluster vnet is THE cluster-wide singleton; the prefix is
-//     informationless. The reserved-name VAP forbids user-authored vnets
-//     named `cluster`, so any `<anything>.cluster` is unambiguously the
-//     cluster system vnet and collapses to bare. This inverts the rule
-//     for every other vnet.
+//     The reserved-name VAP forbids user-authored vnets named `cluster`, so
+//     any `<anything>.cluster` is the cluster singleton and collapses to bare.
 //   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
 //   - bare `namespace`            → `<scopeNS>.namespace`
 //   - bare user vnet `<name>`     → `<scopeNS>.<name>`
 //
-// `scopeNS` is the pod's NS for the resolution controller. (Previously also
-// used by the baseline generator's elide-list translation; that mechanism
-// was removed in ADR 0035.)
+// `scopeNS` is the pod's namespace.
 func CanonicalSuffix(suffix, scopeNS string) string {
 	if suffix == SystemVnetCluster ||
 		strings.HasSuffix(suffix, "."+SystemVnetCluster) {
@@ -208,90 +197,49 @@ func CanonicalSuffix(suffix, scopeNS string) string {
 	return scopeNS + "." + suffix
 }
 
-
-func isSystemVnetName(name string) bool {
-	return name == SystemVnetNamespace || name == SystemVnetCluster
-}
-
-func selectorFromLabelSelector(s *metav1.LabelSelector) (labels.Selector, error) {
-	return metav1.LabelSelectorAsSelector(s)
-}
-
-// applyResolution computes the desired kube-vnet.system/net.* +
-// kube-vnet.system/host-port.* label set, diffs it against the pod's
-// current labels, and patches if needed.
-//
-// Host-port stamps (ADR 0040): for every container port that declares
-// `hostPort != 0`, the resolution controller stamps
-// `kube-vnet.system/host-port.<port>.<proto>=true` on the pod. The
-// HostPortReconciler then emits a NetworkPolicy whose podSelector matches
-// the stamp — making the pod reachable externally on that hostPort.
-// Skipped for hostNetwork pods because NetworkPolicy enforcement on them
-// is CNI-dependent.
+// applyResolution patches the pod's operator-managed labels to desired and
+// marks it resolved. No write happens when both are already in place.
 func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, desired map[string]string) error {
-	// Diff + apply via the shared label-sync helper. Covers both the
-	// kube-vnet.system/net.* membership family and the new
-	// kube-vnet.system/host-port.* exposure family (ADR 0040).
 	patched := pod.DeepCopy()
-	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, desired)
+	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, desired)
 	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] != "" {
-		// Already in sync and the resolved-generation annotation is set —
-		// no API write needed.
 		return nil
 	}
 	if patched.Annotations == nil {
 		patched.Annotations = map[string]string{}
 	}
 	patched.Annotations[AnnotationResolvedGeneration] = fmt.Sprintf("%d", pod.Generation)
-	// Set on the patch path only. Writing it unconditionally would make
-	// every reconcile of a webhook-stamped pod an API write — the exact
-	// churn the 0.7.x work removed.
+	// Set on the patch path only; writing it unconditionally would make every
+	// reconcile of a webhook-stamped pod an API write.
 	patched.Annotations[AnnotationResolvedBy] = ResolvedByController
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
 }
 
-// isResolutionManagedLabel returns true for the two label families the
-// resolution controller stamps on pods.
-func isResolutionManagedLabel(k string) bool {
-	return strings.HasPrefix(k, LabelSystemNetPrefix) ||
-		strings.HasPrefix(k, LabelSystemHostPortPrefix)
-}
-
-// desiredHostPortStamps returns the set of host-port label keys this pod
-// should carry (kube-vnet.system/host-port.<port>.<proto>=true for every
-// declared (port, protocol)). Empty for hostNetwork pods.
+// desiredHostPortStamps returns the `kube-vnet.system/host-port.<port>.<proto>`
+// keys for every hostPort the pod declares (ADR 0040), for the
+// HostPortReconciler to select on. Uses the same key set as that reconciler,
+// so hostNetwork pods get none.
 func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
 	out := map[string]bool{}
-	if pod.Spec.HostNetwork {
-		return out
-	}
-	for _, c := range pod.Spec.Containers {
-		for _, cp := range c.Ports {
-			if cp.HostPort == 0 {
-				continue
-			}
-			proto := cp.Protocol
-			if proto == "" {
-				proto = corev1.ProtocolTCP
-			}
-			stamp := LabelSystemHostPortPrefix + fmt.Sprintf("%d.%s", cp.HostPort, strings.ToLower(string(proto)))
-			out[stamp] = true
-		}
+	for key := range desiredHostPortKeys([]corev1.Pod{*pod}) {
+		out[LabelSystemHostPortPrefix+key.String()] = true
 	}
 	return out
 }
 
-// stripStampedLabels removes any kube-vnet.system/net.* labels (and the
-// resolved-generation annotation) from pods in disabled namespaces or pods
-// whose namespace transitioned to disabled.
+// stripStampedLabels removes the operator-managed labels and the resolution
+// annotations from a pod in a disabled namespace.
 func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *corev1.Pod) (ctrl.Result, error) {
 	patched := pod.DeepCopy()
 	// Empty desired-set → syncManagedLabels removes every managed label.
-	labelsChanged := syncManagedLabels(patched, isResolutionManagedLabel, nil)
-	if !labelsChanged && pod.Annotations[AnnotationResolvedGeneration] == "" {
+	labelsChanged := syncManagedLabels(patched, IsResolutionManagedLabel, nil)
+	_, hasGen := pod.Annotations[AnnotationResolvedGeneration]
+	_, hasBy := pod.Annotations[AnnotationResolvedBy]
+	if !labelsChanged && !hasGen && !hasBy {
 		return ctrl.Result{}, nil
 	}
 	delete(patched.Annotations, AnnotationResolvedGeneration)
+	delete(patched.Annotations, AnnotationResolvedBy)
 	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -299,9 +247,7 @@ func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *core
 }
 
 func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Pod predicate: only react to label or annotation changes (creation also
-	// flows through Update events from the cache). This keeps reconcile
-	// volume bounded — pod status updates don't trigger us.
+	// Pod status updates must not trigger resolution.
 	podPredicate := predicate.Or(
 		predicate.LabelChangedPredicate{},
 		predicate.AnnotationChangedPredicate{},
@@ -323,12 +269,9 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&vnetv1alpha1.VirtualNetworkBinding{},
 			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
 		).
-		// Both namespace properties resolution reads must fire: the
-		// `kube-vnet/disabled` ANNOTATION (managed-ness) and the namespace
-		// LABELS, which `allowedNamespaces.selector` matches on. Filtering to
-		// annotations alone meant labelling a namespace to grant it access —
-		// the documented workflow — never re-resolved its pods, leaving them
-		// permanently unstamped. See ADR 0044.
+		// Resolution reads two namespace properties: the `kube-vnet/disabled`
+		// annotation and the labels `allowedNamespaces.selector` matches on.
+		// See ADR 0044.
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToPods),
@@ -337,18 +280,10 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				predicate.LabelChangedPredicate{},
 			)),
 		).
-		// A rule *references* a vnet, so vnet existence is an input to
-		// resolution too. Without this watch, a rule naming a not-yet-created
-		// vnet resolves to "no stamp" and is never revisited: the pod predicate
-		// above is change-based, so the informer resync (which delivers
-		// old == new) is filtered, and the pod stays unstamped — and therefore
-		// isolated by the deny-all baseline — until it is edited or recreated.
-		//
-		// GenerationChangedPredicate is load-bearing: VirtualNetwork has a
-		// status subresource, so generation bumps only on spec changes. Its
-		// embedded Funcs leave Create/Delete at the default true. Without it,
-		// every membership status write would fan out to pods, recreating the
-		// churn loop removed in 75c14a6. See ADR 0030 (amended).
+		// Vnet existence and allowedNamespaces are resolution inputs (see
+		// vnetToAffectedPods). GenerationChangedPredicate keeps the vnet
+		// controller's status writes from fanning out to pods; Create and
+		// Delete still fire. See ADR 0030.
 		Watches(
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(r.vnetToAffectedPods),
@@ -357,10 +292,8 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// podsIn turns a set of namespaces into reconcile requests for the pods in
-// them. Every fan-out below is some choice of namespaces plus this; keeping the
-// enumeration in one place is what lets each mapper read as a single statement
-// of intent. An empty namespace name means cluster-wide. See ADR 0044.
+// podsIn returns reconcile requests for the pods in the given namespaces; an
+// empty name means cluster-wide.
 func (r *ResolutionReconciler) podsIn(ctx context.Context, namespaces ...string) []reconcile.Request {
 	seen := map[types.NamespacedName]bool{}
 	var out []reconcile.Request
@@ -386,12 +319,7 @@ func (r *ResolutionReconciler) podsIn(ctx context.Context, namespaces ...string)
 	return out
 }
 
-// namespaceToPods fans a Namespace event to every pod in it. Two namespace
-// properties feed resolution, and both must trigger it: the
-// `kube-vnet/disabled` ANNOTATION (managed-ness — on disable each pod takes the
-// stripStampedLabels path, on re-enable they are re-stamped) and the namespace
-// LABELS, which `allowedNamespaces.selector` matches on, so labelling a
-// namespace is what grants it access to a vnet.
+// namespaceToPods fans a Namespace event to every pod in it.
 func (r *ResolutionReconciler) namespaceToPods(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.podsIn(ctx, obj.GetName())
 }
@@ -417,17 +345,14 @@ func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object)
 
 // vnetToAffectedPods maps a VirtualNetwork event to the pods it could change.
 //
-// A rule *references* a vnet, so vnet existence and its allowedNamespaces are
-// inputs to resolution: a rule naming a not-yet-created vnet resolves to "no
-// stamp", and nothing revisits it without this watch (the pod predicate is
-// change-based, so the informer resync — old == new — is filtered, leaving the
-// pod unstamped and isolated by the deny-all baseline until it is edited or
-// recreated).
+// Vnet existence and allowedNamespaces are inputs to resolution: a rule
+// naming a not-yet-created vnet resolves to no stamp, and since the pod
+// predicate is change-based nothing else would revisit it.
 //
-// The affected set is exactly the pods in the namespaces this vnet admits: a
-// pod outside that set cannot become a member however it names the vnet, so
-// re-resolving it could not change anything. That single question covers all
-// four membership sources without matching each of them. See ADR 0044.
+// The affected set is the pods in the namespaces the vnet admits, which covers
+// every membership source without matching each one. On update the handler
+// maps both revisions, so narrowing allowedNamespaces also reaches the pods it
+// excluded. See ADR 0044.
 func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
 	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
 	if !ok || vnet == nil {

@@ -13,35 +13,19 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// Permits is the single source of truth for "is this pod's NS allowed to
-// join this vnet?" — called from three independent code paths that all
-// need the same answer:
+// Permits reports whether pods in podNS may join the vnet named by vnetKey.
+// Resolution uses it to decide which vnets to stamp on a pod, so a stamp
+// means the operator confirmed membership rather than that a user merely
+// asked for it; PermitsForVnet applies the same rule when generating policies.
 //
-//   - ResolutionReconciler — gates pod-label stamping. If `Permits` says
-//     no, the pod doesn't get the `kube-vnet.system/net.*` stamp. This
-//     keeps the stamp honest: its presence means the operator confirmed
-//     membership, not that a user merely requested it.
-//   - VirtualNetworkReconciler.discoverMembers — gates inclusion in the
-//     generated membership policy's `from:` rules.
+// Returns (false, nil) when not permitted, including a missing vnet or a
+// malformed key, and an error only for transient failures the caller should
+// retry.
 //
-// Returns (false, nil) for "not permitted" — covers vnet-doesn't-exist,
-// pod NS not in allowedNamespaces, malformed key. Returns (false, err)
-// only for transient apiserver/client errors that the caller should retry.
-//
-// The cluster vnet is a singleton whose canonical key is bare `cluster`
-// (ADR 0033 Amendment) — that form carries no home namespace, so there is
-// nothing to fetch and it is permitted directly. Its allowedNamespaces is
-// `{All: true}` at construction (system_vnet_controller.go
-// `ensureClusterSystemVnet`), so the outcome matches.
-//
-// A *qualified* `<ns>.cluster` key must NOT short-circuit: it names a
-// concrete vnet in a concrete namespace, and a wrong namespace has to be
-// denied like any other non-existent vnet. Short-circuiting on the vnet
-// name alone made `bogus.cluster` permitted, which is why an incorrect
-// `virtualNetworkRef.namespace` on the cluster vnet could never be caught
-// (ADR 0043). The Get below resolves it: the CR exists only in the
-// operator's namespace, so the singleton's home is discovered, not
-// hardcoded.
+// The bare `cluster` key (ADR 0033 Amendment) has no home namespace to fetch
+// and is permitted directly; the cluster vnet allows all namespaces anyway.
+// A qualified `<ns>.cluster` key is not short-circuited: it names a concrete
+// vnet, and a wrong namespace must be denied like any missing vnet (ADR 0043).
 func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string) (bool, error) {
 	homeNS, vnetName, ok := splitVnetKey(vnetKey)
 	if !ok {
@@ -51,12 +35,8 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 		return true, nil
 	}
 
-	// Verify the vnet exists BEFORE the home-NS short-circuit. A pod in
-	// NS X with a label like `kube-vnet/net.ghost=both` would canonicalize
-	// to key `X.ghost`; the home-NS check would otherwise say "yes,
-	// permitted" even though there's no `ghost` vnet anywhere — which
-	// would lie via the stamp. Caught by
-	// TestIntegration_Resolution_VnetMissing_NoStamp.
+	// Check existence before the home-namespace short-circuit, or a bare
+	// label naming a missing local vnet would be stamped.
 	var v vnetv1alpha1.VirtualNetwork
 	if err := c.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: vnetName}, &v); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -79,9 +59,8 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 // either baseline). Expressing fan-out this way means the four membership
 // sources don't each re-derive permission logic. See ADR 0044.
 //
-// Deliberately delegates to PermitsForVnet rather than re-reading the selector,
-// so `home ∪ allowedNamespaces` keeps exactly one definition. Namespaces are
-// few and the client is cached, so the per-namespace check is cheap.
+// It delegates to PermitsForVnet so `home ∪ allowedNamespaces` keeps one
+// definition; namespaces are few and the client is cached.
 func NamespacesAdmittedBy(ctx context.Context, c client.Reader, vnet *vnetv1alpha1.VirtualNetwork) ([]string, error) {
 	if vnet == nil {
 		return nil, nil
@@ -104,10 +83,7 @@ func NamespacesAdmittedBy(ctx context.Context, c client.Reader, vnet *vnetv1alph
 	return out, nil
 }
 
-// PermitsForVnet is a convenience for callers that already have the
-// VirtualNetwork object loaded (e.g. VirtualNetworkReconciler's reconcile
-// flow that fetched the vnet for other reasons). Saves a redundant Get.
-// Same semantics as Permits.
+// PermitsForVnet is Permits for a caller that already holds the vnet.
 func PermitsForVnet(ctx context.Context, c client.Reader, v *vnetv1alpha1.VirtualNetwork, podNS string) (bool, error) {
 	if v == nil {
 		return false, nil

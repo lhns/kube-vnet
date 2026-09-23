@@ -180,10 +180,11 @@ func main() {
 	}
 
 	bindingReconciler := &controller.VirtualNetworkBindingReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("kube-vnet-binding"),
-		NSFilter: nsFilter,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorder("kube-vnet-binding"),
+		NSFilter:          nsFilter,
+		OperatorNamespace: operatorNS,
 	}
 	if err := bindingReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up binding reconciler")
