@@ -291,7 +291,7 @@ func resolveTargetPorts(sp corev1.ServicePort, selector map[string]string, pods 
 		if !labelsMatchSelector(p.Labels, selector) {
 			continue
 		}
-		for _, c := range p.Spec.Containers {
+		for c := range namedPortContainers(&p.Spec) {
 			for _, cp := range c.Ports {
 				if cp.Name == tp.StrVal {
 					out = append(out, cp.ContainerPort)
