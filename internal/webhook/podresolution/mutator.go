@@ -40,13 +40,11 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	out := r.pod.DeepCopy()
-	// Write every resolved stamp, but prune only what the old object carried:
-	// a stamp the request introduced is left for the Validator to deny.
-	controller.SyncStamps(out, desired, func(k string) bool {
-		_, want := desired[k]
-		_, wasStamped := r.oldStamps[k]
-		return want || wasStamped
-	})
+	// Only stamps the request left untouched are ours to write or prune. A
+	// stamp the request supplied stays as submitted, so the Validator rejects
+	// a forged value with a message instead of it being silently rewritten -
+	// the same outcome as the admission policy without the webhook.
+	controller.SyncStamps(out, desired, r.untouched)
 	controller.MarkResolved(out, controller.ResolvedByAdmission)
 
 	marshaled, err := json.Marshal(out)

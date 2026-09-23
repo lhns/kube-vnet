@@ -5,6 +5,7 @@ package podresolution
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -225,6 +226,26 @@ func TestIntegration_Webhook_ForgedStampRejected(t *testing.T) {
 	}
 	if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
 		t.Fatalf("expected a denial, got %T: %v", err, err)
+	}
+}
+
+// A wrong value for a vnet the pod really is in is also forgery. Without the
+// webhook the admission policy rejects it; with it, the mutator leaves the
+// request's value alone so the validator rejects it the same way, rather than
+// the value being silently corrected.
+func TestIntegration_Webhook_WrongValueForMemberVnetRejected(t *testing.T) {
+	ns := webhookNS(t, "web")
+
+	pod := makePod(ns, "wrong-value", map[string]string{
+		"kube-vnet/net.web":                           "both",
+		controller.LabelSystemNetPrefix + ns + ".web": "egress",
+	})
+	err := testClient.Create(context.Background(), pod)
+	if err == nil {
+		t.Fatalf("a wrong stamp value was admitted (labels %v)", pod.Labels)
+	}
+	if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), `resolves to "both"`) {
+		t.Fatalf("expected the validator's denial naming the resolved value, got %v", err)
 	}
 }
 
