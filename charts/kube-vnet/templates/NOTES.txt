@@ -27,10 +27,10 @@ The VirtualNetwork CRD is registered. Define a network and label pods to join it
 Sample manifests are in the project repo at
 https://github.com/lhns/kube-vnet/tree/main/config/samples
 
-On `helm uninstall`, a pre-delete hook removes operator-managed
-NetworkPolicies (`-l kube-vnet.system/managed-by=kube-vnet`) before tearing down
-the controller — without it, the deny-all baselines would keep enforcing
-after the operator is gone. CRDs and CRs (with `helm.sh/resource-policy:
+On `helm uninstall`, a pre-delete hook stops the controller and then removes
+operator-managed NetworkPolicies (`-l kube-vnet.system/managed-by=kube-vnet`) —
+without it, the deny-all baselines would keep enforcing after the operator is
+gone. CRDs and CRs (with `helm.sh/resource-policy:
 keep`) survive uninstall. To skip the hook (e.g. for a controlled
 migration where you want to preserve the existing policy set):
 

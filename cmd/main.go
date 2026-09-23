@@ -182,7 +182,6 @@ func main() {
 	bindingReconciler := &controller.VirtualNetworkBindingReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorder("kube-vnet-binding"),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
 	}
@@ -265,12 +264,14 @@ func main() {
 			// its own pass moments later.
 		}
 		decoder := admission.NewDecoder(mgr.GetScheme())
+		operatorUser := controller.ServiceAccountUsername(operatorNS, serviceAccountName)
 		mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{
 			Handler: &podresolution.Mutator{
-				Resolver: resolver,
-				Reader:   mgr.GetClient(),
-				NSFilter: nsFilter,
-				Decoder:  decoder,
+				Resolver:         resolver,
+				Reader:           mgr.GetClient(),
+				NSFilter:         nsFilter,
+				Decoder:          decoder,
+				OperatorUsername: operatorUser,
 			},
 		})
 		mgr.GetWebhookServer().Register("/validate-v1-pod", &admission.Webhook{
@@ -279,7 +280,7 @@ func main() {
 				Reader:           mgr.GetClient(),
 				NSFilter:         nsFilter,
 				Decoder:          decoder,
-				OperatorUsername: controller.ServiceAccountUsername(operatorNS, serviceAccountName),
+				OperatorUsername: operatorUser,
 			},
 		})
 		setupLog.Info("pod-resolution admission webhooks enabled",

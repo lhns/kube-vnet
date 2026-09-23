@@ -139,19 +139,9 @@ groups:
         labels: { severity: info }
         annotations:
           summary: "kube-vnet p95 reconcile latency > 5s"
-
-      # Repeated PolicyRestored events suggest someone is fighting the operator.
-      - alert: KubeVnetPolicyRestoredRepeatedly
-        # Requires kube-state-metrics. Counts events labeled reason=PolicyRestored.
-        expr: |
-          sum by (namespace) (
-            increase(kube_events{reason="PolicyRestored"}[15m])
-          ) > 5
-        for: 15m
-        labels: { severity: warning }
-        annotations:
-          summary: "kube-vnet keeps restoring deleted NetworkPolicies in {{ $labels.namespace }}"
 ```
+
+Repeated `PolicyRestored` Events (someone fighting the operator) have no metric to alert on: they are Kubernetes Events, which Prometheus does not see. See [forwarding events](#forward-events-to-your-aggregator).
 
 ---
 
@@ -198,13 +188,11 @@ kubectl get events -A --field-selector reason=PolicyRestored \
 
 ### Forward events to your aggregator
 
-If you run `kube-state-metrics` with the events collector enabled, every Event becomes a `kube_events` series:
+kube-state-metrics does not export Events, so there is no Prometheus series for them. To alert on them, ship Events with an event exporter (e.g. `kubernetes-event-exporter`) or an aggregator that reads them from the apiserver (Datadog, Splunk, Elastic). Ad hoc:
 
-```promql
-sum by (namespace, reason) (rate(kube_events{involvedObject_kind="VirtualNetwork"}[5m]))
+```bash
+kubectl get events -A --field-selector reason=PolicyRestored
 ```
-
-Most event aggregators (Datadog, Splunk, Elastic) consume Kubernetes Events directly via the apiserver.
 
 ---
 

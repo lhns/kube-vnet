@@ -81,13 +81,31 @@ capabilities: { drop: [ALL] }
 {{- end -}}
 
 {{/*
+Namespaces the operator leaves alone, as a JSON list. A null
+operator.disabledNamespaces omits the flag, so the binary default applies;
+mirror it here or templates that key on "is this namespace managed" disagree
+with the operator.
+*/}}
+{{- define "kube-vnet.disabledNamespaces" -}}
+{{- if kindIs "invalid" .Values.operator.disabledNamespaces -}}
+{{- list "kube-system" | toJson -}}
+{{- else -}}
+{{- .Values.operator.disabledNamespaces | toJson -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Namespaces the pod-resolution webhooks never see, as a JSON list: the
-system namespaces and the release namespace, so that pod admission there
-never depends on the operator being up. The system-labels VAP polices pods
-in exactly these namespaces instead (see system-labels-vap.yaml).
+system namespaces, the release namespace and every disabled namespace, so
+pod admission there never depends on the operator being up. Disabled
+namespaces matter most: they typically hold the CNI or cert-manager, which
+must be able to start while the operator is down. The system-labels VAP
+polices pods in exactly these namespaces instead (see system-labels-vap.yaml).
 */}}
 {{- define "kube-vnet.webhookExcludedNamespaces" -}}
-{{- list "kube-system" "kube-public" "kube-node-lease" .Release.Namespace | toJson -}}
+{{- $ns := list "kube-system" "kube-public" "kube-node-lease" .Release.Namespace -}}
+{{- $ns = concat $ns (include "kube-vnet.disabledNamespaces" . | fromJsonArray) -}}
+{{- $ns | uniq | toJson -}}
 {{- end -}}
 
 {{/*

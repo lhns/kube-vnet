@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -142,6 +143,60 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		// admission denial is a failure.
 		if err := userClient.Delete(ctx, v); err != nil && !apierrors.IsNotFound(err) {
 			t.Fatalf("expected DELETE to be allowed (VAP must not guard DELETE), got: %v", err)
+		}
+	})
+}
+
+// A status write keeps the request's labels, so the system-labels VAP must
+// cover pods/status as well: otherwise anyone who may write pod status (a
+// node, or a controller granted pods/status) can stamp a pod into a vnet.
+// Ordinary status writes must still pass, since the kubelet makes them
+// constantly.
+func TestIntegration_VAP_SystemLabels_StatusSubresource(t *testing.T) {
+	ctx := context.Background()
+	mustInstallKustomizeVAP(t, "system-labels-vap.yaml")
+	mustGrantRBAC(t, "vap-test-pods", "", "pods", "alice@example.com")
+	mustGrantRBAC(t, "vap-test-pods-status", "", "pods/status", "alice@example.com")
+	userClient := mustImpersonate(t, "alice@example.com")
+
+	// Disabled, so the resolution controller has nothing to stamp or strip.
+	ns := uniqueNS(t, "vap-status")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+	stamp := LabelSystemNetPrefix + ns + ".web"
+
+	awaitVAPActive(t, userClient, func() client.Object {
+		return makePod(ns, fmt.Sprintf("probe-%d", time.Now().UnixNano()%100000),
+			map[string]string{stamp: "both"})
+	})
+
+	pod := makePod(ns, "target", map[string]string{"app": "x"})
+	mustCreate(t, pod)
+
+	t.Run("stamp via status is denied", func(t *testing.T) {
+		var cur corev1.Pod
+		if err := testClient.Get(ctx, client.ObjectKeyFromObject(pod), &cur); err != nil {
+			t.Fatalf("get pod: %v", err)
+		}
+		forged := cur.DeepCopy()
+		forged.Labels[stamp] = "both"
+		err := userClient.Status().Patch(ctx, forged, client.MergeFrom(&cur))
+		if err == nil {
+			t.Fatalf("a kube-vnet.system stamp was written through pods/status")
+		}
+		if !apierrors.IsInvalid(err) {
+			t.Fatalf("expected a VAP denial, got %v", err)
+		}
+	})
+
+	t.Run("plain status write is allowed", func(t *testing.T) {
+		var cur corev1.Pod
+		if err := testClient.Get(ctx, client.ObjectKeyFromObject(pod), &cur); err != nil {
+			t.Fatalf("get pod: %v", err)
+		}
+		updated := cur.DeepCopy()
+		updated.Status.Message = "kubelet-style status update"
+		if err := userClient.Status().Patch(ctx, updated, client.MergeFrom(&cur)); err != nil {
+			t.Fatalf("an ordinary status write was denied: %v", err)
 		}
 	})
 }

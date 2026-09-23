@@ -24,7 +24,7 @@ it, true forces it on regardless. namespace/selector/ports all come from the
 dnsCarveout values block.
 */}}
 {{- $dc := .Values.dnsCarveout -}}
-{{- $nsManaged := not (has $dc.namespace .Values.operator.disabledNamespaces) -}}
+{{- $nsManaged := not (has $dc.namespace (include "kube-vnet.disabledNamespaces" . | fromJsonArray)) -}}
 {{- $render := $nsManaged -}}
 {{- if kindIs "bool" $dc.enabled -}}
 {{-   $render = $dc.enabled -}}

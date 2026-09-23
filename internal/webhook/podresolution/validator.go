@@ -18,9 +18,11 @@ import (
 // Validator enforces that the `kube-vnet.system/*` labels on a pod are the
 // ones resolution produces.
 //
-// It replaces the pods rule of the system-labels ValidatingAdmissionPolicy.
-// The Mutator's patch is attributed to the requesting user, not the operator,
-// so the VAP's username exemption would reject every pod the Mutator stamps.
+// For the pods the webhook sees, it takes over from the system-labels
+// ValidatingAdmissionPolicy, which keeps policing everything else (excluded
+// namespaces, and pods/status everywhere). The Mutator's patch is attributed
+// to the requesting user, not the operator, so the VAP's username exemption
+// would reject every pod the Mutator stamps.
 // Unlike CEL, this handler can recompute resolution, so instead of "only the
 // operator may touch these labels" it checks that a stamp matches resolution.
 // It runs with `failurePolicy: Fail`, so forgery stays impossible while the

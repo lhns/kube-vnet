@@ -120,12 +120,14 @@ func TestMain(m *testing.M) {
 	// Wired exactly as cmd/main.go wires it: one Resolver, two handlers.
 	resolver := &controller.Resolver{Reader: mgr.GetClient(), NSFilter: nsFilter}
 	decoder := admission.NewDecoder(mgr.GetScheme())
+	operatorUser := controller.ServiceAccountUsername("kube-vnet-system-test", "kube-vnet-controller")
 	mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{
 		Handler: &Mutator{
-			Resolver: resolver,
-			Reader:   mgr.GetClient(),
-			NSFilter: nsFilter,
-			Decoder:  decoder,
+			Resolver:         resolver,
+			Reader:           mgr.GetClient(),
+			NSFilter:         nsFilter,
+			Decoder:          decoder,
+			OperatorUsername: operatorUser,
 		},
 	})
 	mgr.GetWebhookServer().Register("/validate-v1-pod", &admission.Webhook{
@@ -134,7 +136,7 @@ func TestMain(m *testing.M) {
 			Reader:           mgr.GetClient(),
 			NSFilter:         nsFilter,
 			Decoder:          decoder,
-			OperatorUsername: controller.ServiceAccountUsername("kube-vnet-system-test", "kube-vnet-controller"),
+			OperatorUsername: operatorUser,
 		},
 	})
 
