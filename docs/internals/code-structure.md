@@ -8,10 +8,12 @@
 kube-vnet/
 │
 ├── cmd/
-│   └── main.go ............................. operator entrypoint: flags, manager
-│                                             setup, wires the eight reconcilers,
-│                                             the metrics collector and (with
-│                                             --webhook-enabled) the webhooks
+│   ├── main.go ............................. operator entrypoint: flags, manager
+│   │                                         setup, wires the eight reconcilers,
+│   │                                         the metrics collector and (with
+│   │                                         --webhook-enabled) the webhooks
+│   └── networkwait.go ...................... the network-wait and network-beacon
+│                                             subcommands (ADR 0045)
 │
 ├── api/v1alpha1/ ........................... CRD type definitions (kubebuilder)
 │   ├── groupversion_info.go ................ Go package marker, GroupVersion
@@ -31,12 +33,21 @@ kube-vnet/
 │                                             (ADR 0031)
 │
 ├── internal/webhook/podresolution/ ......... optional admission webhooks (ADR 0034)
+│   ├── handlers.go ......................... Deps shared by both handlers
+│   │                                         (decode, operator and namespace
+│   │                                         checks); Register serves them
 │   ├── mutator.go .......................... stamps kube-vnet.system/* labels +
 │   │                                         resolved-generation/resolved-by
 │   │                                         during pod admission
-│   └── validator.go ........................ rejects kube-vnet.system/* label
-│                                             changes that disagree with
-│                                             resolution (operator SA exempt)
+│   ├── validator.go ........................ rejects kube-vnet.system/* label
+│   │                                         changes that disagree with
+│   │                                         resolution (operator SA exempt)
+│   └── networkwait.go ...................... builds the injected network-wait
+│                                             init container (ADR 0045)
+│
+├── internal/networkwait/ ................... the wait (dial every beacon until
+│                                             all accept or the max runs out)
+│                                             and the beacon listener
 │
 └── internal/controller/ .................... operator logic
     │
@@ -78,6 +89,10 @@ kube-vnet/
     │                                         by the ResolutionReconciler and
     │                                         the mutating webhook. Hosts
     │                                         canonicalVnetKey
+    ├── stamps.go ............................ SyncStamps / MarkResolved /
+    │                                         ClearResolved: the one way both
+    │                                         the reconciler and the webhook
+    │                                         write stamps onto a pod
     ├── sweep.go ............................. sweepStalePolicies: label-scoped
     │                                         deletion of policies not in the
     │                                         desired set
@@ -138,7 +153,7 @@ kube-vnet/
                                               (ADR 0041)
 ```
 
-The pod-scoped diagnostics (`VirtualNetworkNotJoinable`, `InvalidJoinLabelDirection`) are emitted by the `ResolutionReconciler` through the `Resolver`; the separate `JoinLabelDiagnosticReconciler` was retired (ADR 0027 retirement amendment).
+The pod-scoped diagnostics are emitted by the `ResolutionReconciler`: `VirtualNetworkNotJoinable` and `InvalidJoinLabelDirection` through the `Resolver`, `ResolutionConflict` and `OverrideRejected` from the resolution result. The separate `JoinLabelDiagnosticReconciler` was retired (ADR 0027 retirement amendment).
 
 ## Code flow
 
@@ -296,7 +311,7 @@ permanently rather than slowly.
 |---|---|---|
 | `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding`, `NetworkPolicy` (drift), `Namespace` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
-| `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` / `InvalidJoinLabelDirection` Events on the declaring object | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
+| `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` Events on the declaring object; `InvalidJoinLabelDirection`, `ResolutionConflict`, `OverrideRejected` Events on the pod | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
 | `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (creates), own policies (drift) |

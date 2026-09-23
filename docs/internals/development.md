@@ -28,8 +28,10 @@ The complete, current file-by-file source map lives in [`code-structure.md`](cod
 
 ```
 api/v1alpha1/                   # CRD Go types + kubebuilder markers (4 kinds)
-cmd/main.go                     # flag parsing, manager setup, reconciler registration
+cmd/                            # flag parsing, manager setup, network-wait subcommands
 internal/controller/            # reconcilers + pure functions -> see code-structure.md
+internal/webhook/podresolution/ # optional pod-resolution admission webhooks
+internal/networkwait/           # the network wait and its per-node beacon
 config/                         # kustomize bases (crd/, rbac/, admission/, manager/, default/, samples/)
 charts/kube-vnet/               # Helm chart (values.yaml, templates/)
 test/e2e/                       # kind+CNI e2e tests + up.sh/down.sh bootstrap
@@ -68,7 +70,7 @@ No CNI — these tests verify what the operator *does*, not what the network *en
 make integration-test
 ```
 
-(Pass-through equivalent: `KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path) go test -tags integration ./internal/controller/... -count=1 -timeout 300s -v`.)
+(Pass-through equivalent: `KUBEBUILDER_ASSETS=$(setup-envtest use 1.31.0 -p path) go test -tags integration ./internal/... -count=1 -timeout 600s -v`.)
 
 When to add one:
 
@@ -87,13 +89,13 @@ func TestIntegration_<Whatever>(t *testing.T) {
 }
 ```
 
-Helpers available: `eventually(t, timeout, fn)`, `uniqueNS`, `mustCreate`, `makeNamespace`, `makePod`, `findPolicy`, `conditionStatusOf`.
+Helpers available: `eventually(t, timeout, fn)`, `uniqueNS`, `mustCreate`, `makeNamespace`, `makePod`, `findPolicy`, `waitForPolicy`, `conditionStatusOf`. The generic ones are aliases for `internal/testutil`, which the webhook suite shares.
 
 ### 3. End-to-end tests (kind + CNI, build tag `e2e`)
 
 Real cluster, real CNI enforcing NetworkPolicy, the full operator deployed. Tests use `kubectl exec wget` to assert traffic actually flows or doesn't.
 
-CI runs the suite against **two CNIs in parallel**: kube-router (~30s boot, the lighter signal) and Calico (~2 min boot, more thorough enforcement), plus lanes for the admission webhook and the Helm install. All must pass.
+CI runs the suite against **two CNIs in parallel**: kube-router (~30s boot, the lighter signal) and Calico (~2 min boot, more thorough enforcement), plus Helm-install lanes with the webhook off and on (see [CI](#ci)). All must pass. The webhook and network-wait tests carry the extra build tag `e2e_webhook` and need a cluster installed with `webhook.enabled` and `webhook.networkWait.enabled`.
 
 Local:
 
@@ -151,7 +153,7 @@ Three workflows under `.github/workflows/`:
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
 - `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
   - `e2e-kube-router`, `e2e-calico` — install via kustomize (webhook off)
-  - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with it on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds its own tests and a cert-survives-upgrade check
+  - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with the webhook and network wait on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds the `e2e_webhook` tests and a cert-survives-upgrade check
   - `e2e-helm-namespace` — the `namespace` isolation preset
 - `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
   - Builds + pushes multi-arch image to `ghcr.io/lhns/kube-vnet:<tag>`
@@ -161,21 +163,20 @@ Three workflows under `.github/workflows/`:
   - Cosign signs the chart artifact, SBOM attached too
   - Renders `release.yaml` via `kubectl kustomize config/default`, replacing the `:latest` operator image with the release tag
   - Generates `checksums.txt` for all assets
-  - Creates the GitHub Release with all assets
+  - Attaches the assets to the tag's GitHub Release (creating an empty one if none exists; it sets no release notes)
 
 ---
 
 ## Releasing a new version
 
-1. Update `CHANGELOG.md` — move the `Unreleased` section to a new `[vX.Y.Z] - YYYY-MM-DD` section.
+1. Update `CHANGELOG.md` — move the `Unreleased` section to a new `## [X.Y.Z] — YYYY-MM-DD` section.
 2. Commit and merge to `main`. No `Chart.yaml` edit is needed: the workflow packages the chart with `--version X.Y.Z --app-version vX.Y.Z` from the tag.
-3. Tag:
+3. Create the GitHub Release for `vX.Y.Z` with hand-written notes (from the changelog section), or tag and fill in the notes afterwards:
    ```bash
    git tag -a vX.Y.Z -m "vX.Y.Z"
    git push origin vX.Y.Z
    ```
-4. The release workflow runs (~10–15 min, multi-arch). Watch [the Actions tab](https://github.com/lhns/kube-vnet/actions/workflows/release.yaml).
-5. Edit the auto-generated GitHub release notes if you want to add a "Highlights" section above the changelog.
+4. The release workflow runs (~10–15 min, multi-arch) and attaches the assets to that release. Watch [the Actions tab](https://github.com/lhns/kube-vnet/actions/workflows/release.yaml).
 
 For a v1alpha1 release, breaking changes between alpha versions are explicitly allowed — see the SemVer note in `CHANGELOG.md`. Document any breaking change in the changelog entry.
 
