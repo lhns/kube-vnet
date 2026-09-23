@@ -85,7 +85,7 @@ func TestIntegration_ExternalAllow_ServiceDeleted_PolicyCollected(t *testing.T) 
 	if err := testClient.Delete(context.Background(), svc); err != nil {
 		t.Fatalf("delete svc: %v", err)
 	}
-	// Either the owner-ref cascade or deletePolicyForService may remove it.
+	// Removed by label on the NotFound path; envtest has no owner-ref GC.
 	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
 }
 
@@ -268,6 +268,57 @@ func TestIntegration_ExternalAllow_NamedTargetPort_PendingThenReady(t *testing.T
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
 		t.Errorf("port = %d, want 8080 (resolved from named 'http')", got)
 	}
+}
+
+// A rollout that renumbers a named containerPort: while old and new pods
+// coexist both numbers are allowed, and deleting the last old pod drops the
+// old number without any other event on the Service.
+func TestIntegration_ExternalAllow_NamedTargetPort_Renumbered(t *testing.T) {
+	ns := uniqueNS(t, "extallow-renumber")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeLBService(ns, "web")
+	svc.Spec.Ports = []corev1.ServicePort{{Name: "http", Port: 80, TargetPort: intstr.FromString("http")}}
+	mustCreate(t, svc)
+
+	pod := func(name string, port int32) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: map[string]string{"app": "web"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "main", Image: "nginx",
+				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+			}}},
+		}
+	}
+	waitForPorts := func(want ...int) {
+		t.Helper()
+		eventually(t, 10*time.Second, func() error {
+			pol, err := findPolicy(context.Background(), ns, extAllowPolicyName(ns, "web"))
+			if err != nil {
+				return err
+			}
+			var got []int
+			for _, p := range pol.Spec.Ingress[0].Ports {
+				got = append(got, p.Port.IntValue())
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				return fmt.Errorf("ports = %v, want %v", got, want)
+			}
+			return nil
+		})
+	}
+
+	old := pod("web-old", 8080)
+	mustCreate(t, old)
+	waitForPorts(8080)
+
+	mustCreate(t, pod("web-new", 9090))
+	waitForPorts(8080, 9090)
+
+	if err := testClient.Delete(context.Background(), old); err != nil {
+		t.Fatalf("delete old pod: %v", err)
+	}
+	waitForPorts(9090)
 }
 
 // Setting kube-vnet/disabled on a namespace that already has policies removes

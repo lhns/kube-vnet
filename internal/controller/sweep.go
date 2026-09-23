@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -97,15 +98,9 @@ func hasControllerOwner(obj client.Object, kind, name string, uid types.UID) boo
 	return false
 }
 
-// syncManagedLabels updates `obj`'s labels so the subset matching
-// `isManaged` equals `desired`. Three operations in one diff:
-//
-//   - Add: any key in `desired` that's missing from `obj.Labels`.
-//   - Update: any key in `desired` whose value differs.
-//   - Remove: any existing label `k` where `isManaged(k)` is true but
-//     `k` isn't in `desired`.
-//
-// The caller does the write; `changed` reports whether one is needed.
+// syncManagedLabels makes obj's labels for which isManaged is true equal
+// desired, leaving the others alone. The caller does the write; changed
+// reports whether one is needed.
 func syncManagedLabels(obj client.Object, isManaged func(string) bool, desired map[string]string) (changed bool) {
 	labels := obj.GetLabels()
 	if labels == nil {
@@ -136,14 +131,11 @@ func syncManagedLabels(obj client.Object, isManaged func(string) bool, desired m
 	return changed
 }
 
-// inNamespacePolicyLabels returns the standard list options for the
-// per-NS sweep pattern: scoped to `ns` and filtered by managed-by plus
-// any role/source-kind discriminators the caller provides.
+// inNamespacePolicyLabels returns list options selecting the managed
+// policies in ns that also carry extraLabels.
 func inNamespacePolicyLabels(ns string, extraLabels map[string]string) []client.ListOption {
 	merged := map[string]string{LabelManagedBy: LabelManagedByValue}
-	for k, v := range extraLabels {
-		merged[k] = v
-	}
+	maps.Copy(merged, extraLabels)
 	return []client.ListOption{
 		client.InNamespace(ns),
 		client.MatchingLabels(merged),

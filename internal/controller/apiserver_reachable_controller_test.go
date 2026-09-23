@@ -1,15 +1,22 @@
 package controller
 
 import (
+	"context"
 	"errors"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // ---- extractors ----
@@ -111,7 +118,7 @@ func TestExtractValidatingWebhookRefs(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := extractValidatingWebhookRefs(c.in)
-			if !sliceEqualServiceRef(got, c.want) {
+			if !slices.Equal(got, c.want) {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
@@ -132,7 +139,7 @@ func TestExtractMutatingWebhookRefs(t *testing.T) {
 	}
 	got := extractMutatingWebhookRefs(in)
 	want := []serviceRef{{Namespace: "istio-system", Name: "istiod", Port: 8443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -159,7 +166,7 @@ func TestExtractAPIServiceRefs(t *testing.T) {
 	}
 	got := extractAPIServiceRefs(in)
 	want := []serviceRef{{Namespace: "kube-system", Name: "metrics-server", Port: 443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -191,7 +198,7 @@ func TestExtractCRDConversionRefs(t *testing.T) {
 	}
 	got := extractCRDConversionRefs(withSvc)
 	want := []serviceRef{{Namespace: "kubevirt", Name: "kubevirt-webhook", Port: 443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -274,7 +281,7 @@ func TestBuildApiserverReachablePolicy(t *testing.T) {
 	if p.Labels[LabelRole] != LabelRoleExternalAllow {
 		t.Errorf("role label = %q, want external-allow", p.Labels[LabelRole])
 	}
-	if !mapsEqual(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
+	if !maps.Equal(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
 		t.Errorf("podSelector matchLabels mismatch: %v", p.Spec.PodSelector.MatchLabels)
 	}
 	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
@@ -471,7 +478,7 @@ func TestApiserverReachablePolicyName_ShapeAndUniqueness(t *testing.T) {
 	if len(na) > 63 {
 		t.Errorf("policy name %q exceeds K8s 63-char limit", na)
 	}
-	if !startsWith(na, "kube-vnet.ext.apiserver.webhook-") {
+	if !strings.HasPrefix(na, "kube-vnet.ext.apiserver.webhook-") {
 		t.Errorf("policy name shape unexpected: %q", na)
 	}
 }
@@ -506,34 +513,62 @@ func TestApiserverReachableOptedIn(t *testing.T) {
 	}
 }
 
-// ---- helpers ----
+// ---- Reconcile ----
+
+// reconcileApiserverReachable runs one reconcile of Service ns/name against
+// objs and returns the client.
+func reconcileApiserverReachable(t *testing.T, ns, name string, objs ...client.Object) client.Client {
+	t.Helper()
+	c := autoAllowClient(t, objs...)
+	r := &ApiserverReachableReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return c
+}
+
+// optedInService returns a Service annotated apiserver-reachable.
+func optedInService(ns, name string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns, Name: name,
+			Annotations: map[string]string{AnnotationApiserverReachable: "true"},
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{"app": "x"},
+			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(8443)}},
+		},
+	}
+}
+
+func TestApiserverReachableReconcile_AppliesPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	c := reconcileApiserverReachable(t, "ns", "webhook", ns, optedInService("ns", "webhook"))
+	if got := listPolicies(t, c, "ns"); len(got) != 1 {
+		t.Errorf("got %d policies, want 1", len(got))
+	}
+}
+
+// The apiserver dials an ExternalName Service's DNS target, not its pods, so
+// a stray selector must not produce a policy for them.
+func TestApiserverReachableReconcile_ExternalName_NoPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	s := optedInService("ns", "webhook")
+	s.Spec.Type = corev1.ServiceTypeExternalName
+	s.Spec.ExternalName = "webhook.example.com"
+	c := reconcileApiserverReachable(t, "ns", "webhook", ns, s)
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("got %d policies for an ExternalName Service, want 0", len(got))
+	}
+}
+
+// NamespaceLifecycle admission rejects creates in a terminating namespace, so
+// applying there would only fail and retry until the namespace is gone.
+func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) {
+	c := reconcileApiserverReachable(t, "ns", "webhook", terminatingNamespace("ns"), optedInService("ns", "webhook"))
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("applied %d policies into a terminating namespace", len(got))
+	}
+}
 
 func ptr[T any](v T) *T { return &v }
-
-func sliceEqualServiceRef(a, b []serviceRef) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
-}

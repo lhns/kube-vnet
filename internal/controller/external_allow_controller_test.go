@@ -1,14 +1,25 @@
 package controller
 
 import (
+	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/managedfields"
+	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -69,7 +80,7 @@ func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
 }
 
 func TestBuildExternalAllowPolicy_NodePort_TargetPortToPodSide(t *testing.T) {
-	// Allowed port must be the pod-side targetPort, NOT the Service Port nor
+	// Allowed port must be the pod-side targetPort, not the Service Port or
 	// the nodePort. By the time external traffic reaches the pod, kube-proxy
 	// has DNAT'd node:nodePort → pod:targetPort.
 	s := svc("api", "api")
@@ -109,6 +120,53 @@ func TestBuildExternalAllowPolicy_NodePort_NamedPort_PodPresent(t *testing.T) {
 	}
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
 		t.Errorf("named port resolved to %d, want 8443", got)
+	}
+}
+
+// Backing pods may map one port name to different numbers, e.g. mid-rollout
+// after a containerPort change; the Service routes to each pod's own number,
+// so every one must be allowed, whatever order the pods are listed in.
+func TestBuildExternalAllowPolicy_NamedPort_PodsDisagree_AllowsEach(t *testing.T) {
+	s := svc("api", "api")
+	s.Spec.Ports = []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromString("http")}}
+	pod := func(port int32) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "api"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+			}}},
+		}
+	}
+	for _, pods := range [][]corev1.Pod{
+		{pod(8080), pod(9090), pod(8080)},
+		{pod(9090), pod(8080)},
+	} {
+		pol, err := buildExternalAllowPolicy(s, pods)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		var got []int
+		for _, p := range pol.Spec.Ingress[0].Ports {
+			got = append(got, p.Port.IntValue())
+		}
+		if !slices.Equal(got, []int{8080, 9090}) {
+			t.Errorf("ports = %v, want [8080 9090]", got)
+		}
+	}
+}
+
+func TestBuildExternalAllowPolicy_DuplicateTargetPort_EmittedOnce(t *testing.T) {
+	s := svc("api", "api")
+	s.Spec.Ports = []corev1.ServicePort{
+		{Name: "a", Port: 80, TargetPort: intstr.FromInt32(8080)},
+		{Name: "b", Port: 8080},
+	}
+	pol, err := buildExternalAllowPolicy(s, nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got := len(pol.Spec.Ingress[0].Ports); got != 1 {
+		t.Errorf("got %d ports, want 1: %+v", got, pol.Spec.Ingress[0].Ports)
 	}
 }
 
@@ -327,5 +385,95 @@ func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
 				t.Errorf("predicate = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestBackingPodChanged(t *testing.T) {
+	pod := func(labels map[string]string, phase corev1.PodPhase) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: labels},
+			Status:     corev1.PodStatus{Phase: phase},
+		}
+	}
+	old := pod(map[string]string{"app": "a"}, corev1.PodPending)
+	if !backingPodChanged.Create(event.CreateEvent{Object: old}) {
+		t.Error("create should pass")
+	}
+	// A deleted pod may have been the only one resolving a port number.
+	if !backingPodChanged.Delete(event.DeleteEvent{Object: old}) {
+		t.Error("delete should pass")
+	}
+	// A relabel can move the pod into a Service's selector.
+	if !backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "b"}, corev1.PodPending)}) {
+		t.Error("label change should pass")
+	}
+	if backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "a"}, corev1.PodRunning)}) {
+		t.Error("status-only update should not pass")
+	}
+}
+
+// autoAllowClient returns a fake client holding objs, with every type the
+// auto-allow reconcilers read registered.
+func autoAllowClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	for _, add := range []func(*runtime.Scheme) error{
+		corev1.AddToScheme, networkingv1.AddToScheme, admissionregistrationv1.AddToScheme,
+		apiregistrationv1.AddToScheme, apiextensionsv1.AddToScheme,
+	} {
+		if err := add(scheme); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).
+		WithTypeConverters(managedfields.NewDeducedTypeConverter()).Build()
+}
+
+// terminatingNamespace returns a Namespace that is being deleted.
+func terminatingNamespace(name string) *corev1.Namespace {
+	now := metav1.Now()
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: name, DeletionTimestamp: &now, Finalizers: []string{"test"},
+	}}
+}
+
+// listPolicies returns the NetworkPolicies in ns.
+func listPolicies(t *testing.T, c client.Client, ns string) []networkingv1.NetworkPolicy {
+	t.Helper()
+	var list networkingv1.NetworkPolicyList
+	if err := c.List(context.Background(), &list, client.InNamespace(ns)); err != nil {
+		t.Fatalf("list policies: %v", err)
+	}
+	return list.Items
+}
+
+// reconcileExternalAllow runs one reconcile of Service ns/name against objs
+// and returns the client.
+func reconcileExternalAllow(t *testing.T, ns, name string, objs ...client.Object) client.Client {
+	t.Helper()
+	c := autoAllowClient(t, objs...)
+	r := &ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return c
+}
+
+// NamespaceLifecycle admission rejects creates in a terminating namespace, so
+// applying there would only fail and retry until the namespace is gone.
+func TestExternalAllowReconcile_TerminatingNamespace_NoApply(t *testing.T) {
+	c := reconcileExternalAllow(t, "ns", "web", terminatingNamespace("ns"), svc("web", "ns"))
+	if got := listPolicies(t, c, "ns"); len(got) != 0 {
+		t.Errorf("applied %d policies into a terminating namespace", len(got))
+	}
+}
+
+// Sanity check for the fake-client harness: a live namespace does get the
+// policy.
+func TestExternalAllowReconcile_AppliesPolicy(t *testing.T) {
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
+	c := reconcileExternalAllow(t, "ns", "web", ns, svc("web", "ns"))
+	if got := listPolicies(t, c, "ns"); len(got) != 1 {
+		t.Errorf("got %d policies, want 1", len(got))
 	}
 }
