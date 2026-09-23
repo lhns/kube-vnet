@@ -23,6 +23,15 @@ release. Pinning to an exact version is recommended.
   apiserver's write path, so a pod is a member from the instant it exists, on
   both create and relabel. Implements [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
 
+  This removes kube-vnet's share of the startup delay, not the CNI's. On
+  kube-router, which rewrites its iptables rules on every pod event, a
+  production cluster still saw first connections fail for 2-4 s with the
+  webhook on. Clients that connect at startup still need to retry.
+
+  A `kube-vnet.system/*` stamp the request itself supplies is left for the
+  validating webhook to judge, so a forged value is rejected with a message —
+  as without the webhook — rather than silently corrected.
+
   **Read before enabling.** The validating half runs `failurePolicy: Fail` to
   keep today's guarantee that `kube-vnet.system/*` labels cannot be forged even
   while the operator is unreachable; the cost is that an operator outage blocks

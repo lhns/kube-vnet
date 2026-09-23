@@ -1,6 +1,6 @@
 # 0030 — Unified vnet-membership model with resolution layer
 
-> **Amendment (2026-09-11) — the deferred webhook is implemented.** § "Mutating admission webhook for label stamping" deferred it until users needed sub-second guarantees. One did: a migration Job that does not retry failed its first connection because its pod was not yet stamped. [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented, opt-in via `webhook.enabled`. The "~100ms" admission-to-stamp window quoted below was never measured. The field bound is <=1s on kube-router v2.10.0, where a denial shows as an immediate RST rather than a timeout, and the window stretches under load, during an operator restart and with a slow apiserver.
+> **Amendment (2026-09-11) — the deferred webhook is implemented.** § "Mutating admission webhook for label stamping" deferred it until users needed sub-second guarantees. One did: a migration Job that does not retry failed its first connection because its pod was not yet stamped. [ADR 0034](0034-admission-webhook-for-pod-resolution.md) is implemented, opt-in via `webhook.enabled`. The "~100ms" admission-to-stamp window quoted below was never measured. The field bound for kube-vnet's share is <=1s on kube-router v2.10.0, where a denial shows as an immediate RST rather than a timeout, and it stretches under load, during an operator restart and with a slow apiserver. The CNI adds its own, often larger, delay on top; see ADR 0034.
 
 > **Amendment (2026-07-26) — the resolution controller also watches `VirtualNetwork`.**
 >

@@ -228,15 +228,19 @@ cleanup:
 # Off by default. When enabled, pod membership labels are stamped inside the
 # apiserver's write path, so a pod is a member of its virtual networks from
 # the instant it exists. Without it there is a window — field-observed at
-# under a second, long enough to break a client that does not retry — in
-# which a starting pod matches no membership policy and is denied.
+# under a second — in which a starting pod matches no membership policy and
+# is denied. This removes kube-vnet's share only: the CNI still needs time to
+# program a new pod (seconds on kube-router), so startup connections must
+# retry either way.
 #
 # READ BEFORE ENABLING. The validating half runs with failurePolicy: Fail,
 # preserving the guarantee that kube-vnet.system/* labels cannot be forged
 # even while the operator is unreachable. The cost is that an operator
 # outage BLOCKS POD CREATION in managed namespaces. kube-system, kube-public,
-# kube-node-lease and this release's namespace are excluded, so the cluster
-# and the operator itself can always recover. Run at least 2 replicas.
+# kube-node-lease, this release's namespace and every namespace in
+# operator.disabledNamespaces are excluded, so the cluster, the operator and
+# what it doesn't manage (typically the CNI) can always recover. Run at least
+# 2 replicas.
 #
 # The mutating half is failurePolicy: Ignore — it is an acceleration, and if
 # it is unreachable pods simply land unstamped and the controller stamps them

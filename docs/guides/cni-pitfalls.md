@@ -176,15 +176,20 @@ apiserver persists a pod. Until it lands, the pod matches no membership policy a
 baseline applies. Measured at **under a second** on kube-router v2.10.0 — enough to fail the first
 connection of a client that does not retry, and to look exactly like a misconfiguration.
 
+The CNI adds its own delay on top. kube-router rewrites its whole iptables ruleset on every pod
+event (0.77-1.85 s per rewrite on one production cluster, so traffic worked 2-4 s after container
+start), and the rewrite gets slower as the number of NetworkPolicies grows. On that cluster this
+was the larger share.
+
 Note what a denial looks like there: kube-router with iptables **rejects**, so the caller sees an
 immediate `Connection refused`, not a timeout. Reading that as "nothing is listening" sends you
 after the wrong bug.
 
-**Fix.** Enable the admission webhook (`webhook.enabled=true`,
-[ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)), which stamps inside the
-apiserver's write path so the pod is a member from the instant it exists. Where that is not an
-option, gate the workload on the real condition with an initContainer rather than on a fixed
-`sleep`. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
+**Fix.** Gate the workload on the real condition — an initContainer that polls the target —
+rather than on a fixed `sleep`; that covers both delays. The admission webhook
+(`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) removes
+kube-vnet's share by stamping inside the apiserver's write path, but not the CNI's, so on its own
+it does not make a startup connection safe. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 
