@@ -68,7 +68,7 @@ The join label *value* declares which directions a pod participates in. Recogniz
 | `both` | Bidirectional. Accept ingress from peers; initiate egress to peers. |
 | `ingress` | Accept-only. Accept ingress from peers; do not initiate to them. |
 | `egress` | Initiate-only. Send egress to peers; do not accept from them. |
-| `none` | Not a member. Equivalent to label absent. |
+| `none` | Not a member. Unlike an absent label, it cancels a membership inherited from a baseline (where the baseline allows overrides). |
 
 The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). Use `both`/`ingress`/`egress`/`none` exclusively.
 
@@ -207,8 +207,6 @@ The former `--elide-baseline-for` exemption was removed by [ADR 0035](../adr/003
 
 A singleton `ClusterVirtualNetworkBaseline` named `default` declares membership every pod inherits, with per-vnet override-permission encoded in the eight-value `Direction` enum (bare = enforced, `default-*` = override-permitted by lower tiers). The chart seeds this CR from `operator.clusterBaseline.{create, ingressIsolationLevel, memberships}` — pick a preset (`pod` / `namespace` / `cluster`) or supply an explicit memberships map. Per-namespace overrides go in a `VirtualNetworkBaseline` named `default` in the namespace; per-pod overrides go in a `VirtualNetworkBinding` (must select specific pods) or via the `kube-vnet/net.<vnet>=<dir>` label. Conflicts within a tier (or across siblings at the pod tier) resolve via intersection (fail-closed). See ADR 0031.
 
-
-
 ### Disabling the operator for a namespace
 
 The annotation `kube-vnet/disabled=true` is a separate, orthogonal switch. When set, the operator does nothing in that namespace: no baseline, no membership policies, no system vnet, no eligibility as a peer, no honoring bindings. The operator-level flag `--disabled-namespaces` (default `kube-system`, plus the operator's own namespace added implicitly) has the same effect at the cluster level.
@@ -267,7 +265,7 @@ Cross-namespace ingress always requires the receiving pod to be a vnet member wh
 
 ### Unresolved pods get the deny floor (fail-closed)
 
-A pod that hasn't been stamped yet carries no `kube-vnet.system/*` labels, matches no membership policy, and gets only the baseline's deny-all. Stamping usually lands well under a second after creation — long enough to fail a client that connects immediately without retrying. The optional admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) stamps the pod during admission and closes this window; see [troubleshooting](../guides/troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
+A pod that hasn't been stamped yet carries no `kube-vnet.system/*` labels, matches no membership policy, and gets only the baseline's deny-all. Stamping usually lands well under a second after creation — long enough to fail a client that connects immediately without retrying. The optional admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) stamps the pod during admission and closes this window. The CNI still needs time to program the new pod; for that, a pod can opt into the network wait (`kube-vnet/network-max-wait`, [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). Details: [troubleshooting](../guides/troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 
@@ -279,11 +277,7 @@ Naming: `kube-vnet.mem.<homeNS>.<vnet>-<8hex>` (`kube-vnet.mem.cluster-<8hex>` f
 
 The `podSelector` matches the stamped `kube-vnet.system/net.<homeNS>.<vnet>` label (`kube-vnet.system/net.cluster` for the cluster vnet) with `In [both, ingress]`; `ingress.from` has one peer per member namespace, selecting `In [both, egress]`. `policyTypes: [Ingress]`. The full YAML is in [labels and annotations § generated selectors](../reference/labels-and-annotations.md#generated-selectors).
 
-Labels on every operator-managed `NetworkPolicy`:
-
-- `kube-vnet.system/managed-by=kube-vnet` — claims operator ownership. Used by drift correction and cleanup.
-- `kube-vnet.system/network=<homeNS>.<vnet>` — identifies which VirtualNetwork owns the policy. Used for cleanup, including cross-namespace.
-- `kube-vnet.system/role=membership` (membership policies) or `=baseline` (baseline policies).
+Each membership policy is labeled `kube-vnet.system/managed-by=kube-vnet` (ownership), `kube-vnet.system/network=<homeNS>.<vnet>` (the owning vnet, used for cross-namespace cleanup) and `kube-vnet.system/role=membership`; the full label contract is in [labels and annotations](../reference/labels-and-annotations.md#labels-the-operator-puts-on-its-own-resources).
 
 Owner references: only set when the policy is in the same namespace as the VirtualNetwork. Kubernetes does not support cross-namespace owner references. For policies in foreign namespaces, the operator manages cleanup via the `kube-vnet.system/network` label — see [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md).
 

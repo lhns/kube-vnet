@@ -1,6 +1,6 @@
 # Install
 
-Three install paths, in order of preference: **Helm** (recommended), **`kubectl apply` of `release.yaml`**, or **`kubectl apply -k config/default`** from the source tree. Only the Helm chart seeds the cluster baseline, installs the uninstall cleanup hook, the CoreDNS carve-out and the optional admission webhook, and gates the admission policies on the Kubernetes version.
+Three install paths, in order of preference: **Helm** (recommended), **`kubectl apply` of `release.yaml`**, or **`kubectl apply -k config/default`** from the source tree. Only the Helm chart seeds the cluster baseline, installs the uninstall cleanup hook, the CoreDNS carve-out, the optional admission webhook and network wait, and gates the admission policies on the Kubernetes version.
 
 ---
 
@@ -44,12 +44,12 @@ The chart is published as an OCI artifact to `ghcr.io/lhns/charts/kube-vnet`. He
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
+  --version <version> \
   --namespace kube-vnet-system --create-namespace \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster   # or namespace | pod
 ```
 
-Replace `0.1.0` with the version you want — see the [GitHub releases page](https://github.com/lhns/kube-vnet/releases) for tags.
+`<version>` is a tag from the [releases page](https://github.com/lhns/kube-vnet/releases) without the `v` (e.g. `0.7.3`).
 
 `operator.clusterBaseline.ingressIsolationLevel` is **required** ([ADR 0031](../adr/0031-baseline-tier-resolution.md)): the chart fails if neither it nor `operator.clusterBaseline.memberships` is set while `create=true`. What the three levels mean: [first-vnet § isolation level](first-vnet.md#2-decide-your-isolation-level--before-you-install).
 
@@ -72,7 +72,7 @@ metadata:
 
 ```bash
 # Pin a specific image tag (default: chart appVersion)
-helm install ... --set image.tag=v0.1.0
+helm install ... --set image.tag=v<version>
 
 # Same-NS connectivity by default (every pod auto-joins the per-NS `namespace` system vnet
 # at default-both; can egress to anything cluster-wide).
@@ -89,6 +89,9 @@ helm install ... --set 'operator.disabledNamespaces={kube-system,my-legacy-ns}'
 
 # Stamp pod membership at admission (ADR 0034); read the trade-off first
 helm install ... --set webhook.enabled=true --set replicaCount=2
+
+# Also let pods opt into the network wait with kube-vnet/network-max-wait (ADR 0045)
+helm install ... --set webhook.enabled=true --set webhook.networkWait.enabled=true
 
 # Expose the metrics endpoint via a Service (off by default)
 helm install ... --set metricsService.enabled=true
@@ -160,7 +163,8 @@ Dev builds are single-arch (`linux/amd64`) and use the GitHub Actions buildx cac
 Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag. One file, no Helm:
 
 ```bash
-kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml
+kubectl apply -f https://github.com/lhns/kube-vnet/releases/latest/download/release.yaml
+# or a specific release: .../releases/download/v<version>/release.yaml
 ```
 
 This installs:
@@ -196,7 +200,7 @@ Every released image and Helm chart is signed with [Cosign](https://docs.sigstor
 Verify the container image:
 
 ```bash
-cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
+cosign verify ghcr.io/lhns/kube-vnet:v<version> \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
@@ -204,7 +208,7 @@ cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
 Verify the Helm chart artifact:
 
 ```bash
-cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
+cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
@@ -218,7 +222,7 @@ Each release ships SPDX-JSON SBOMs for both the image and the chart. They're att
 Pull and verify the image SBOM attestation:
 
 ```bash
-cosign verify-attestation ghcr.io/lhns/kube-vnet:v0.1.0 \
+cosign verify-attestation ghcr.io/lhns/kube-vnet:v<version> \
   --type spdx \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
@@ -230,7 +234,7 @@ Or just download the asset:
 
 ```bash
 curl -sLo image.sbom.spdx.json \
-  https://github.com/lhns/kube-vnet/releases/download/v0.1.0/kube-vnet-image.sbom.spdx.json
+  https://github.com/lhns/kube-vnet/releases/download/v<version>/kube-vnet-image.sbom.spdx.json
 ```
 
 `checksums.txt` in each release covers all assets with SHA-256 sums.
@@ -249,8 +253,8 @@ The runtime image is `gcr.io/distroless/static:nonroot` (the binary is staticall
 If you use Helm, mirror `oci://ghcr.io/lhns/charts/kube-vnet:<chart-version>` to your internal OCI registry too, plus the uninstall hook's `registry.k8s.io/kubectl` image (`cleanup.image.*`):
 
 ```bash
-helm pull oci://ghcr.io/lhns/charts/kube-vnet --version 0.1.0
-helm push kube-vnet-0.1.0.tgz oci://internal.example/charts
+helm pull oci://ghcr.io/lhns/charts/kube-vnet --version <version>
+helm push kube-vnet-<version>.tgz oci://internal.example/charts
 ```
 
 ---
