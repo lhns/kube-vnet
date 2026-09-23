@@ -28,7 +28,9 @@ func TestIntegration_ConvergedPoliciesMatchTheirBuilders(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "payments", Namespace: ns}})
 	mustCreate(t, makePod(ns, "web-0", map[string]string{"kube-vnet/net.payments": "both", "app": "web"}))
 	mustCreate(t, makeHostPortPod(ns, "hp", 18090, corev1.ProtocolTCP))
-	mustCreate(t, makeLBService(ns, "web"))
+	web := makeLBService(ns, "web")
+	web.Annotations = map[string]string{AnnotationApiserverReachable: "true"}
+	mustCreate(t, web)
 
 	upToDate := func(name string, desired func() (*networkingv1.NetworkPolicy, error)) {
 		t.Helper()
@@ -74,15 +76,24 @@ func TestIntegration_ConvergedPoliciesMatchTheirBuilders(t *testing.T) {
 		return buildHostPortPolicy(ns, hostPortKey{port: 18090, protocol: corev1.ProtocolTCP}), nil
 	})
 
-	upToDate(extAllowPolicyName(ns, "web"), func() (*networkingv1.NetworkPolicy, error) {
-		svc := &corev1.Service{}
-		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "web"}, svc); err != nil {
-			return nil, err
+	// Both Service-owned kinds, owned by the live Service.
+	ownedByWeb := func(build func(*corev1.Service) (*networkingv1.NetworkPolicy, error)) func() (*networkingv1.NetworkPolicy, error) {
+		return func() (*networkingv1.NetworkPolicy, error) {
+			svc := &corev1.Service{}
+			if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "web"}, svc); err != nil {
+				return nil, err
+			}
+			desired, err := build(svc)
+			if err != nil {
+				return nil, err
+			}
+			return desired, controllerutil.SetControllerReference(svc, desired, testScheme)
 		}
-		desired, err := buildExternalAllowPolicy(svc, nil)
-		if err != nil {
-			return nil, err
-		}
-		return desired, controllerutil.SetControllerReference(svc, desired, testScheme)
-	})
+	}
+	upToDate(extAllowPolicyName(ns, "web"), ownedByWeb(func(svc *corev1.Service) (*networkingv1.NetworkPolicy, error) {
+		return buildExternalAllowPolicy(svc, nil)
+	}))
+	upToDate(apiserverReachablePolicyName(web), ownedByWeb(func(svc *corev1.Service) (*networkingv1.NetworkPolicy, error) {
+		return buildApiserverReachablePolicy(svc, nil, []int32{80}, "0.0.0.0/0")
+	}))
 }

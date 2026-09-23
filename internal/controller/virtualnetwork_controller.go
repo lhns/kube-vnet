@@ -229,8 +229,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				pluralize(len(members), "1 namespace", "%d namespaces")))
 	}
 
-	if err := r.updateStatus(ctx, vnet, members, policyRefs, storedStatus); err != nil && len(applyErrs) == 0 {
-		return ctrl.Result{}, err
+	statusErr := r.updateStatus(ctx, vnet, members, policyRefs, storedStatus)
+	if statusErr != nil && len(applyErrs) == 0 {
+		return ctrl.Result{}, statusErr
 	}
 	r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 
@@ -241,16 +242,22 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	setMembers(vnet.Namespace, vnet.Name, totalMembers)
 
 	if len(applyErrs) > 0 {
-		return ctrl.Result{}, errors.Join(append(applyErrs, sweepErr)...)
+		return ctrl.Result{}, errors.Join(append(applyErrs, sweepErr, statusErr)...)
 	}
 	return ctrl.Result{RequeueAfter: 10 * time.Minute}, nil
 }
 
-// joinErrorMessages joins errs into one line for a condition message.
+// joinErrorMessages joins the first few errs into one line for a condition
+// message and counts the rest: a message over the CRD's 32768-byte limit
+// would fail the status write, and many namespaces tend to fail alike.
 func joinErrorMessages(errs []error) string {
-	msgs := make([]string, len(errs))
-	for i, err := range errs {
-		msgs[i] = err.Error()
+	const maxListed = 3
+	msgs := make([]string, 0, maxListed+1)
+	for _, err := range errs[:min(len(errs), maxListed)] {
+		msgs = append(msgs, err.Error())
+	}
+	if rest := len(errs) - maxListed; rest > 0 {
+		msgs = append(msgs, fmt.Sprintf("and %d more", rest))
 	}
 	return strings.Join(msgs, "; ")
 }

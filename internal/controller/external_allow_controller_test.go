@@ -403,8 +403,9 @@ func namedPortSvc(name string, selector map[string]string) *corev1.Service {
 // podToSelectingServicesEnqueued runs fire against podToSelectingServices
 // over a client holding "ns" Services web (app=web, named port), canary
 // (track=canary, named port), numeric (app=web, numeric port), stamped
-// (selects on a kube-vnet.system label, named port) and a Service in another
-// namespace, and returns the enqueued names, sorted.
+// (selects on a kube-vnet.system label, named port), selectorless (named port,
+// no selector, so it selects no pod) and a Service in another namespace, and
+// returns the enqueued names, sorted.
 func podToSelectingServicesEnqueued(t *testing.T, fire func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request])) []string {
 	t.Helper()
 	numeric := svc("numeric", "ns")
@@ -415,6 +416,7 @@ func podToSelectingServicesEnqueued(t *testing.T, fire func(h handler.Funcs, q w
 		namedPortSvc("web", map[string]string{"app": "web"}),
 		namedPortSvc("canary", map[string]string{"track": "canary"}),
 		namedPortSvc("stamped", map[string]string{"kube-vnet.system/net.ns.payments": "both"}),
+		namedPortSvc("selectorless", nil),
 		numeric, other,
 	)
 	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
@@ -458,6 +460,9 @@ func TestPodToSelectingServices(t *testing.T) {
 		{"update flips in", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", "track": "canary"})}, q)
 		}, []string{"ns/canary"}},
+		{"update from no labels", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(nil), ObjectNew: pod(web)}, q)
+		}, []string{"ns/web"}},
 		{"update flips out", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
 			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "db"})}, q)
 		}, []string{"ns/web"}},

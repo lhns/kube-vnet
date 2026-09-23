@@ -3,6 +3,8 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -203,6 +205,26 @@ func TestReconcile_ApplyFailureDoesNotStarveLaterNamespaces(t *testing.T) {
 	}
 	if failed != 1 {
 		t.Errorf("ApplyFailed events = %d, want 1 (reasons %v)", failed, rec.reasons)
+	}
+}
+
+// A condition message is capped at 32768 bytes by the CRD schema; a Ready
+// message over it fails the status write, leaving Ready stale while every
+// namespace fails (a cluster-wide admission webhook rejecting the policies).
+func TestJoinErrorMessages_Bounded(t *testing.T) {
+	errs := make([]error, 1000)
+	for i := range errs {
+		errs[i] = fmt.Errorf("apply ns-%d/kube-vnet.net.payments-0123abcd: admission webhook \"policy.example.com\" denied the request: %w", i, errInjected)
+	}
+	msg := joinErrorMessages(errs)
+	if len(msg) > 2048 {
+		t.Fatalf("message is %d bytes, want a short summary", len(msg))
+	}
+	if !strings.HasPrefix(msg, errs[0].Error()+"; ") || !strings.HasSuffix(msg, "and 997 more") {
+		t.Fatalf("message = %q, want the first errors and a count of the rest", msg)
+	}
+	if got, want := joinErrorMessages(errs[:2]), errs[0].Error()+"; "+errs[1].Error(); got != want {
+		t.Fatalf("two errors: got %q, want %q", got, want)
 	}
 }
 

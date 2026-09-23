@@ -39,7 +39,9 @@ func applyPolicy(ctx context.Context, c client.Client, reader client.Reader, des
 // nothing the operator manages: the spec, the owner references and the labels
 // must be equal, and every desired annotation present. The labels compare
 // exactly, so a label a previous version applied and this one dropped is
-// still removed. Anything else on live (another manager's annotations,
+// still removed. Annotations don't compare exactly, so one a builder stopped
+// setting would linger until some other change forces an apply; no builder
+// sets any today. Anything else on live (another manager's annotations,
 // status, managedFields) is not the apply's to change. The spec compares
 // semantically (nil and empty are equal); the builders set the fields the
 // apiserver would default (port protocol, policyTypes), so a policy read back
