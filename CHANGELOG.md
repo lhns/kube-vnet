@@ -138,6 +138,12 @@ release. Pinning to an exact version is recommended.
   controller granted `pods/status` — could stamp a pod into a vnet or onto a
   host-port policy until the operator stripped it. The policy now covers
   `pods/status`; ordinary status writes are unaffected.
+- **Namespace editors could write kube-vnet status.** The chart's end-user
+  editor roles, aggregated into `admin` and `edit`, granted `patch` and
+  `update` on `/status`, so anyone with `edit` in a namespace could forge a
+  vnet's or binding's `Ready` condition or member list. Status gates no
+  traffic, but humans and alerts read it. The roles no longer grant `/status`;
+  only the operator writes it. Threat model F-14.
 
 ## [0.7.3] — 2026-09-02
 

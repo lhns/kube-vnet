@@ -11,6 +11,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
@@ -212,6 +213,74 @@ func TestIntegration_RBAC_Viewer_ReadsButCannotWrite(t *testing.T) {
 	}
 	if !apierrors.IsForbidden(err) {
 		t.Fatalf("expected Forbidden, got: %v", err)
+	}
+}
+
+// TestIntegration_RBAC_Editor_CannotWriteStatus checks that every editor role
+// writes the resource but not its /status: only the operator writes status.
+// The namespace-scoped editors aggregate into `edit`, so a grant there would
+// let any namespace editor forge a vnet's Ready condition or member list.
+func TestIntegration_RBAC_Editor_CannotWriteStatus(t *testing.T) {
+	mustInstallAggregatedRBAC(t)
+	ctx := context.Background()
+	ns := uniqueNS(t, "rbac-status")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	cases := []struct {
+		role string
+		obj  client.Object
+	}{
+		{"virtualnetworks-editor", &vnetv1alpha1.VirtualNetwork{
+			ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: ns},
+		}},
+		{"virtualnetworkbindings-editor", &vnetv1alpha1.VirtualNetworkBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns},
+			Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+				VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: ns},
+				Direction:         "both",
+				PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+			},
+		}},
+		{"virtualnetworkbaselines-editor", &vnetv1alpha1.VirtualNetworkBaseline{
+			ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: ns},
+		}},
+		{"clustervirtualnetworkbaselines-editor", &vnetv1alpha1.ClusterVirtualNetworkBaseline{
+			ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		}},
+	}
+	forged := client.RawPatch(types.MergePatchType, []byte(`{"status":{"conditions":[`+
+		`{"type":"Ready","status":"True","reason":"Forged","message":"forged",`+
+		`"lastTransitionTime":"2026-01-01T00:00:00Z"}]}}`))
+
+	for _, tc := range cases {
+		t.Run(tc.role, func(t *testing.T) {
+			user := "status-" + tc.role + "@example.com"
+			if tc.obj.GetNamespace() == "" {
+				bindUserToClusterRole(t, user, chartReleasePrefix+tc.role)
+			} else {
+				bindUserInNS(t, user, tc.role, ns)
+			}
+			c := mustImpersonate(t, user)
+
+			// The editor writes the resource itself...
+			if err := c.Create(ctx, tc.obj); err != nil {
+				t.Fatalf("editor create: %v", err)
+			}
+			t.Cleanup(func() { _ = testClient.Delete(context.Background(), tc.obj) })
+
+			// ...but neither patches nor updates its status.
+			err := c.Status().Patch(ctx, tc.obj, forged)
+			if !apierrors.IsForbidden(err) {
+				t.Fatalf("status patch: expected Forbidden, got %v", err)
+			}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(tc.obj), tc.obj); err != nil {
+				t.Fatalf("editor get: %v", err)
+			}
+			err = c.Status().Update(ctx, tc.obj)
+			if !apierrors.IsForbidden(err) {
+				t.Fatalf("status update: expected Forbidden, got %v", err)
+			}
+		})
 	}
 }
 
