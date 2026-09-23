@@ -42,14 +42,9 @@ You can. NetworkPolicy works. The reasons people reach for kube-vnet:
 
 If your cluster is small and you're comfortable hand-writing NetworkPolicy, kube-vnet is unnecessary overhead.
 
-### How does this compare to Cilium L7 / NetworkPolicyV2 / AdminNetworkPolicy?
-
-- **Cilium L7 policy** — operates at HTTP method / hostname level. kube-vnet is L3/L4 only. They compose: nothing in kube-vnet conflicts with a Cilium L7 policy in the same namespace.
-- **AdminNetworkPolicy (ANP)** — the Kubernetes-native cluster-scoped policy with higher precedence than `NetworkPolicy`. Solves the namespace-RBAC-resistance problem that kube-vnet's drift-correction approximates with reconciliation. Tracked as the future direction in [ADR 0019](adr/0019-baseline-durability.md).
-
 ### Why is this `lhns.de`, not `kubernetes-sigs` / a Foundation project?
 
-Personal project under [@lhns](https://github.com/lhns). The CRD group is `kube-vnet.lhns.de` because Kubernetes requires CRD groups to be domain-style.
+Personal project under [@lhns](https://github.com/lhns). For the group name, see [below](#why-is-the-crd-group-kube-vnetlhnsde-instead-of-just-kube-vnet).
 
 ---
 
@@ -73,7 +68,7 @@ See [the bridge-pod recipe](guides/recipes.md#bridge-pod-joining-two-vnets-sidec
 
 ### What are direction modes?
 
-The join label *value* declares which directions the pod participates in: `both` (default, bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). The legacy `"true"`/`"false"`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](getting-started/concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
+The join label *value* declares which directions the pod participates in: `both` (bidirectional), `ingress` (accept-only), `egress` (initiate-only), `none` (not a member). The legacy `"true"`/`"false"`/empty-string aliases were dropped per [ADR 0030](adr/0030-unified-vnet-membership-with-resolution.md). Useful for asymmetric workloads — a logging sidecar uses `egress`, a read-only API uses `ingress`. See [`concepts.md`](getting-started/concepts.md#direction-modes-on-the-join-label) and [ADR 0021](adr/0021-direction-modes-on-join-labels.md).
 
 ### Can I attach pods to a vnet without modifying their template?
 
@@ -83,7 +78,7 @@ Yes — use a `VirtualNetworkBinding` (short names `vnb`, `vnbs`). It selects po
 
 Three reasons (full discussion in [ADR 0003](adr/0003-one-label-per-virtualnetwork.md)):
 
-1. The generated `NetworkPolicy` selector becomes trivial — `Exists` on a single key per network. No value enumeration.
+1. The generated `NetworkPolicy` selector stays trivial: one key per network, matched on its direction value.
 2. Label values are capped at 63 characters; a comma-separated list of network names blows past that quickly.
 3. It matches the standard Kubernetes "one label per category" convention.
 
@@ -101,7 +96,7 @@ Kubernetes requires CRD groups to be DNS-style (containing at least one dot). `k
 
 Not for validation: the CRD's CEL rule rejects invalid `VirtualNetwork` names ([ADR 0017](adr/0017-name-validation-via-cel-and-runtime-check.md)), and the chart's `ValidatingAdmissionPolicies` cover labels and reserved names on Kubernetes ≥ 1.30.
 
-The optional pod-resolution webhook (`webhook.enabled=true`, [ADR 0034](adr/0034-admission-webhook-for-pod-resolution.md)) solves a different problem: it stamps membership while the pod is admitted, so a new pod is never briefly denied. The cost is that pod creation in managed namespaces fails while the operator is unreachable. See the [configuration reference](reference/configuration.md#webhook-pod-resolution-admission-webhooks--adr-0034).
+The optional pod-resolution webhook (`webhook.enabled=true`, [ADR 0034](adr/0034-admission-webhook-for-pod-resolution.md)) solves a different problem: it stamps membership while the pod is admitted, so a new pod is a member from the moment it exists. The CNI still takes a moment to program it; pods whose first connection must succeed can also opt into the network wait (`webhook.networkWait.enabled`, [ADR 0045](adr/0045-network-wait-for-opted-in-pods.md)). The cost is that pod creation in managed namespaces fails while the operator is unreachable. See the [configuration reference](reference/configuration.md#webhook-pod-resolution-admission-webhooks--adr-0034).
 
 ---
 
@@ -237,7 +232,11 @@ If it's missing or too narrow, follow [troubleshooting § admission webhook fail
 
 kube-vnet *generates* `NetworkPolicy`. You can always go back to writing it by hand — the policies kube-vnet generated keep working. Choose kube-vnet if the membership model fits your team's mental model better than label-selectors-and-exceptions.
 
-### vs. NetworkPolicy V2 / AdminNetworkPolicy
+### vs. Cilium L7 policy
+
+Cilium L7 policy works at HTTP method / hostname level; kube-vnet is L3/L4 only. They compose: nothing in kube-vnet conflicts with a Cilium L7 policy in the same namespace.
+
+### vs. AdminNetworkPolicy
 
 Future direction. ANP solves the deny-baseline-durability problem more cleanly than reconciliation. When ANP is universally supported across CNIs and at v1, kube-vnet's baseline migrates to a cluster-scoped ANP; per-vnet allows stay as `NetworkPolicy`. Existing `VirtualNetwork` API surface doesn't change. See [ADR 0019](adr/0019-baseline-durability.md).
 

@@ -167,32 +167,16 @@ If pods routinely send hard traffic immediately on startup and you can't tolerat
 
 ## Pitfall 6: every CNI — kube-vnet's own startup window
 
-Distinct from pitfall 5, and easy to mistake for it. Cilium's lag is the CNI resolving identities;
-this one is kube-vnet resolving membership, and it happens on **every** CNI including kube-router
-and Calico.
+Distinct from pitfall 5: this happens on **every** CNI. A new pod is denied until the operator has
+stamped its membership label (under a second, measured on kube-router v2.10.0) and the CNI has
+programmed it (on kube-router a full iptables rewrite per pod event, 0.77–1.85 s each on one
+production cluster, growing with the number of NetworkPolicies). A client that connects once at
+startup fails, and on kube-router the denial is an immediate `Connection refused`, which reads like
+"nothing is listening".
 
-Membership policies select on the `kube-vnet.system/net.*` label the operator stamps after the
-apiserver persists a pod. Until it lands, the pod matches no membership policy and the deny-all
-baseline applies. Measured at **under a second** on kube-router v2.10.0 — enough to fail the first
-connection of a client that does not retry, and to look exactly like a misconfiguration.
-
-The CNI adds its own delay on top. kube-router rewrites its whole iptables ruleset on every pod
-event (0.77-1.85 s per rewrite on one production cluster, so traffic worked 2-4 s after container
-start), and the rewrite gets slower as the number of NetworkPolicies grows. On that cluster this
-was the larger share.
-
-Note what a denial looks like there: kube-router with iptables **rejects**, so the caller sees an
-immediate `Connection refused`, not a timeout. Reading that as "nothing is listening" sends you
-after the wrong bug.
-
-**Fix.** The admission webhook (`webhook.enabled=true`,
-[ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) removes kube-vnet's share by
-stamping inside the apiserver's write path. For the CNI's share, enable
-`webhook.networkWait.enabled` and annotate the pods whose first connection must succeed with
-`kube-vnet/network-max-wait: "30s"`: their app starts once every node has applied them
-([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). That is exact on kube-router and a
-strong hint elsewhere. Without it, gate the workload on the real condition, an initContainer that
-polls the target, rather than on a fixed `sleep`. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
+**Fix.** The admission webhook (`webhook.enabled`) removes kube-vnet's share; the network wait
+(`webhook.networkWait.enabled` plus the `kube-vnet/network-max-wait` pod annotation) covers the
+CNI's. Diagnosis and workarounds: [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 
@@ -233,4 +217,4 @@ kubectl exec -n "$NS" outsider -- timeout 3 nc -vz "$MEMBER_IP" 9090
 kubectl delete pod -n "$NS" member outsider
 ```
 
-A future opt-in `kube-vnet verify` subcommand will automate this — see [ADR 0028](../adr/0028-runtime-policy-verification.md) for the design.
+[ADR 0028](../adr/0028-runtime-policy-verification.md) (proposed, not implemented) discusses automating this.

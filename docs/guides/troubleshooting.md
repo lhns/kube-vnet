@@ -16,6 +16,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 - [A Job or one-shot pod fails to connect on startup, but succeeds on retry](#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry)
 - [Pods I expect to be isolated can talk to each other](#pods-i-expect-to-be-isolated-can-talk-to-each-other)
 - [Admission webhook fails with `context deadline exceeded`](#admission-webhook-fails-with-context-deadline-exceeded)
+- [Pod creation fails in kube-vnet's own webhook (`pods.systemlabels.kube-vnet.lhns.de`)](#pod-creation-fails-in-kube-vnets-own-webhook-podssystemlabelskube-vnetlhnsde)
 - [CNI pitfalls that silently break enforcement (separate page)](cni-pitfalls.md)
 - [Egress to the public internet just started working after upgrade](#egress-to-the-public-internet-just-started-working-after-upgrade)
 - [The deny-all baseline didn't appear](#the-deny-all-baseline-didnt-appear)
@@ -35,7 +36,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Pod events kube-vnet emits
 
-A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidJoinLabelDirection` instead. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
+A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidJoinLabelDirection` instead, and rules that disagree about a vnet get `ResolutionConflict` or `OverrideRejected` ([all reasons](../reference/metrics-and-events.md#kubernetes-events)). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
 > Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. Disabled is an explicit opt-out — the operator stays silent there by design.
 >
@@ -202,7 +203,7 @@ Most common case. Walk through these in order:
 
 ## I labeled my pod and the vnet is Ready, but external pods can still reach it
 
-The deny-all baseline selects every pod; there's no per-pod exemption (the `--elide-baseline-for` flag was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md)). What makes a pod "open" is membership in the cluster system vnet: if your pod is on `cluster=both`/`ingress` (e.g. because `operator.clusterBaseline.ingressIsolationLevel=cluster` seeds `cluster=default-both`), the cluster-vnet membership policy adds allow-from-cluster-peer rules that override the baseline's deny-all via NetworkPolicy union semantics. By convention every pod is on cluster, so cluster peers ≈ everyone.
+The deny-all baseline selects every pod; there's no per-pod exemption (the `--elide-baseline-for` flag was removed in [ADR 0035](../adr/0035-removal-of-elide-baseline-for.md)). What makes a pod "open" is membership in the cluster system vnet: if your pod is on `cluster=both`/`ingress` (e.g. because `operator.clusterBaseline.ingressIsolationLevel=cluster` seeds `cluster=default-both`), the cluster-vnet membership policy adds allow-from-cluster-peer rules that override the baseline's deny-all via NetworkPolicy union semantics. Under that preset every pod is on `cluster`, so cluster peers ≈ everyone.
 
 To enforce stricter ingress on a specific pod:
 
@@ -247,7 +248,7 @@ long each node took:
 kubectl logs -n <ns> <pod> -c kube-vnet-network-wait
 ```
 
-`max wait ... reached; starting anyway` names the nodes that never accepted. Look for a node
+`max wait ... reached; starting anyway` lists the beacon IPs (one beacon pod per node) that never accepted; `kubectl get pods -n kube-vnet-system -o wide -l app.kubernetes.io/component=network-beacon` maps them to nodes. Look for a node
 whose CNI is stuck, or an egress policy or mesh that blocks the probe to the
 `<release>-network-beacon` pods. On other CNIs the wait is a strong hint rather than a
 guarantee; if the first connection still fails there, use the check below.
@@ -400,7 +401,7 @@ Error from server (InternalError): error when creating "cert.yaml":
 
 Background: the kube-apiserver dials the webhook backend Service directly. The apiserver isn't a pod, so its source IP (control-plane node IP for kubeadm / k0s / k3s; managed-control-plane IP for GKE / EKS / AKS) doesn't match any `namespaceSelector` or `podSelector`. The webhook NS's baseline + membership policies reject the connection. Admission times out.
 
-As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. Model + opt-outs: [the auto-allow guide](auto-allow.md); design: [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md).
+Since v0.4.0 kube-vnet auto-emits an allow on the webhook port whenever a `ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `APIService`, or CRD conversion webhook references a Service in a managed namespace. Model + opt-outs: [the auto-allow guide](auto-allow.md); design: [ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md).
 
 **Diagnostic steps in order**:
 
@@ -459,6 +460,28 @@ As of v0.5 kube-vnet auto-emits an allow on the webhook port whenever a `Validat
 
 ---
 
+## Pod creation fails in kube-vnet's own webhook (`pods.systemlabels.kube-vnet.lhns.de`)
+
+Only with `webhook.enabled=true` ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)). Two different errors:
+
+**`failed calling webhook "pods.systemlabels.kube-vnet.lhns.de"`** (connection refused, timeout, or a TLS error). The validating webhook is `failurePolicy: Fail`, so while no operator replica serves it, pod creation and update in managed namespaces is rejected. Check the operator:
+
+```bash
+kubectl get deploy -n kube-vnet-system kube-vnet
+kubectl get endpointslices -n kube-vnet-system -l kubernetes.io/service-name=kube-vnet-webhook
+kubectl logs -n kube-vnet-system deploy/kube-vnet | grep -i webhook
+```
+
+The operator's own namespace, `kube-system`, `kube-public`, `kube-node-lease` and `operator.disabledNamespaces` are exempt, so the operator can always restart. Run at least two replicas. To unblock the cluster while you fix it, delete the two webhook configurations; `helm upgrade` recreates them:
+
+```bash
+kubectl delete mutatingwebhookconfiguration,validatingwebhookconfiguration kube-vnet-pod-resolution
+```
+
+**`admission webhook "pods.systemlabels.kube-vnet.lhns.de" denied the request: labels under kube-vnet.system/ are managed by the kube-vnet operator ...`**. The request sets, changes or removes a `kube-vnet.system/*` label to something resolution does not produce, e.g. a manifest copied from `kubectl get pod -o yaml` with stale stamps. Remove the `kube-vnet.system/*` labels from the manifest and declare membership with a `kube-vnet/net.*` label instead.
+
+---
+
 ## Egress to the public internet just started working after upgrade
 
 Expected behavior change. As of the `ingress-isolation` rename, kube-vnet's baseline carries `policyTypes: [Ingress]` only; egress is unrestricted by the operator. The previous "deny everything except DNS + vnet members" baseline is gone (it provided narrow egress isolation that didn't actually contain the destinations that mattered, and the user-facing name `default-deny-everywhere` overpromised). See [ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) and [`security.md`](../security/security.md).
@@ -506,13 +529,13 @@ No. The baseline is owned by the `NamespaceReconciler` independently of any spec
 
 **Symptom.** `kubectl delete namespace <ns>` never completes; `kubectl get ns <ns>` shows `Terminating` indefinitely. The namespace ran kube-vnet (it was managed).
 
-**Cause (fixed in the current release).** The operator creates a `namespace` system VirtualNetwork in every managed namespace. In affected versions, the `…-system-vnet-protected` ValidatingAdmissionPolicy guarded `DELETE` — so when Kubernetes' namespace controller tried to cascade-delete that vnet during teardown, admission denied it (the namespace controller isn't the operator's ServiceAccount), and the namespace could never finish terminating. Confirm the leftover vnet:
+**Cause (fixed in v0.4.1).** The operator creates a `namespace` system VirtualNetwork in every managed namespace. Before v0.4.1, the `…-system-vnet-protected` ValidatingAdmissionPolicy guarded `DELETE` — so when Kubernetes' namespace controller tried to cascade-delete that vnet during teardown, admission denied it (the namespace controller isn't the operator's ServiceAccount), and the namespace could never finish terminating. Confirm the leftover vnet:
 
 ```bash
 kubectl get vnet -n <ns> namespace   # still present on a Terminating namespace
 ```
 
-**Fix.** Upgrade to a release where the VAP guards `CREATE`/`UPDATE` only — namespace teardown then completes normally, and user-initiated deletes of a system vnet are still recovered by drift-correction. (NetworkPolicies were never affected: no VAP guards their `DELETE`.)
+**Fix.** Upgrade to v0.4.1 or later, where the VAP guards `CREATE`/`UPDATE` only — namespace teardown then completes normally, and user-initiated deletes of a system vnet are still recovered by drift-correction. (NetworkPolicies were never affected: no VAP guards their `DELETE`.)
 
 ---
 
@@ -570,7 +593,7 @@ The reason explains what to fix.
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 
-**Conflicting directions** for the same vnet from different sources (a binding says `both`, the pod label `egress`; or two bindings disagree) are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) — here, `none`. Nothing currently reports the conflict: compare the pod's `kube-vnet.system/net.*` stamp with its sources and keep a single source per pod. Bare-vs-prefixed labels on the same pod canonicalize to one key ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
+**Conflicting directions** for the same vnet from different sources (a binding says `both`, the pod label `egress`; or two bindings disagree) are intersected fail-closed ([ADR 0031](../adr/0031-baseline-tier-resolution.md)) — here, `egress`. They don't show on the vnet: the pod gets a `ResolutionConflict` (or, for an override of a pinned baseline value, `OverrideRejected`) Warning Event naming the sources and the result. Bare-vs-prefixed labels on the same pod canonicalize to one key ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
 Reason definitions: [`reference/api.md`](../reference/api.md#degraded-condition).
 

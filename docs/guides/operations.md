@@ -53,7 +53,7 @@ What happens to your cluster while no replica is running:
 
 - **Existing `NetworkPolicy` resources stay enforced.** The apiserver continues serving them; the CNI continues dropping packets. Pods that *were* isolated remain isolated; pods that *were* allowed remain allowed.
 - **Membership changes don't propagate.** New pods stay unstamped, so they match no membership policy and the baseline denies their ingress until the operator returns.
-- **With `webhook.enabled=true`, pod creation and updates in managed namespaces are rejected** — the validating webhook fails closed. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are exempt, so the operator itself can always restart. This is why the webhook wants two or more replicas.
+- **With `webhook.enabled=true`, pod creation and updates in managed namespaces are rejected** — the validating webhook fails closed. `kube-system`, `kube-public`, `kube-node-lease`, the release namespace and `operator.disabledNamespaces` are exempt, so the operator itself can always restart. This is why the webhook wants two or more replicas.
 - **VirtualNetwork resources can still be created/edited/deleted.** The apiserver accepts them; the operator just won't act on them until it's back.
 - **Drift correction pauses.** A user deleting an operator-managed `NetworkPolicy` while the operator is down won't trigger an immediate restore. The policy returns on the next reconcile after the operator comes back. See [`security.md`](../security/security.md) for what this means for the threat model.
 
@@ -269,9 +269,9 @@ The Deployment uses `RollingUpdate` (Kubernetes default). With one replica and l
 
 The chart's CRDs are regular templates, so `helm upgrade` updates them too.
 
-Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](../faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; name renames are handled by owner-ref-based self-healing on the next reconcile; connectivity stays intact throughout.
+Concerned about old + new instances fighting during the rollout, or policy-name changes between versions? See [FAQ § "When I upgrade the operator, do old and new instances fight?"](../faq.md#when-i-upgrade-the-operator-do-old-and-new-instances-fight). Short answer: leader election makes it a single-writer-at-a-time system; renamed policies are removed by the stale-policy sweep on the next reconcile; connectivity stays intact throughout.
 
-After upgrade, if the new version tightens any baseline / membership shape (e.g. a switch from `cluster` to `namespace` isolation mode), existing long-lived connections from before the upgrade can survive due to Linux conntrack — see [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the explanation and [troubleshooting.md § "Pods I expect to be isolated can talk to each other"](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other) (step 6) for the recovery procedure.
+If an upgrade tightens isolation (a new version, or new values such as a switch from `cluster` to `namespace` isolation level), existing long-lived connections from before the upgrade can survive due to Linux conntrack — see [FAQ § "I tightened isolation but existing cross-namespace connections still work. Why?"](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why) for the explanation and [troubleshooting.md § "Pods I expect to be isolated can talk to each other"](troubleshooting.md#pods-i-expect-to-be-isolated-can-talk-to-each-other) (step 6) for the recovery procedure.
 
 ### "I want to roll out cluster-wide isolation"
 
@@ -343,6 +343,8 @@ Per auto-allow trigger ([guide](auto-allow.md)):
 - 1 `kube-vnet.ext.svc.*` policy per externally-exposed Service.
 - 1 `kube-vnet.ext.host.*` policy per distinct `(namespace, hostPort, protocol)`.
 - 1 `kube-vnet.ext.apiserver.*` policy per webhook/APIService-referenced Service.
+
+With `webhook.networkWait.enabled`: one beacon pod per Linux node (requests 5m CPU / 16Mi, tolerates every taint), plus a small init container in each pod that opts in.
 
 Per labeled pod: the operator stamps `kube-vnet.system/net.*` labels (and `host-port.*` markers for hostPort pods) onto the pod object — a few extra labels, no additional API objects.
 
