@@ -151,6 +151,12 @@ jobs:
           # Every optional part off.
           render --set operator.clusterBaseline.create=false \
             --set operator.leaderElect=false --set rbac.aggregate=false --set cleanup.enabled=false
+          # Metrics off: no metrics port (kubeconform accepts containerPort 0).
+          render $pod --set operator.metricsBindAddress=0
+          if helm template testrelease charts/kube-vnet $pod --set operator.metricsBindAddress=0 \
+              | grep -q 'containerPort: 0$'; then
+            echo "metrics off still renders containerPort: 0"; exit 1
+          fi
           # Before Kubernetes 1.30: no ValidatingAdmissionPolicies. The last
           # --kube-version wins.
           render $pod --kube-version 1.29.0
@@ -179,3 +185,7 @@ jobs:
             --set webhook.enabled=true --set webhook.certSource=vault
           refuse "webhook.networkWait.enabled requires webhook.enabled" $pod \
             --set webhook.networkWait.enabled=true
+          refuse "metricsService.enabled requires metrics" $pod \
+            --set operator.metricsBindAddress=0 --set metricsService.enabled=true
+          refuse "podMonitor.enabled requires metrics" $pod \
+            --set operator.metricsBindAddress=0 --set podMonitor.enabled=true

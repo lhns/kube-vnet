@@ -63,6 +63,15 @@ app.kubernetes.io/component: network-beacon
 {{- end }}
 {{- end -}}
 
+{{/*
+Non-empty unless operator.metricsBindAddress is "0", which controller-runtime
+reads as "no metrics server". toString: `--set operator.metricsBindAddress=0`
+arrives as a number.
+*/}}
+{{- define "kube-vnet.metricsEnabled" -}}
+{{- if ne (toString .Values.operator.metricsBindAddress) "0" }}true{{ end -}}
+{{- end -}}
+
 {{- define "kube-vnet.serviceAccountName" -}}
 {{ include "kube-vnet.fullname" . }}
 {{- end -}}

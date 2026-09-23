@@ -64,8 +64,10 @@ spec:
                   fieldPath: metadata.namespace
           ports:
             {{- /* The port is whatever follows the last colon: ":8080" and "0.0.0.0:8080" alike. */}}
-            - containerPort: {{ regexReplaceAll ".*:" .Values.operator.metricsBindAddress "" | atoi }}
+            {{- if include "kube-vnet.metricsEnabled" . }}
+            - containerPort: {{ regexReplaceAll ".*:" (toString .Values.operator.metricsBindAddress) "" | atoi }}
               name: metrics
+            {{- end }}
             - containerPort: {{ regexReplaceAll ".*:" .Values.operator.healthProbeBindAddress "" | atoi }}
               name: health
             {{- if .Values.webhook.enabled }}
