@@ -21,6 +21,8 @@ Defined in `cmd/main.go`. The chart sets them from the `operator.*` and `webhook
 | `--webhook-port` | int | `9443` | Port of the webhook server. |
 | `--webhook-cert-dir` | string | `/tmp/k8s-webhook-server/serving-certs` | Directory holding `tls.crt` and `tls.key`. |
 | `--service-account-name` | string | `kube-vnet-controller` | The operator's own ServiceAccount name. The validating webhook exempts this identity so the operator's own pod patches are not judged as user writes. The chart passes its ServiceAccount name when `webhook.enabled=true`. |
+| `--network-wait-beacons` | string (host:port) | `""` | The network beacons' headless Service. Non-empty enables the network wait: pods annotated `kube-vnet/network-max-wait` get the wait container. Requires `--webhook-enabled` and `--network-wait-image`. The chart sets both when `webhook.networkWait.enabled=true`. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md). |
+| `--network-wait-image` | string | `""` | Image of the injected wait container: the operator image, which runs its `network-wait` subcommand. |
 | `--version` | bool | `false` | Print version info and exit. |
 
 Plus the standard `--zap-*` flags from `sigs.k8s.io/controller-runtime/pkg/log/zap` (log level, format, etc.).
@@ -93,6 +95,7 @@ Off by default. When enabled, pods are stamped with their `kube-vnet.system/net.
 | `webhook.certSource` | string | `helm` | `helm`: self-signed CA generated at install and reused across upgrades via `lookup`. `cert-manager`: renders a `Certificate` against `webhook.certManager.issuerRef` and relies on the CA injector for the `caBundle`. Any other value fails the render. |
 | `webhook.certManager.issuerRef` | object | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`. `name` is required in that mode. |
 | `webhook.timeoutSeconds` | int | `5` | Admission timeout for both webhooks. |
+| `webhook.networkWait.enabled` | bool | `false` | Ship a beacon DaemonSet, headless Service and NetworkPolicy (`<release>-network-beacon`), and let pods opt into the network wait with `kube-vnet/network-max-wait` ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). → `--network-wait-beacons`, `--network-wait-image`. Requires `webhook.enabled`; the render fails otherwise. |
 
 ### `dnsCarveout.*` (CoreDNS ingress carve-out — ADR 0042)
 

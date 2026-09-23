@@ -150,6 +150,8 @@ Schedule: weekly Mondays. PRs are labeled per ecosystem with caps so the queue d
 - **No privilege escalation**: `allowPrivilegeEscalation: false`.
 - **seccomp**: `RuntimeDefault`.
 
+The network wait's beacons and the init container it injects into opted-in pods run the same image with the same settings (the injected container sets them itself, so it passes PodSecurity `restricted`).
+
 These are configured both in `config/manager/manager.yaml` (the Kustomize install) and the Helm chart's `values.yaml` defaults. Override in Helm values if your environment requires a different profile.
 
 ### Network
@@ -158,6 +160,7 @@ These are configured both in `config/manager/manager.yaml` (the Kustomize instal
   - `:8080` — Prometheus metrics. Not exposed via a Service by default; opt in with `metricsService.enabled=true` or `podMonitor.enabled=true`.
   - `:8081` — health/readiness probes.
   - `:9443` — only with `webhook.enabled=true`: the admission webhook server, reached by the apiserver through the `<release>-webhook` Service (TLS; certificate from the chart or cert-manager).
+- Only with `webhook.networkWait.enabled=true`: a beacon DaemonSet listens on `:9444` on every Linux node, and a chart-owned NetworkPolicy opens it to every pod. A beacon accepts a TCP connection and closes it at once; it reads nothing and has no ServiceAccount token. The init container injected into opted-in pods only resolves and dials the beacons ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)).
 - It makes egress only to the apiserver (and to CoreDNS for resolution).
 - The release namespace is disabled for the operator itself, so no kube-vnet policy restricts ingress to it.
 

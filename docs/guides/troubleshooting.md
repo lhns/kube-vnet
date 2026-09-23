@@ -227,10 +227,30 @@ control.
    removes this one: it stamps inside the apiserver's write path.
 2. **The CNI's.** The CNI then has to program the pod's IP into its rules. On kube-router this is
    a full iptables rewrite on every pod event, measured at 2-4 s end to end on a production
-   cluster, and it grows with the number of NetworkPolicies. No kube-vnet setting removes it.
+   cluster, and it grows with the number of NetworkPolicies. The network wait below holds the pod
+   until it is over.
 
-So the webhook helps, but a client that connects the moment it starts still has to retry, or wait
-for the condition below.
+**The fix on kube-router: enable the webhook and the network wait** (`webhook.enabled=true`,
+`webhook.networkWait.enabled=true`), then annotate the pod template:
+
+```yaml
+metadata:
+  annotations:
+    kube-vnet/network-max-wait: "30s"
+```
+
+An injected init container holds the app until every node has applied the pod, and never longer
+than the maximum ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). Its log says how
+long each node took:
+
+```bash
+kubectl logs -n <ns> <pod> -c kube-vnet-network-wait
+```
+
+`max wait ... reached; starting anyway` names the nodes that never accepted. Look for a node
+whose CNI is stuck, or an egress policy or mesh that blocks the probe to the
+`<release>-network-beacon` pods. On other CNIs the wait is a strong hint rather than a
+guarantee; if the first connection still fails there, use the check below.
 
 **Before diagnosing, establish what a denial looks like on your CNI.** This is the step people
 skip, and getting it wrong sends you after the wrong bug — a refusal reads like "nothing is
@@ -272,7 +292,7 @@ kubectl get pod -n <ns> <pod> -o jsonpath='{.metadata.annotations.kube-vnet\.sys
 Seeing `controller` on a cluster where you enabled the webhook means the webhook was unreachable
 for that pod and it fell back — which is safe, but it is also the window reappearing.
 
-**If you cannot enable the webhook**, gate on the real condition rather than on a duration. An
+**If you cannot enable the network wait**, gate on the real condition rather than on a duration. An
 initContainer shares the pod's network namespace and IP, so it tests exactly what the main
 container needs — can *this pod* reach *that target*:
 

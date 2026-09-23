@@ -185,11 +185,14 @@ Note what a denial looks like there: kube-router with iptables **rejects**, so t
 immediate `Connection refused`, not a timeout. Reading that as "nothing is listening" sends you
 after the wrong bug.
 
-**Fix.** Gate the workload on the real condition — an initContainer that polls the target —
-rather than on a fixed `sleep`; that covers both delays. The admission webhook
-(`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) removes
-kube-vnet's share by stamping inside the apiserver's write path, but not the CNI's, so on its own
-it does not make a startup connection safe. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
+**Fix.** The admission webhook (`webhook.enabled=true`,
+[ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) removes kube-vnet's share by
+stamping inside the apiserver's write path. For the CNI's share, enable
+`webhook.networkWait.enabled` and annotate the pods whose first connection must succeed with
+`kube-vnet/network-max-wait: "30s"`: their app starts once every node has applied them
+([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). That is exact on kube-router and a
+strong hint elsewhere. Without it, gate the workload on the real condition, an initContainer that
+polls the target, rather than on a fixed `sleep`. Full diagnosis in [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 

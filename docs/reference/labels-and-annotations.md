@@ -51,6 +51,28 @@ Symptom-first walkthroughs: [troubleshooting § pod events](../guides/troublesho
 
 ---
 
+## Annotations you put on pods
+
+### `kube-vnet/network-max-wait`
+
+| | |
+|---|---|
+| **On** | `Pod` (typically via the pod template) |
+| **Value** | A positive Go duration, e.g. `"30s"`. |
+| **Meaning** | "Hold this pod's app until every node has applied its NetworkPolicy rules, for at most this long." The webhook injects an init container, `kube-vnet-network-wait`, that runs first. When the maximum runs out, the app starts anyway. |
+| **Requires** | `webhook.enabled` and `webhook.networkWait.enabled`. Otherwise, or with an invalid value, the pod starts without waiting and `kubectl` prints an admission warning. |
+
+For one-shot clients on kube-router, such as a Job whose first connection must succeed. Only applies at pod creation; hostNetwork pods are skipped. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
+
+```yaml
+template:
+  metadata:
+    annotations:
+      kube-vnet/network-max-wait: "30s"
+```
+
+---
+
 ## Labels and annotations the operator puts on pods
 
 ### `kube-vnet.system/net.*` (membership stamp)

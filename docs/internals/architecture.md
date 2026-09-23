@@ -31,6 +31,7 @@ The operator is a single process (`cmd/main.go`) running a controller-runtime `M
 - **`ApiserverReachableReconciler`** — emits `kube-vnet.ext.apiserver.*` allows for Services the apiserver dials, discovered from webhook configurations, `APIService`s and CRD conversion webhooks ([ADR 0041](../adr/0041-auto-allow-apiserver-reachable-services.md)).
 - **`MetricsCollector`** — a `Runnable` that updates the cluster-wide gauges every 30 seconds.
 - **Pod-resolution webhooks** (`internal/webhook/podresolution`, only with `--webhook-enabled`) — the `Mutator` (`/mutate-v1-pod`) stamps the pod during admission using the same `Resolver`, so the pod is a member from creation; the `Validator` (`/validate-v1-pod`) rejects requests whose `kube-vnet.system/*` label changes disagree with resolution, exempting the operator's own ServiceAccount. See [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md).
+- **Network wait** (`internal/networkwait`, only with `--network-wait-beacons`) — on pod CREATE the `Mutator` also prepends an init container to pods annotated `kube-vnet/network-max-wait`. It is the operator binary's `network-wait` subcommand, which dials the chart's per-node beacons (the same binary's `network-beacon` subcommand) until every node's CNI admits the pod, or the pod's maximum runs out. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
 
 Pure pieces the reconcilers delegate to:
 

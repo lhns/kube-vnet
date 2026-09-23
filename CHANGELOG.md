@@ -26,7 +26,8 @@ release. Pinning to an exact version is recommended.
   This removes kube-vnet's share of the startup delay, not the CNI's. On
   kube-router, which rewrites its iptables rules on every pod event, a
   production cluster still saw first connections fail for 2-4 s with the
-  webhook on. Clients that connect at startup still need to retry.
+  webhook on. Clients that connect at startup still need to retry, or use the
+  network wait below.
 
   A `kube-vnet.system/*` stamp the request itself supplies is left for the
   validating webhook to judge, so a forged value is rejected with a message —
@@ -58,6 +59,19 @@ release. Pinning to an exact version is recommended.
   `certSource: helm` the generated serving certificate is kept across
   `helm upgrade`; any `certSource` other than `helm` or `cert-manager` fails
   the render instead of installing a webhook the apiserver cannot call.
+
+- **Network wait for pods whose first connection must succeed
+  (`webhook.networkWait.enabled`, default off, requires the webhook).** A pod
+  annotated `kube-vnet/network-max-wait: "30s"` gets an injected init
+  container that holds its app until every node has applied its NetworkPolicy
+  rules, and never longer than that maximum; then the app starts anyway. The
+  chart ships a tiny beacon DaemonSet, one TCP listener per node behind a
+  chart-owned NetworkPolicy open to every pod. The wait releases once every
+  beacon accepts the pod. On kube-router, which applies all of a node's rules
+  in one pass, that means the pod's vnet rules are live. On other CNIs it is a
+  strong hint, still bounded by the maximum. An invalid value, or the
+  annotation on a cluster without the feature, gives a `kubectl` warning and
+  no wait. Implements [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
 
 - **A pod left out of a vnet by conflicting rules now says why.** When a
   binding, baseline and pod label disagree, resolution intersects them or
