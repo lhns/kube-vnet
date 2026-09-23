@@ -1,11 +1,11 @@
 //go:build e2e
 
 // Package e2e contains end-to-end tests that run against a real Kubernetes
-// cluster (kind + Calico) with kube-vnet already deployed.
+// cluster (kind plus a NetworkPolicy CNI) with kube-vnet already deployed.
 //
-// Bootstrap is the responsibility of the runner (hack/e2e-up.sh or the
-// e2e GitHub Actions workflow). These tests assume kubectl is on PATH
-// and points at the e2e cluster.
+// Bootstrap is the runner's job (test/e2e/up.sh or the e2e GitHub Actions
+// workflow). These tests assume kubectl is on PATH and points at the e2e
+// cluster.
 //
 // Run via: KUBECONFIG=... go test -tags e2e ./test/e2e/... -v
 package e2e
@@ -16,22 +16,6 @@ import (
 	"testing"
 	"time"
 )
-
-// vnetSpec returns a VirtualNetwork manifest with optional allowedNamespaces.
-// `allowed` may be nil for "home only".
-func vnetSpec(name, ns string, allowed string) string {
-	allowedYAML := ""
-	if allowed != "" {
-		allowedYAML = "\n  allowedNamespaces:\n" + allowed
-	}
-	return fmt.Sprintf(`apiVersion: kube-vnet.lhns.de/v1alpha1
-kind: VirtualNetwork
-metadata:
-  name: %s
-  namespace: %s
-spec:%s
-`, name, ns, allowedYAML)
-}
 
 // TestE2E_SameVNet_Connectivity: two pods on the same vnet can reach each other.
 func TestE2E_SameVNet_Connectivity(t *testing.T) {
@@ -157,7 +141,7 @@ func TestE2E_AllowedNamespaces_Names_PositiveAndNegative(t *testing.T) {
 }
 
 // TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked: a pod in a namespace
-// that's listed in allowedNamespaces but does NOT carry the join label gets
+// that's listed in allowedNamespaces but does not carry the join label gets
 // no access. allowedNamespaces gates *eligibility to join*, not blanket
 // access. Proves the join-vs-blanket semantic at the actual-traffic level.
 func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
@@ -178,7 +162,7 @@ func TestE2E_AllowedNamespaces_Names_UnlabeledPodBlocked(t *testing.T) {
 		fmt.Sprintf("kube-vnet/net.%s.svc", homeNS): "both",
 	}))
 	// unlabeled-but-listed: even though its namespace is allowedNamespaces,
-	// without the join label it's NOT a member → must not reach.
+	// without the join label it's not a member → must not reach.
 	applyYAML(t, clientPod(listedNS, "bystander", nil))
 	waitForPod(t, homeNS, "server", 90*time.Second)
 	waitForPod(t, listedNS, "labeled", 90*time.Second)
@@ -249,7 +233,7 @@ func TestE2E_MultiVNet_Pod(t *testing.T) {
 	applyYAML(t, httpServerPod(ns, "m-server", map[string]string{
 		"kube-vnet/net.monitoring": "both",
 	}))
-	// Bridge pod is on BOTH vnets.
+	// Bridge pod is on both vnets.
 	applyYAML(t, clientPod(ns, "bridge", map[string]string{
 		"kube-vnet/net.payments":   "both",
 		"kube-vnet/net.monitoring": "both",
@@ -286,26 +270,17 @@ func TestE2E_Relabel_DropsAccess(t *testing.T) {
 	if !canReach(t, ns, "client", ip, allowProbe) {
 		t.Fatalf("client should reach server while both share net1")
 	}
-	// Strip the join label from the client. Note kubectl label syntax: KEY-
 	kubectlMust(t, "label", "pod", "-n", ns, "client", "kube-vnet/net.net1-")
-	// Wait for the resolution controller to strip the canonical FQ system
-	// label before probing — cannotReach is fail-fast on success and would
-	// otherwise race the operator (per ADR 0034's pod-edit window). The
-	// system label key matches what the membership policy's `from:` selector
-	// matches on, so its absence is the right convergence oracle.
+	// cannotReach fails on the first success, so gate it on the system label
+	// (what the membership policy selects on) being stripped.
 	waitForLabelGone(t, ns, "client", "kube-vnet.system/net."+ns+".net1", 30*time.Second)
 	if !cannotReach(t, ns, "client", ip, denyProbe) {
 		t.Fatalf("client should be blocked after losing the join label")
 	}
 }
 
-// TestE2E_VNetDelete_BlocksTraffic: deleting the vnet removes all generated
-// policies; previously-allowed traffic stops (the namespace is left with the
-// baseline default-deny because there are still no other allow policies, but
-// since the only baseline-applying signal was vnet membership, the baseline
-// itself is deleted and the cluster's allow-all default returns. Either way,
-// the operator-generated allow rule is gone — what we assert is that the
-// allow rule from the vnet stops applying.)
+// TestE2E_VNetDelete_BlocksTraffic: deleting the vnet removes its membership
+// policies, so the allow it granted stops applying.
 func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 	ns := uniqueNS(t, "vdelete")
 	ensureNamespace(t, ns, nil)
@@ -322,11 +297,8 @@ func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 		t.Fatalf("baseline check: client should reach server while vnet exists")
 	}
 
-	// Delete the vnet. The membership policy should be removed by
-	// cleanupForDeleted. The baseline is independent of vnet lifecycle (ADR
-	// 0023: it's owned by the NamespaceReconciler and decided by the
-	// resolved ingress-isolation mode), so we only assert that membership
-	// policies disappear — not the baseline.
+	// The baseline is independent of vnet lifecycle (ADR 0023), so only the
+	// membership policies are expected to go.
 	kubectlMust(t, "delete", "vnet", "-n", ns, "temp")
 
 	deadline := time.Now().Add(30 * time.Second)
@@ -343,10 +315,9 @@ func TestE2E_VNetDelete_BlocksTraffic(t *testing.T) {
 	t.Fatalf("membership policies still exist 30s after vnet delete:\n%s", lastOut)
 }
 
-// TestE2E_DNS_StillResolves: pods inside a vnet still reach CoreDNS, because
-// the baseline + every membership policy explicitly allows UDP/TCP 53 to
-// kube-system. Without the DNS allowance, name resolution would break the
-// moment a pod joined a vnet.
+// TestE2E_DNS_StillResolves: pods inside a vnet still reach CoreDNS. The
+// operator never restricts egress (ADR 0025); this guards against a policy
+// change that would break name resolution the moment a pod joins a vnet.
 func TestE2E_DNS_StillResolves(t *testing.T) {
 	ns := uniqueNS(t, "dns")
 	ensureNamespace(t, ns, nil)
@@ -368,26 +339,17 @@ func TestE2E_DNS_StillResolves(t *testing.T) {
 	t.Fatalf("DNS resolution failed inside a vnet pod within 30s")
 }
 
-// TestE2E_ManagedNamespace_TerminatesCleanly is the regression test for the
-// stuck-in-Terminating bug: the operator creates a `namespace` system
-// VirtualNetwork in every managed namespace, and the system-vnet VAP must
-// NOT block DELETE — otherwise the Kubernetes namespace controller can't
-// cascade-delete that vnet during teardown and the namespace hangs in
-// Terminating forever.
-//
-// Before the fix (VAP guarding DELETE) this test times out; after, the
-// namespace disappears within the deadline. The VAP ships in every e2e
-// lane (config/default includes ../admission, and the helm lanes install
-// the chart templates), so this runs everywhere.
+// TestE2E_ManagedNamespace_TerminatesCleanly: every managed namespace holds a
+// `namespace` system vnet, and the system-vnet VAP must not block DELETE, or
+// the namespace controller can't cascade-delete it and the namespace hangs in
+// Terminating. The VAP ships in every e2e lane, so this runs everywhere.
 func TestE2E_ManagedNamespace_TerminatesCleanly(t *testing.T) {
 	ns := uniqueNS(t, "term")
 	ensureNamespace(t, ns, nil)
-	// No defer cleanupNamespace: this test deletes the namespace itself and
-	// asserts it completes. A trailing --ignore-not-found delete is harmless
-	// but unnecessary.
+	// No cleanupNamespace: deleting the namespace is the test.
 
-	// Wait for the operator to create the per-namespace `namespace` system
-	// vnet — that's the object whose DELETE the VAP used to block.
+	// Wait for the `namespace` system vnet, the object whose DELETE the VAP
+	// used to block.
 	sysVnetDeadline := time.Now().Add(60 * time.Second)
 	for {
 		_, code := kubectl(t, "get", "vnet", "-n", ns, "namespace")
@@ -400,9 +362,8 @@ func TestE2E_ManagedNamespace_TerminatesCleanly(t *testing.T) {
 		time.Sleep(2 * time.Second)
 	}
 
-	// Delete the namespace and require it to actually terminate. Use
-	// --wait=false then poll, so we control the timeout and get a clear
-	// failure rather than kubectl's own hang.
+	// --wait=false and poll, so a hang fails with diagnostics instead of
+	// stalling kubectl.
 	kubectlMust(t, "delete", "namespace", ns, "--wait=false")
 
 	deadline := time.Now().Add(90 * time.Second)

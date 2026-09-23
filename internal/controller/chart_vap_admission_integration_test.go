@@ -4,8 +4,7 @@ package controller
 
 import (
 	"context"
-	"errors"
-	"io"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,47 +15,26 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// TestIntegration_VAP_SystemVnetProtected verifies the chart's
-// system-vnet-protected ValidatingAdmissionPolicy actually rejects user
-// CREATE attempts on the reserved names and the system label, and admits
-// the operator ServiceAccount for the same shapes.
+// TestIntegration_VAP_SystemVnetProtected: the system-vnet-protected VAP
+// rejects user CREATEs of the reserved names and the system label, and admits
+// the operator ServiceAccount for the same shapes. The rest of the suite runs
+// without any VAP; this one is installed only for this test.
 //
-// Installs the rendered VAP from config/admission/system-vnet-vap.yaml so
-// the test fails on either chart-side regressions or kustomize-render
-// drift. The other suite tests run with no VAP installed (TestMain doesn't
-// install one), so the VAP only affects this test's window; t.Cleanup
-// removes it on exit.
-//
-// The VAP template's operatorUser expression is rendered to the literal
-// `system:serviceaccount:kube-vnet-system:kube-vnet-controller` by the
-// chart defaults — kept in sync with the value below; if you change the
-// chart's release-namespace/SA defaults, update operatorUserName too.
+// operatorUserName is what the chart defaults render the VAP's operatorUser
+// expression to; update it if the chart's namespace/SA defaults change.
 const operatorUserName = "system:serviceaccount:kube-vnet-system:kube-vnet-controller"
 
 func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 	ctx := context.Background()
 
-	policyObjs := mustLoadVAPFromKustomize(t, "system-vnet-vap.yaml")
-	for _, obj := range policyObjs {
-		obj := obj
-		if err := testClient.Create(ctx, obj); err != nil {
-			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
-		}
-		t.Cleanup(func() {
-			_ = testClient.Delete(context.Background(), obj)
-		})
-	}
-
-	// Grant the impersonated identities RBAC for VirtualNetwork CRUD —
-	// otherwise the apiserver returns Forbidden before the VAP runs.
-	mustGrantVnetRBAC(t, "alice@example.com", operatorUserName)
+	mustInstallKustomizeVAP(t, "system-vnet-vap.yaml")
+	mustGrantRBAC(t, "vap-test-vnet-rw", "kube-vnet.lhns.de", "virtualnetworks", "alice@example.com", operatorUserName)
 
 	userClient := mustImpersonate(t, "alice@example.com")
 	opClient := mustImpersonate(t, operatorUserName)
@@ -67,10 +45,9 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 	ns := uniqueNS(t, "vap")
 	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
 
-	// VAPs are not active immediately after install; envtest's apiserver
-	// needs a beat to load them. Probe by trying a known-rejected create
-	// until the policy fires.
-	awaitPolicyActive(t, userClient, ns)
+	awaitVAPActive(t, userClient, func() client.Object {
+		return &vnetv1alpha1.VirtualNetwork{ObjectMeta: metav1.ObjectMeta{Name: "namespace", Namespace: ns}}
+	})
 
 	t.Run("user creating VirtualNetwork named `namespace` is rejected", func(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
@@ -147,20 +124,11 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 		t.Cleanup(func() { _ = opClient.Delete(context.Background(), v2) })
 	})
 
-	// DELETE is intentionally NOT in this VAP's matchConstraints — it must
-	// stay open so the Kubernetes namespace controller can cascade-delete the
-	// `namespace` system vnet during namespace teardown (guarding DELETE left
-	// every managed namespace stuck in Terminating). A non-operator user
-	// deleting a system vnet is recovered by SystemVnetReconciler
-	// drift-correction, not by admission.
-	//
-	// The check uses a system-LABELED vnet with an ORDINARY name: it carries
-	// the protected `kube-vnet.system/managed-by` label (so if DELETE were
-	// still guarded the VAP would deny it), but its name isn't a reserved
-	// system-vnet name, so the SystemVnetReconciler's disabled-namespace
-	// cleanup (which only deletes the vnet named exactly `namespace`) never
-	// races us. A reserved-name delete would exercise the same now-unmatched
-	// operation but race that cleanup, adding no coverage.
+	// DELETE must stay unguarded so the namespace controller can cascade-delete
+	// the `namespace` system vnet (guarding it left namespaces stuck in
+	// Terminating); drift correction recreates a vnet a user deletes. The vnet
+	// carries the protected label but an ordinary name, so the disabled-namespace
+	// cleanup of the vnet named `namespace` can't race the delete.
 	t.Run("user DELETE of a system-labeled vnet is not blocked", func(t *testing.T) {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		v.Name = "labeled-ordinary"
@@ -178,12 +146,10 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 	})
 }
 
-// mustLoadVAPFromKustomize decodes config/admission/system-vnet-vap.yaml as
-// a slice of unstructured objects (the VAP and its Binding). Reading the
-// kustomize-rendered file rather than re-rendering via `helm template`
-// keeps the test free of a helm-on-PATH dependency and exercises the same
-// bytes that a kustomize-installed user would apply.
-func mustLoadVAPFromKustomize(t *testing.T, file string) []*unstructured.Unstructured {
+// mustInstallKustomizeVAP installs config/admission/<file> (a VAP and its
+// Binding) for the duration of the test. The kustomize copy is rendered from
+// the chart, so this exercises the same bytes without needing helm.
+func mustInstallKustomizeVAP(t *testing.T, file string) {
 	t.Helper()
 	path := filepath.Join("..", "..", "config", "admission", file)
 	f, err := os.Open(path)
@@ -191,39 +157,28 @@ func mustLoadVAPFromKustomize(t *testing.T, file string) []*unstructured.Unstruc
 		t.Fatalf("open %s: %v", path, err)
 	}
 	defer f.Close()
-	var out []*unstructured.Unstructured
-	dec := yaml.NewYAMLOrJSONDecoder(f, 4096)
-	for {
-		obj := &unstructured.Unstructured{}
-		if err := dec.Decode(obj); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Fatalf("decode %s: %v", path, err)
-		}
-		if obj.Object == nil || obj.GetKind() == "" {
-			continue
-		}
-		out = append(out, obj)
+	objs := decodeObjects(t, f)
+	if len(objs) < 2 {
+		t.Fatalf("expected VAP + Binding in %s, got %d objects", path, len(objs))
 	}
-	if len(out) < 2 {
-		t.Fatalf("expected VAP + Binding in %s, got %d objects", path, len(out))
+	for _, obj := range objs {
+		if err := testClient.Create(context.Background(), obj); err != nil {
+			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
+		}
+		t.Cleanup(func() { _ = testClient.Delete(context.Background(), obj) })
 	}
-	return out
 }
 
-// mustGrantVnetRBAC creates a ClusterRole + ClusterRoleBinding allowing
-// each `user` to CRUD VirtualNetworks. Cleaned up via t.Cleanup. Without
-// this the apiserver short-circuits with Forbidden before the VAP runs,
-// and we'd never observe the admission-time rejection we're trying to
-// test.
-func mustGrantVnetRBAC(t *testing.T, users ...string) {
+// mustGrantRBAC creates a ClusterRole `name` granting CRUD on
+// apiGroup/resource, bound to each user, removed on cleanup. Without it the
+// apiserver answers Forbidden before any VAP runs.
+func mustGrantRBAC(t *testing.T, name, apiGroup, resource string, users ...string) {
 	t.Helper()
 	role := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "vap-test-vnet-rw"},
+		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Rules: []rbacv1.PolicyRule{{
-			APIGroups: []string{"kube-vnet.lhns.de"},
-			Resources: []string{"virtualnetworks"},
+			APIGroups: []string{apiGroup},
+			Resources: []string{resource},
 			Verbs:     []string{"create", "get", "list", "update", "patch", "delete"},
 		}},
 	}
@@ -233,14 +188,13 @@ func mustGrantVnetRBAC(t *testing.T, users ...string) {
 	t.Cleanup(func() { _ = testClient.Delete(context.Background(), role) })
 
 	for _, user := range users {
-		user := user
 		binding := &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "vap-test-vnet-rw-" + sanitizeUser(user)},
+			ObjectMeta: metav1.ObjectMeta{Name: name + "-" + sanitizeUser(user)},
 			Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: user, APIGroup: rbacv1.GroupName}},
 			RoleRef: rbacv1.RoleRef{
 				APIGroup: rbacv1.GroupName,
 				Kind:     "ClusterRole",
-				Name:     "vap-test-vnet-rw",
+				Name:     name,
 			},
 		}
 		if err := testClient.Create(context.Background(), binding); err != nil {
@@ -269,30 +223,23 @@ func mustImpersonate(t *testing.T, user string) client.Client {
 	return c
 }
 
-// awaitPolicyActive retries a known-rejected create until the VAP fires.
-// Envtest's apiserver does not enforce a freshly-installed VAP on the very
-// next request — there's a tiny propagation window.
-func awaitPolicyActive(t *testing.T, c client.Client, ns string) {
+// awaitVAPActive retries creating a probe object the VAP must reject until it
+// does: a freshly installed VAP is not enforced on the very next request.
+// A probe that gets admitted is deleted so it can't collide with a subtest.
+func awaitVAPActive(t *testing.T, c client.Client, probe func() client.Object) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		v := &vnetv1alpha1.VirtualNetwork{}
-		v.Name = "namespace"
-		v.Namespace = ns
-		err := c.Create(context.Background(), v)
-		if err != nil && apierrors.IsInvalid(err) {
-			return
-		}
-		// If create unexpectedly succeeded, clean up so a later subtest
-		// doesn't conflict.
+	eventually(t, 10*time.Second, func() error {
+		obj := probe()
+		err := c.Create(context.Background(), obj)
 		if err == nil {
-			_ = c.Delete(context.Background(), v)
+			_ = c.Delete(context.Background(), obj)
+			return fmt.Errorf("VAP not active yet: probe %s was admitted", obj.GetName())
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("VAP did not become active within deadline (last err: %v)", err)
+		if !apierrors.IsInvalid(err) {
+			return fmt.Errorf("VAP not active yet: %v", err)
 		}
-		time.Sleep(200 * time.Millisecond)
-	}
+		return nil
+	})
 }
 
 // The join-label direction VAP. It previously denied any pod with no labels,
@@ -301,22 +248,16 @@ func awaitPolicyActive(t *testing.T, c client.Client, ns string) {
 func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 	ctx := context.Background()
 
-	policyObjs := mustLoadVAPFromKustomize(t, "validating-admission-policy.yaml")
-	for _, obj := range policyObjs {
-		obj := obj
-		if err := testClient.Create(ctx, obj); err != nil {
-			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
-		}
-		t.Cleanup(func() { _ = testClient.Delete(context.Background(), obj) })
-	}
-
-	mustGrantPodRBAC(t, "alice@example.com")
+	mustInstallKustomizeVAP(t, "validating-admission-policy.yaml")
+	mustGrantRBAC(t, "vap-test-pod-rw", "", "pods", "alice@example.com")
 	userClient := mustImpersonate(t, "alice@example.com")
 
 	ns := uniqueNS(t, "vapdir")
 	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
 
-	awaitDirectionPolicyActive(t, userClient, ns)
+	awaitVAPActive(t, userClient, func() client.Object {
+		return makePod(ns, "vap-probe", map[string]string{"kube-vnet/net.probe": "true"})
+	})
 
 	// The bug. A pod with no labels field at all must be admitted.
 	t.Run("pod with no labels is accepted", func(t *testing.T) {
@@ -398,60 +339,4 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 			t.Fatalf("expected the annotation patch to be accepted, got: %v", err)
 		}
 	})
-}
-
-// awaitDirectionPolicyActive probes until the policy loads; VAPs are not
-// active the instant they are created.
-func awaitDirectionPolicyActive(t *testing.T, c client.Client, ns string) {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		p := makePod(ns, "vap-probe", map[string]string{"kube-vnet/net.probe": "true"})
-		err := c.Create(context.Background(), p)
-		if err != nil && apierrors.IsInvalid(err) {
-			return
-		}
-		if err == nil {
-			_ = c.Delete(context.Background(), p)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("direction VAP did not become active within deadline (last err: %v)", err)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-}
-
-// mustGrantPodRBAC mirrors mustGrantVnetRBAC for pods: without it the apiserver
-// returns Forbidden before the VAP ever runs.
-func mustGrantPodRBAC(t *testing.T, users ...string) {
-	t.Helper()
-	role := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "vap-test-pod-rw"},
-		Rules: []rbacv1.PolicyRule{{
-			APIGroups: []string{""},
-			Resources: []string{"pods"},
-			Verbs:     []string{"create", "get", "list", "update", "patch", "delete"},
-		}},
-	}
-	if err := testClient.Create(context.Background(), role); err != nil {
-		t.Fatalf("create ClusterRole: %v", err)
-	}
-	t.Cleanup(func() { _ = testClient.Delete(context.Background(), role) })
-
-	for _, user := range users {
-		user := user
-		binding := &rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "vap-test-pod-rw-" + sanitizeUser(user)},
-			Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: user, APIGroup: rbacv1.GroupName}},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "ClusterRole",
-				Name:     "vap-test-pod-rw",
-			},
-		}
-		if err := testClient.Create(context.Background(), binding); err != nil {
-			t.Fatalf("create ClusterRoleBinding for %s: %v", user, err)
-		}
-		t.Cleanup(func() { _ = testClient.Delete(context.Background(), binding) })
-	}
 }

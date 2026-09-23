@@ -24,19 +24,12 @@ import (
 // in CRDs, and any other class of error the apiserver rejects at admission.
 // See ADR 0027.
 func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH; skipping chart manifest validation test")
-	}
-
-	chartDir := filepath.Join("..", "..", "charts", "kube-vnet")
-
 	cases := []struct {
 		name string
 		sets []string
 	}{
-		// All three isolation level presets, plus an explicit-memberships
-		// override case. operator.clusterBaseline.ingressIsolationLevel has
-		// no default per ADR 0031 — set it explicitly for every case.
+		// operator.clusterBaseline.ingressIsolationLevel has no default (ADR
+		// 0031), so every case sets it.
 		{"isolation-pod", []string{
 			"--set", "operator.clusterBaseline.ingressIsolationLevel=pod",
 		}},
@@ -46,10 +39,8 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 		{"isolation-cluster", []string{
 			"--set", "operator.clusterBaseline.ingressIsolationLevel=cluster",
 		}},
-		// podMonitor.enabled=true is intentionally left out: it renders a
-		// PodMonitor (prometheus-operator CRD) the envtest apiserver doesn't
-		// know about — a real cluster would have it from the operator install.
-		// metricsService is a plain Service, fine to validate.
+		// podMonitor.enabled=true is left out: it renders a PodMonitor, a
+		// prometheus-operator CRD that envtest doesn't have.
 		{"with-metrics-svc-and-explicit-memberships", []string{
 			"--set", "metricsService.enabled=true",
 			"--set", "operator.clusterBaseline.memberships.namespace=default-both",
@@ -58,28 +49,14 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run("chart-"+tc.name, func(t *testing.T) {
-			args := append([]string{
-				"template", "testrelease", chartDir,
-				"--kube-version", "1.31.0",
-			}, tc.sets...)
-			var stdout, stderr bytes.Buffer
-			cmd := exec.Command("helm", args...)
-			cmd.Stdout = &stdout
-			cmd.Stderr = &stderr
-			if err := cmd.Run(); err != nil {
-				t.Fatalf("helm template: %v\nstderr: %s", err, stderr.String())
-			}
-			applyAllDryRun(t, &stdout)
+			applyAllDryRun(t, bytes.NewReader(helmTemplate(t, "testrelease", tc.sets...)))
 		})
 	}
 
-	// Also exercise each kustomize-shipped VAP directly. All three are
-	// generated from the chart templates by `make render-kustomize-vaps`
-	// (the direction-VAP joined the loop after its hand-maintained copy
-	// silently drifted from the chart). Reading them as static files
-	// avoids needing kubectl on PATH in the integration job.
+	// The kustomize-shipped VAPs are rendered from the chart templates by
+	// `make render-kustomize-vaps`; read them as static files so this needs
+	// no kubectl.
 	for _, p := range []string{"validating-admission-policy.yaml", "system-labels-vap.yaml", "system-vnet-vap.yaml"} {
-		p := p
 		t.Run("kustomize-vap-"+p, func(t *testing.T) {
 			path := filepath.Join("..", "..", "config", "admission", p)
 			f, err := os.Open(path)
@@ -92,23 +69,11 @@ func TestIntegration_ChartManifestsValidAgainstAPIServer(t *testing.T) {
 	}
 }
 
-// applyAllDryRun decodes every YAML document in `in` and applies it with
-// DryRunAll, surfacing any per-document apiserver rejection as a t.Errorf.
-// It skips CRDs (already installed by TestMain) and empty separator docs.
+// applyAllDryRun applies every document in `in` with DryRunAll, reporting each
+// rejection. CRDs are skipped: TestMain already installed them.
 func applyAllDryRun(t *testing.T, in io.Reader) {
 	t.Helper()
-	decoder := yaml.NewYAMLOrJSONDecoder(in, 4096)
-	for {
-		obj := &unstructured.Unstructured{}
-		if err := decoder.Decode(obj); err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			t.Fatalf("decode YAML: %v", err)
-		}
-		if obj.Object == nil || obj.GetKind() == "" {
-			continue
-		}
+	for _, obj := range decodeObjects(t, in) {
 		if obj.GetKind() == "CustomResourceDefinition" {
 			continue
 		}
@@ -116,5 +81,45 @@ func applyAllDryRun(t *testing.T, in io.Reader) {
 			t.Errorf("dry-run create %s %s/%s: %v",
 				obj.GetKind(), obj.GetNamespace(), obj.GetName(), err)
 		}
+	}
+}
+
+// helmTemplate runs `helm template <release>` on the chart with extra args
+// and returns the rendered YAML. Skips the test when helm is not on PATH.
+func helmTemplate(t *testing.T, release string, args ...string) []byte {
+	t.Helper()
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH")
+	}
+	full := append([]string{
+		"template", release, filepath.Join("..", "..", "charts", "kube-vnet"),
+		"--kube-version", "1.31.0",
+	}, args...)
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command("helm", full...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("helm template: %v\nstderr: %s", err, stderr.String())
+	}
+	return stdout.Bytes()
+}
+
+// decodeObjects decodes every document of a YAML stream, dropping empty ones.
+func decodeObjects(t *testing.T, in io.Reader) []*unstructured.Unstructured {
+	t.Helper()
+	var out []*unstructured.Unstructured
+	dec := yaml.NewYAMLOrJSONDecoder(in, 4096)
+	for {
+		obj := &unstructured.Unstructured{}
+		if err := dec.Decode(obj); err != nil {
+			if errors.Is(err, io.EOF) {
+				return out
+			}
+			t.Fatalf("decode YAML: %v", err)
+		}
+		if obj.Object == nil || obj.GetKind() == "" {
+			continue
+		}
+		out = append(out, obj)
 	}
 }

@@ -23,7 +23,7 @@ import (
 // configurations below are installed by envtest, which rewrites clientConfig
 // to the local serving endpoint and injects its own CA.
 //
-// The oracle is the CREATE RESPONSE. testClient.Create writes the apiserver's
+// The oracle is the create response. testClient.Create writes the apiserver's
 // returned object back into the pod, so a system label visible there was
 // applied during admission — not moments later by the reconciler. Asserting
 // under eventually() instead would pass on the controller path and prove
@@ -151,7 +151,7 @@ func TestIntegration_Webhook_StampsDuringAdmission(t *testing.T) {
 }
 
 // The negative control that gives the test above its meaning: in a namespace
-// the webhook does not cover, the same pod is NOT stamped at creation and only
+// the webhook does not cover, the same pod is not stamped at creation and only
 // becomes a member once the reconciler catches up.
 func TestIntegration_Webhook_WithoutWebhook_StampArrivesLate(t *testing.T) {
 	ns := uniqueNS(t, "nowh")
@@ -182,7 +182,7 @@ func TestIntegration_Webhook_WithoutWebhook_StampArrivesLate(t *testing.T) {
 }
 
 // The interaction that makes the design shippable. The mutator writes
-// kube-vnet.system/* labels attributed to the REQUESTING user, and the
+// kube-vnet.system/* labels attributed to the requesting user, and the
 // validator judges the result. If they disagree, every pod creation in a
 // managed namespace fails — which is exactly what the system-labels VAP would
 // have done in the validator's place.
@@ -228,7 +228,7 @@ func TestIntegration_Webhook_ForgedStampRejected(t *testing.T) {
 }
 
 // Relabelling a running pod is the half no scheduling-gate design could
-// cover, and stamp REMOVAL is the security-relevant direction: a membership
+// cover, and stamp removal is the security-relevant direction: a membership
 // that outlives its join label is a grant nobody asked for.
 func TestIntegration_Webhook_UpdateRestampsAndPrunes(t *testing.T) {
 	ns := webhookNS(t, "web")

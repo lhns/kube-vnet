@@ -5,89 +5,56 @@ package controller
 import (
 	"bytes"
 	"context"
-	"errors"
-	"io"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// End-user RBAC tests for the chart-shipped aggregated ClusterRoles
-// (ADR 0031 cleanup). The chart emits editor + viewer ClusterRoles for each
-// CRD; the namespace-scoped ones aggregate into upstream `admin`/`edit`/
-// `view`. This file installs the ClusterRoles directly (no aggregation
-// dependency on envtest) and binds an impersonated user to each via either
-// a RoleBinding (NS-scoped editor) or a ClusterRoleBinding (cluster
-// editor).
+// End-user RBAC for the chart's aggregated ClusterRoles (ADR 0031). The chart
+// emits an editor and a viewer ClusterRole per CRD; the namespace-scoped ones
+// aggregate into upstream admin/edit/view. These tests install the roles
+// directly, so they don't depend on envtest running the aggregation
+// controller, and bind an impersonated user to them.
 
-// chartReleaseName must match the helm release name used for rendering. The
-// rbac-aggregated.yaml template names roles `<release>-<chartname>-<resource>-<role>`.
+// The rbac-aggregated.yaml template names roles
+// `<release>-<chart>-<resource>-<role>`.
 const chartReleaseName = "rbactest"
-const chartReleasePrefix = "rbactest-kube-vnet-"
+const chartReleasePrefix = chartReleaseName + "-kube-vnet-"
 
 func mustInstallAggregatedRBAC(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH; skipping aggregated RBAC test")
-	}
-
-	chartDir := filepath.Join("..", "..", "charts", "kube-vnet")
-	var stdout, stderr bytes.Buffer
-	cmd := exec.Command("helm", "template", chartReleaseName, chartDir,
-		"--kube-version", "1.31.0",
+	rendered := helmTemplate(t, chartReleaseName,
 		"--show-only", "templates/rbac-aggregated.yaml",
 		"--set", "operator.clusterBaseline.ingressIsolationLevel=namespace",
 	)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("helm template: %v\nstderr: %s", err, stderr.String())
-	}
-
-	dec := yaml.NewYAMLOrJSONDecoder(&stdout, 4096)
-	for {
-		obj := &unstructured.Unstructured{}
-		if err := dec.Decode(obj); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Fatalf("decode rendered RBAC: %v", err)
-		}
-		if obj.Object == nil || obj.GetKind() == "" {
-			continue
-		}
-		toCreate := obj
-		if err := testClient.Create(context.Background(), toCreate); err != nil {
+	for _, obj := range decodeObjects(t, bytes.NewReader(rendered)) {
+		if err := testClient.Create(context.Background(), obj); err != nil {
 			t.Fatalf("install %s/%s: %v", obj.GetKind(), obj.GetName(), err)
 		}
-		t.Cleanup(func() { _ = testClient.Delete(context.Background(), toCreate) })
+		t.Cleanup(func() { _ = testClient.Delete(context.Background(), obj) })
 	}
 }
 
-// bindUserToRoleInNS creates a RoleBinding granting `user` the
-// `<chartReleasePrefix><resource>-editor` ClusterRole within `ns`.
-func bindUserToEditorInNS(t *testing.T, user, resource, ns string) {
+// bindUserInNS creates a RoleBinding granting `user` the chart ClusterRole
+// `<chartReleasePrefix><role>` within `ns`.
+func bindUserInNS(t *testing.T, user, role, ns string) {
 	t.Helper()
 	rb := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "rbactest-" + sanitizeUser(user) + "-" + resource,
+			Name:      "rbactest-" + sanitizeUser(user) + "-" + role,
 			Namespace: ns,
 		},
 		Subjects: []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: user, APIGroup: rbacv1.GroupName}},
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: rbacv1.GroupName,
 			Kind:     "ClusterRole",
-			Name:     chartReleasePrefix + resource + "-editor",
+			Name:     chartReleasePrefix + role,
 		},
 	}
 	if err := testClient.Create(context.Background(), rb); err != nil {
@@ -122,7 +89,7 @@ func TestIntegration_RBAC_NamespaceAdmin_CanCreateBaselineInOwnNS(t *testing.T) 
 	const user = "alice@example.com"
 	ns := uniqueNS(t, "rbac-own")
 	mustCreate(t, makeNamespace(ns, nil, nil))
-	bindUserToEditorInNS(t, user, "virtualnetworkbaselines", ns)
+	bindUserInNS(t, user, "virtualnetworkbaselines-editor", ns)
 
 	c := mustImpersonate(t, user)
 	nb := &vnetv1alpha1.VirtualNetworkBaseline{
@@ -141,7 +108,7 @@ func TestIntegration_RBAC_NamespaceAdmin_CannotCreateBaselineInOtherNS(t *testin
 	other := uniqueNS(t, "rbac-other")
 	mustCreate(t, makeNamespace(bound, nil, nil))
 	mustCreate(t, makeNamespace(other, nil, nil))
-	bindUserToEditorInNS(t, user, "virtualnetworkbaselines", bound)
+	bindUserInNS(t, user, "virtualnetworkbaselines-editor", bound)
 
 	c := mustImpersonate(t, user)
 	nb := &vnetv1alpha1.VirtualNetworkBaseline{
@@ -164,7 +131,7 @@ func TestIntegration_RBAC_NamespaceAdmin_CannotCreateClusterBaseline(t *testing.
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	// Even with the namespace-scoped editor on the cluster-baseline kind name,
 	// a RoleBinding cannot grant access to a cluster-scoped resource.
-	bindUserToEditorInNS(t, user, "virtualnetworkbaselines", ns)
+	bindUserInNS(t, user, "virtualnetworkbaselines-editor", ns)
 
 	c := mustImpersonate(t, user)
 	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{
@@ -212,20 +179,7 @@ func TestIntegration_RBAC_Viewer_ReadsButCannotWrite(t *testing.T) {
 	ns := uniqueNS(t, "rbac-view")
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
-	// Bind bob to the namespace-baseline VIEWER (not editor) within the NS.
-	rb := &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "rbactest-bob-view", Namespace: ns},
-		Subjects:   []rbacv1.Subject{{Kind: rbacv1.UserKind, Name: user, APIGroup: rbacv1.GroupName}},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "ClusterRole",
-			Name:     chartReleasePrefix + "virtualnetworkbaselines-viewer",
-		},
-	}
-	if err := testClient.Create(context.Background(), rb); err != nil {
-		t.Fatalf("create RoleBinding: %v", err)
-	}
-	t.Cleanup(func() { _ = testClient.Delete(context.Background(), rb) })
+	bindUserInNS(t, user, "virtualnetworkbaselines-viewer", ns)
 
 	// Seed a baseline as admin so bob has something to read.
 	seed := &vnetv1alpha1.VirtualNetworkBaseline{
@@ -265,7 +219,7 @@ func TestIntegration_RBAC_AggregationLabelsPresent(t *testing.T) {
 	mustInstallAggregatedRBAC(t)
 
 	cases := []struct {
-		role  string
+		role   string
 		labels map[string]string
 	}{
 		{"virtualnetworks-editor", map[string]string{"rbac.authorization.k8s.io/aggregate-to-admin": "true", "rbac.authorization.k8s.io/aggregate-to-edit": "true"}},
@@ -287,7 +241,7 @@ func TestIntegration_RBAC_AggregationLabelsPresent(t *testing.T) {
 		}
 	}
 
-	// Cluster-baseline pair should NOT carry aggregation labels.
+	// Cluster-baseline pair should not carry aggregation labels.
 	for _, suffix := range []string{"clustervirtualnetworkbaselines-editor", "clustervirtualnetworkbaselines-viewer"} {
 		role := &rbacv1.ClusterRole{}
 		if err := testClient.Get(context.Background(), client.ObjectKey{Name: chartReleasePrefix + suffix}, role); err != nil {

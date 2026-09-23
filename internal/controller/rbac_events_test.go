@@ -16,7 +16,7 @@ import (
 // Every reconciler emits Events through mgr.GetEventRecorder, which is
 // controller-runtime's NEW events API: its sink is
 // events.EventSinkImpl{Interface: eventsv1client…}, so writes go to
-// events.k8s.io/v1 — NOT the core "" group.
+// events.k8s.io/v1 — not the core "" group.
 //
 // The core group is still required, because controller-runtime's leader
 // election uses the deprecated core-v1 recorder. Granting only one of the two

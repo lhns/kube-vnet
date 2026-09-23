@@ -52,26 +52,8 @@ func TestIntegration_Create_GeneratesPolicy(t *testing.T) {
 	})
 }
 
-// assertAllowAllBaseline checks the policy is the mode=none allow-all shape:
-// policyTypes=[Ingress], one empty ingress rule (no From, no Ports). Per
-// the K8s NetworkPolicy spec, an empty rule matches all sources on all ports.
-func assertAllowAllBaseline(t *testing.T, p *networkingv1.NetworkPolicy) {
-	t.Helper()
-	if len(p.Spec.PolicyTypes) != 1 || p.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
-		t.Errorf("policyTypes = %v, want [Ingress]", p.Spec.PolicyTypes)
-	}
-	if len(p.Spec.Ingress) != 1 {
-		t.Fatalf("expected one ingress rule, got %d: %+v", len(p.Spec.Ingress), p.Spec.Ingress)
-	}
-	rule := p.Spec.Ingress[0]
-	if len(rule.From) != 0 || len(rule.Ports) != 0 {
-		t.Errorf("allow-all rule must have empty From and Ports, got %+v", rule)
-	}
-}
-
-// TestIntegration_Baseline_LandsForManagedNamespace verifies the deny-all
-// baseline is installed in every managed namespace (ADR 0030: uniform
-// baseline shape, no per-namespace mode).
+// The deny-all baseline lands in every managed namespace (ADR 0030) and
+// restricts ingress only, never egress (ADR 0025).
 func TestIntegration_Baseline_LandsForManagedNamespace(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "managed-baseline")
@@ -81,9 +63,11 @@ func TestIntegration_Baseline_LandsForManagedNamespace(t *testing.T) {
 	eventually(t, 10*time.Second, func() error {
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
-	// Deny-all baseline: Ingress only, no allow rules (ADR 0030).
 	if len(bp.Spec.PolicyTypes) != 1 || bp.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 		t.Errorf("policyTypes should be [Ingress], got %v", bp.Spec.PolicyTypes)
+	}
+	if len(bp.Spec.Egress) != 0 {
+		t.Errorf("baseline egress should be empty, got %+v", bp.Spec.Egress)
 	}
 }
 
@@ -359,13 +343,16 @@ func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); !apierrors.IsNotFound(err) {
 		t.Errorf("baseline should not exist in disabled ns: err=%v", err)
 	}
-	v := &vnetv1alpha1.VirtualNetwork{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
-		t.Fatalf("get vnet: %v", err)
-	}
-	if conditionStatusOf(v, "Ready") != metav1.ConditionFalse {
-		t.Errorf("Ready != False")
-	}
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if conditionStatusOf(v, "Ready") != metav1.ConditionFalse {
+			return fmt.Errorf("Ready != False")
+		}
+		return nil
+	})
 }
 
 func TestIntegration_InvalidName_RejectedByAPI(t *testing.T) {
@@ -425,7 +412,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 		if got := pp.Spec.PodSelector.MatchExpressions[0].Key; got != want {
 			return fmt.Errorf("prod policy key=%s want %s", got, want)
 		}
-		// Dev does NOT produce a policy.
+		// Dev does not produce a policy.
 		if _, err := findPolicy(ctx, dev, PolicyName("selvnet", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("dev policy should not exist; err=%v", err)
 		}
@@ -598,14 +585,13 @@ func TestIntegration_Baseline_VNetDeleteDoesNotAffectBaseline(t *testing.T) {
 		return fmt.Errorf("membership policy still exists: %v", err)
 	})
 
-	// Baseline should still be there — the annotation hasn't changed.
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp); err != nil {
-		t.Fatalf("baseline disappeared after vnet delete (annotation still says ingress-isolation=pod): %v", err)
+		t.Fatalf("baseline disappeared after vnet delete: %v", err)
 	}
 }
 
 // TestIntegration_PolicyRestoredEvent: deleting an operator-managed
-// NetworkPolicy must trigger drift correction AND emit a PolicyRestored event
+// NetworkPolicy must trigger drift correction and emit a PolicyRestored event
 // on the owning vnet, so accidental or hostile deletion is observable. See
 // ADR 0019.
 func TestIntegration_PolicyRestoredEvent(t *testing.T) {
@@ -654,19 +640,15 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 }
 
 // TestIntegration_ExcludedNamespace_PodSurfacedInDegraded: a pod in an
-// operator-excluded namespace (kube-system by default) carrying the prefixed
-// join label is dropped from membership AND surfaced as InvalidJoiner so the
-// user can see why it isn't joining.
+// unmanaged namespace carrying the prefixed join label is not a member, and is
+// surfaced as an InvalidJoiner so the user can see why.
 func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 	ctx := context.Background()
 	home := uniqueNS(t, "exhome")
 	mustCreate(t, makeNamespace(home, nil, nil))
 
-	// kube-system is excluded by default in the test reconciler? Check:
-	// suite_integration_test.go uses NewNamespaceFilter(nil) which has empty
-	// excluded set. We need to use an excluded namespace name. We'll build one
-	// by adding the kube-vnet/disabled annotation to a test namespace, since
-	// that triggers the same NamespaceExcluded path via IsManaged.
+	// The suite's NamespaceFilter excludes nothing, so exclude via the
+	// kube-vnet/disabled annotation, which takes the same IsManaged path.
 	excluded := uniqueNS(t, "exdisabled")
 	mustCreate(t, makeNamespace(excluded, map[string]string{"kube-vnet/disabled": "true"}, nil))
 
@@ -700,7 +682,7 @@ func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 }
 
 // TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember: a pod in a
-// listed allowed namespace that does NOT carry the join label is not a member.
+// listed allowed namespace that does not carry the join label is not a member.
 // allowedNamespaces gates *eligibility to join*, not blanket access. See
 // ADR 0005.
 func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
@@ -756,35 +738,10 @@ func TestIntegration_AllowedNamespaces_UnlabeledPod_NotAMember(t *testing.T) {
 	})
 }
 
-// ----- baseline-shape tests ----------------------------------------------
-
-// TestIntegration_Baseline_NeverRestrictsEgress: the baseline never has
-// Egress in policyTypes (ADR 0025); the deny-all only applies to ingress.
-func TestIntegration_Baseline_NeverRestrictsEgress(t *testing.T) {
-	ctx := context.Background()
-	ns := uniqueNS(t, "no-egress")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-	for _, t2 := range bp.Spec.PolicyTypes {
-		if t2 == networkingv1.PolicyTypeEgress {
-			t.Errorf("baseline must not have Egress in policyTypes (ADR 0025)")
-		}
-	}
-	if len(bp.Spec.Egress) != 0 {
-		t.Errorf("baseline egress should be empty, got %+v", bp.Spec.Egress)
-	}
-}
-
-// ----- direction modes + long-form-in-home tests ---------------------------
-
-// TestIntegration_DirectionEnum_OneOfEach: pods with each of the three
-// direction values produce two direction-class self-policies (bidi +
-// ingress). The `egress`-only pod gets NO self-policy: it accepts no
-// ingress and the operator no longer restricts egress (ADR 0025). It
-// still appears in other pods' ingress.from peer lists.
+// TestIntegration_DirectionEnum_OneOfEach: one pod per direction yields a
+// single membership policy selecting the receivers (both, ingress; ADR 0021
+// addendum). The egress-only pod accepts no ingress and egress is never
+// restricted (ADR 0025), so nothing selects it.
 func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "dir")
@@ -796,9 +753,6 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 	mustCreate(t, makePod(ns, "ingr", map[string]string{"kube-vnet/net.v": "ingress"}))
 	mustCreate(t, makePod(ns, "egr", map[string]string{"kube-vnet/net.v": "egress"}))
 
-	// Single merged self-policy selecting all receiver-capable members
-	// (ADR 0021 Addendum). Both `bidi` and `ingr` pods are covered; `egr`
-	// gets no self-policy.
 	eventually(t, 10*time.Second, func() error {
 		p, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		if err != nil {
@@ -848,8 +802,7 @@ func TestIntegration_DirectionEnum_UnknownValue_Degraded(t *testing.T) {
 }
 
 // TestIntegration_LongForm_InHome: a pod in the home namespace using the
-// prefixed form is a member, with a separate -prefixed-suffix policy
-// generated.
+// prefixed form is a member.
 func TestIntegration_LongForm_InHome(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "longform")
@@ -862,7 +815,6 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 	}))
 
 	eventually(t, 10*time.Second, func() error {
-		// The -prefixed policy is what matches this pod.
 		_, err := findPolicy(ctx, ns, PolicyName("v", ns))
 		return err
 	})
@@ -885,13 +837,9 @@ func TestIntegration_LongForm_InHome(t *testing.T) {
 	})
 }
 
-// TestIntegration_LongForm_BothInHome_Intersect: a pod in the home namespace
-// with both bare and prefixed forms for the same vnet (ADR 0022) — both
-// canonicalize to the same FQ VnetKey at stamp time (ADR 0033), and the
-// resolver intersects disagreements. Pod has bare=both + prefixed=ingress
-// → effective ingress (intersection of both ∩ ingress). The pod is a member
-// (with direction ingress); no Degraded condition fires. This replaces the
-// pre-ADR-0033 ConflictingDirections behavior.
+// TestIntegration_LongForm_BothInHome_Intersect: in the home namespace the
+// bare and prefixed forms name the same vnet (ADR 0033), so disagreeing
+// directions intersect: both ∩ ingress = ingress.
 func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "longform")
@@ -916,75 +864,12 @@ func TestIntegration_LongForm_BothInHome_Intersect(t *testing.T) {
 	})
 }
 
-// ----- --default-deny-everywhere flag tests ---------------------------------
-
-// withDefaultDenyEverywhere is a no-op kept only so the FlagOn_* tests still
-// compile. Under ADR 0030 the baseline is always present (deny-all) in every
-// managed namespace, so the legacy "flag on/off" knob doesn't exist anymore.
-// The tests below now exercise: namespace gets baseline; disabled-NS skips
-// baseline; annotation transitions remove baseline.
-func withDefaultDenyEverywhere(t *testing.T, _ bool) {
-	t.Helper()
-}
-
-// touchNamespace forces a reconcile of the namespace by issuing a no-op label
-// update. Needed because in tests we may flip the flag *after* a namespace was
-// created and the watch already fired without our flag being on.
-func touchNamespace(t *testing.T, name string) {
-	t.Helper()
-	ns := &corev1.Namespace{}
-	if err := testClient.Get(context.Background(), client.ObjectKey{Name: name}, ns); err != nil {
-		t.Fatalf("get namespace %s: %v", name, err)
-	}
-	if ns.Labels == nil {
-		ns.Labels = map[string]string{}
-	}
-	ns.Labels["kube-vnet-test/touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
-	if err := testClient.Update(context.Background(), ns); err != nil {
-		t.Fatalf("touch namespace %s: %v", name, err)
-	}
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere: flag on, fresh
-// namespace with no vnet → baseline appears.
-func TestIntegration_DefaultDenyAll_FlagOn_BaselineEverywhere(t *testing.T) {
+// Adding kube-vnet/disabled to a namespace that already has a baseline
+// removes it.
+func TestIntegration_Baseline_DisabledAnnotationRemovesBaseline(t *testing.T) {
 	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
-	ns := uniqueNS(t, "ddaon")
-	mustCreate(t, makeNamespace(ns, nil, nil))
-	touchNamespace(t, ns)
-
-	bp := &networkingv1.NetworkPolicy{}
-	eventually(t, 10*time.Second, func() error {
-		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	})
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped: flag on,
-// namespace annotated kube-vnet/disabled=true → no baseline.
-func TestIntegration_DefaultDenyAll_FlagOn_DisabledNamespaceSkipped(t *testing.T) {
-	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
-	ns := uniqueNS(t, "ddadis")
-	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
-	touchNamespace(t, ns)
-
-	time.Sleep(2 * time.Second)
-	bp := &networkingv1.NetworkPolicy{}
-	err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
-	if !apierrors.IsNotFound(err) {
-		t.Fatalf("baseline should not exist in disabled ns even with flag on: err=%v", err)
-	}
-}
-
-// TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff: flag on,
-// baseline present, then the disabled annotation gets added → baseline removed.
-func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing.T) {
-	ctx := context.Background()
-	withDefaultDenyEverywhere(t, true)
 	ns := uniqueNS(t, "ddaflip")
 	mustCreate(t, makeNamespace(ns, nil, nil))
-	touchNamespace(t, ns)
 
 	// Baseline appears.
 	bp := &networkingv1.NetworkPolicy{}
@@ -992,18 +877,9 @@ func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing
 		return testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: BaselinePolicyName}, bp)
 	})
 
-	// Add the disabled annotation.
-	current := &corev1.Namespace{}
-	if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, current); err != nil {
-		t.Fatalf("get namespace: %v", err)
-	}
-	if current.Annotations == nil {
-		current.Annotations = map[string]string{}
-	}
-	current.Annotations["kube-vnet/disabled"] = "true"
-	if err := testClient.Update(ctx, current); err != nil {
-		t.Fatalf("annotate namespace: %v", err)
-	}
+	updateNamespace(t, ns, func(n *corev1.Namespace) {
+		metav1.SetMetaDataAnnotation(&n.ObjectMeta, AnnotationDisabled, "true")
+	})
 
 	// Baseline goes away.
 	eventually(t, 10*time.Second, func() error {
@@ -1015,14 +891,9 @@ func TestIntegration_DefaultDenyAll_FlagOn_AnnotationFlipsBaselineOff(t *testing
 	})
 }
 
-// TestIntegration_EmptyDirection_NoMember: a pod with `kube-vnet/net.X: ""`
-// is NOT a member — the empty string is a removed legacy alias, not a valid
-// direction (ADR 0030; the supported opt-out is `none`). The vnet membership
-// policy's podSelector matches `In [both, ingress]` — empty isn't in the
-// list — so no policy adds back ingress for this pod. At reconcile time the
-// resolution controller additionally surfaces the bad value as an
-// InvalidJoinLabelDirection Warning on the pod (not asserted here; Event
-// delivery is best-effort and covered by unit tests).
+// TestIntegration_EmptyDirection_NoMember: `kube-vnet/net.X: ""` is a removed
+// legacy alias, not a direction (ADR 0030), so the pod is not a member. The
+// InvalidJoinLabelDirection Warning it also produces is covered by unit tests.
 func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "pe-empty")
@@ -1040,7 +911,7 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 		return err
 	})
 
-	// Vnet status should list only `real` as a member; `empty` should NOT
+	// Vnet status should list only `real` as a member; `empty` should not
 	// appear (its label parses as none, so it's not a joiner).
 	v := &vnetv1alpha1.VirtualNetwork{}
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
@@ -1055,19 +926,10 @@ func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	}
 }
 
-// ensure imports stay used when individual tests are commented out
-var _ = strings.HasPrefix
-var _ = corev1.Namespace{}
-
-// TestIntegration_MemberWithMalformedUserLabel_StaysMember pins the fix
-// for the diagnostic-scan-suppresses-membership bug found in the project
-// audit: a pod that is a valid member via a binding-driven system stamp,
-// but ALSO carries a malformed user-prefix label for the same vnet, was
-// dropped from members entirely (the diagnostic `continue` ran before
-// the membership check). If it was the sole member in its NS, no
-// membership policy was emitted and the stamped pod sat isolated under
-// the deny-all baseline. The diagnostic must be advisory: Degraded
-// reports the bad label AND the pod stays a member.
+// A pod that is a member through a binding's stamp but also carries a
+// malformed join label for the same vnet stays a member: the diagnostic is
+// advisory. It used to `continue` before the membership check, dropping the
+// pod and, if it was the only member, its membership policy too.
 func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "malformed")
@@ -1085,7 +947,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
 		},
 	})
-	// The pod ALSO carries a malformed user label for the SAME vnet.
+	// The pod also carries a malformed user label for the same vnet.
 	// (No direction VAP in this suite, so the apiserver accepts it.)
 	mustCreate(t, makePod(ns, "p", map[string]string{
 		"app":             "p",
@@ -1098,7 +960,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 		return err
 	})
 
-	// AND the vnet reports the malformed label as an invalid joiner.
+	// The vnet also reports the malformed label as an invalid joiner.
 	eventually(t, 10*time.Second, func() error {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
@@ -1121,7 +983,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 
 // TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership
 // pins the fix for the missing Namespace watch on the resolution
-// controller: annotating a namespace `kube-vnet/disabled=true` AFTER
+// controller: annotating a namespace `kube-vnet/disabled=true` after
 // pods were stamped must strip the kube-vnet.system/net.* stamps (and
 // with them, membership) promptly — not only on the next unrelated pod
 // event or informer resync.
@@ -1149,17 +1011,8 @@ func TestIntegration_NamespaceDisabledMidFlight_StripsStampsAndMembership(t *tes
 		return err
 	})
 
-	// Disable the namespace mid-flight.
-	eventually(t, 5*time.Second, func() error {
-		nsObj := &corev1.Namespace{}
-		if err := testClient.Get(ctx, client.ObjectKey{Name: ns}, nsObj); err != nil {
-			return err
-		}
-		if nsObj.Annotations == nil {
-			nsObj.Annotations = map[string]string{}
-		}
-		nsObj.Annotations[AnnotationDisabled] = "true"
-		return testClient.Update(ctx, nsObj)
+	updateNamespace(t, ns, func(n *corev1.Namespace) {
+		metav1.SetMetaDataAnnotation(&n.ObjectMeta, AnnotationDisabled, "true")
 	})
 
 	// The stamp must be stripped promptly (Namespace watch fires →

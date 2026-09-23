@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -48,12 +47,14 @@ func TestIntegration_SystemVnet_DriftCorrection(t *testing.T) {
 		t.Fatalf("delete system vnet: %v", err)
 	}
 
-	// Wait for it to come back.
+	// A matching UID would be the deleted object still visible, not a recreation.
 	eventually(t, 10*time.Second, func() error {
 		v2 := &vnetv1alpha1.VirtualNetwork{}
-		err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetNamespace}, v2)
-		if apierrors.IsNotFound(err) {
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetNamespace}, v2); err != nil {
 			return err
+		}
+		if v2.UID == v.UID {
+			return fmt.Errorf("system vnet not recreated yet (same UID)")
 		}
 		return nil
 	})
@@ -61,7 +62,7 @@ func TestIntegration_SystemVnet_DriftCorrection(t *testing.T) {
 
 // TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady verifies that
 // a system-labeled vnet whose home namespace is disabled (kube-vnet/disabled=
-// true) is NOT marked Degraded with ReasonHomeNamespaceExcluded. The cluster
+// true) is not marked Degraded with ReasonHomeNamespaceExcluded. The cluster
 // system vnet lives in the operator namespace, which the operator implicitly
 // adds to disabledNamespaces as a privilege boundary; without this exemption
 // the cluster vnet would never reach a usable state on a fresh install.
@@ -90,16 +91,16 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 	}
 	mustCreate(t, userVnet)
 
-	// System vnet must NOT end up with HomeNamespaceExcluded.
+	// System vnet must not end up with HomeNamespaceExcluded.
 	eventually(t, 10*time.Second, func() error {
 		got := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: SystemVnetCluster}, got); err != nil {
 			return err
 		}
-		if reason := conditionReasonOf(got, "Ready"); reason == ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Ready"); reason == ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("system vnet Ready reason is %q, want anything except %q", reason, ReasonHomeNamespaceExcluded)
 		}
-		if reason := conditionReasonOf(got, "Degraded"); reason == ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Degraded"); reason == ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("system vnet Degraded reason is %q, want anything except %q", reason, ReasonHomeNamespaceExcluded)
 		}
 		// Need at least one condition set to know the reconciler has touched it
@@ -116,18 +117,9 @@ func TestIntegration_SystemVnet_HomeNamespaceExcluded_StillReady(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "userv"}, got); err != nil {
 			return err
 		}
-		if reason := conditionReasonOf(got, "Degraded"); reason != ReasonHomeNamespaceExcluded {
+		if reason := conditionReason(got.Status.Conditions, "Degraded"); reason != ReasonHomeNamespaceExcluded {
 			return fmt.Errorf("user vnet Degraded reason is %q, want %q", reason, ReasonHomeNamespaceExcluded)
 		}
 		return nil
 	})
-}
-
-func conditionReasonOf(vnet *vnetv1alpha1.VirtualNetwork, t string) string {
-	for _, c := range vnet.Status.Conditions {
-		if c.Type == t {
-			return c.Reason
-		}
-	}
-	return ""
 }

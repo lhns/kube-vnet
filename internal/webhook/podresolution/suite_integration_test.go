@@ -39,7 +39,7 @@ import (
 // handlers import that package: a test in `package controller` that imported
 // them back would be an import cycle.
 //
-// It runs BOTH admission paths against a real apiserver and the
+// It runs both admission paths against a real apiserver and the
 // ResolutionReconciler alongside them, so the webhook path and the controller
 // path can be compared on the same cluster.
 var (
@@ -146,7 +146,7 @@ func TestMain(m *testing.M) {
 	}()
 
 	// On Windows envtest's Stop() leaves the apiserver and etcd running.
-	// Reap only THIS process's children, never every etcd on the box: another
+	// Reap only this process's children, never every etcd on the box: another
 	// repo's suite is a sibling process and killing its apiserver mid-run
 	// looks like a flake over there and is near-impossible to trace back here.
 	stop := func() {

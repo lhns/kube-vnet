@@ -18,7 +18,6 @@ import (
 // setClusterBaseline creates the singleton ClusterVirtualNetworkBaseline
 // named `default` with the given memberships and registers a t.Cleanup to
 // delete it. nil/empty deletes any existing baseline (no-op if absent).
-// Replaces the legacy setOperatorDefaults helper from the pre-ADR-0031 era.
 func setClusterBaseline(t *testing.T, memberships []vnetv1alpha1.BaselineMembership) {
 	t.Helper()
 	ctx := context.Background()
@@ -40,14 +39,9 @@ func setClusterBaseline(t *testing.T, memberships []vnetv1alpha1.BaselineMembers
 	t.Cleanup(func() { _ = testClient.Delete(context.Background(), cb) })
 }
 
-// sysVnetRef builds a baseline membership for a reserved system vnet.
-//
-// `namespace` is deliberately OMITTED — the recommended form per ADR 0043.
-// `cluster` then resolves to the cluster-wide singleton, and `namespace`
-// resolves to each pod's own namespace. Naming the operator's namespace here
-// (as this helper and the chart both used to) points at a vnet that does not
-// exist: the operator's namespace is unmanaged, so it holds no `namespace`
-// vnet, and this test suite never seeds a `cluster` vnet there either.
+// sysVnetRef builds a baseline membership for a reserved system vnet, with
+// the ref's namespace omitted as ADR 0043 recommends: `cluster` then resolves
+// to the cluster-wide singleton and `namespace` to each pod's own namespace.
 func sysVnetRef(name, dir string) vnetv1alpha1.BaselineMembership {
 	return vnetv1alpha1.BaselineMembership{
 		VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: name},
@@ -322,7 +316,7 @@ func TestIntegration_Resolution_BareNoneBlocksLowerTiers(t *testing.T) {
 	mustCreate(t, makePod(ns, "p", map[string]string{"kube-vnet/net.cluster": "both"}))
 
 	// Wait long enough for several reconciles, then assert the pod label
-	// did NOT take effect.
+	// did not take effect.
 	time.Sleep(2 * time.Second)
 	p := &corev1.Pod{}
 	if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "p"}, p); err != nil {
@@ -354,7 +348,7 @@ func TestIntegration_Resolution_BindingLabelConflictIntersection(t *testing.T) {
 			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
 		},
 	})
-	// Pod carries both the binding-selector label AND a kube-vnet/net.v
+	// Pod carries both the binding-selector label and a kube-vnet/net.v
 	// label that disagrees on direction.
 	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p", "kube-vnet/net.v": "egress"}))
 
@@ -368,12 +362,10 @@ func TestIntegration_Resolution_BindingLabelConflictIntersection(t *testing.T) {
 	}
 }
 
-// TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp covers the bug
-// surfaced by the user: a pod in NS X with `kube-vnet/net.<Y>.<vnet>=both`
-// where the target vnet exists but its allowedNamespaces doesn't include X.
-// The operator MUST NOT stamp `kube-vnet.system/net.<Y>.<vnet>` on the pod
-// — the stamp would lie about membership (the membership policy correctly
-// excludes the pod regardless).
+// TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp: a pod in X labelled
+// `kube-vnet/net.<Y>.<vnet>=both` for a vnet whose allowedNamespaces excludes
+// X is not stamped. The membership policy excludes it either way, but the
+// stamp would misreport membership.
 func TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp(t *testing.T) {
 	setClusterBaseline(t, nil)
 	ctx := context.Background()
@@ -383,7 +375,7 @@ func TestIntegration_Resolution_PodLabel_NotPermitted_NoStamp(t *testing.T) {
 	mustCreate(t, makeNamespace(nsA, nil, nil))
 	mustCreate(t, makeNamespace(nsB, nil, nil))
 
-	// Vnet in nsB with NO allowedNamespaces → only nsB pods can join.
+	// Vnet in nsB with no allowedNamespaces → only nsB pods can join.
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "private", Namespace: nsB},
 	})
@@ -439,11 +431,9 @@ func TestIntegration_Resolution_Binding_NotPermitted_NoStamp(t *testing.T) {
 	}
 }
 
-// TestIntegration_Resolution_VnetMissing_NoStamp: a pod-label references
-// a vnet that doesn't exist. No stamp. (The resolution controller also emits
-// a VirtualNetworkNotJoinable Warning with a bare-form hint, but that
-// best-effort Event is covered by unit tests, not asserted here since this
-// test focuses on the durable stamping path.)
+// TestIntegration_Resolution_VnetMissing_NoStamp: a join label for a vnet that
+// doesn't exist is not stamped. The VirtualNetworkNotJoinable Warning it also
+// produces is covered by unit tests.
 func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
 	setClusterBaseline(t, nil)
 	ctx := context.Background()
@@ -465,19 +455,11 @@ func TestIntegration_Resolution_VnetMissing_NoStamp(t *testing.T) {
 	}
 }
 
-// Continues where VnetMissing_NoStamp stops: the vnet shows up afterwards.
-//
-// This is ordinary GitOps ordering — a HelmRelease rendering its Deployment
-// before its VirtualNetwork. Resolution runs first, finds no vnet, drops the
-// rule, and still writes resolved-generation. Nothing then re-enqueued the pod:
-// the pod watch is change-based, so the informer resync (which delivers
-// old == new) is filtered, and the vnet controller's periodic requeue doesn't
-// help because discoverMembers only counts stamped pods. The pod stayed
-// unstamped — isolated by the deny-all baseline — until it was edited or
-// recreated. The VirtualNetwork watch on the resolution controller is what
-// converges it. See ADR 0030 (amended).
-//
-// The pod is deliberately never touched after step 1.
+// Continues where VnetMissing_NoStamp stops: the vnet shows up afterwards, as
+// in a HelmRelease that applies its Deployment before its VirtualNetwork.
+// Resolution concludes without the vnet, and the change-based pod watch never
+// fires again, so only the resolution controller's VirtualNetwork watch can
+// converge the pod (ADR 0030, amended). The pod is never touched after step 1.
 func TestIntegration_Resolution_VnetCreatedAfterPod_StampsWithoutPodChange(t *testing.T) {
 	setClusterBaseline(t, nil)
 	ctx := context.Background()
@@ -494,18 +476,20 @@ func TestIntegration_Resolution_VnetCreatedAfterPod_StampsWithoutPodChange(t *te
 		"kube-vnet/net." + home + ".late": "both",
 	}))
 
-	// 2. It settles unstamped, but resolution DID run and conclude — the
-	//    resolved-generation annotation is what makes the state terminal.
-	time.Sleep(2 * time.Second)
+	// 2. Resolution runs and concludes (resolved-generation is what makes the
+	//    state terminal) without stamping.
 	p := &corev1.Pod{}
-	if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
-		t.Fatalf("get pod: %v", err)
-	}
+	eventually(t, 10*time.Second, func() error {
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: foreign, Name: "p"}, p); err != nil {
+			return err
+		}
+		if p.Annotations[AnnotationResolvedGeneration] == "" {
+			return fmt.Errorf("resolution has not written resolved-generation yet")
+		}
+		return nil
+	})
 	if got, ok := p.Labels[sysLabel]; ok {
 		t.Fatalf("pod stamped %q before the vnet existed", got)
-	}
-	if p.Annotations[AnnotationResolvedGeneration] == "" {
-		t.Fatal("expected resolution to have run and stamped resolved-generation")
 	}
 
 	// 3. The vnet appears.
@@ -634,17 +618,11 @@ func TestIntegration_Resolution_VnetCreatedAfterBinding_StampsWithoutBindingChan
 	})
 }
 
-// TestIntegration_Baseline_SystemVnetRef_ForeignNamespace_NoStamp is the
-// end-to-end regression lock for ADR 0043.
-//
-// A VirtualNetworkBaseline pointing the `namespace` system vnet at the
-// operator's namespace names a vnet that does not exist (the operator's
-// namespace is unmanaged, so SystemVnetReconciler seeds no `namespace` vnet
-// there). Before ADR 0043 resolution silently discarded ref.Namespace and
-// substituted the pod's own namespace, so this stamped `net.<ns>.namespace`
-// and generated a membership policy — a wrong ref that appeared to work.
-//
-// It must now be honored, found missing, and dropped: no stamp.
+// ADR 0043: a baseline ref naming the `namespace` system vnet in the
+// operator's namespace names a vnet that doesn't exist there (that namespace is
+// unmanaged). Resolution used to discard ref.Namespace and substitute the
+// pod's own, so the wrong ref appeared to work. It must be honored, found
+// missing, and dropped.
 func TestIntegration_Baseline_SystemVnetRef_ForeignNamespace_NoStamp(t *testing.T) {
 	setClusterBaseline(t, []vnetv1alpha1.BaselineMembership{
 		sysVnetRef("cluster", "default-egress"),
