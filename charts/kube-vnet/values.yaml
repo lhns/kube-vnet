@@ -1,5 +1,10 @@
 # Default values for kube-vnet.
 
+# Override the app.kubernetes.io/name label (nameOverride) or the prefix of
+# every resource name (fullnameOverride).
+nameOverride: ""
+fullnameOverride: ""
+
 image:
   repository: ghcr.io/lhns/kube-vnet
   # tag overrides Chart.appVersion when set.

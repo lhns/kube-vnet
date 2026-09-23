@@ -155,15 +155,13 @@ spec:
           image: {{ $image }}
           imagePullPolicy: {{ .Values.cleanup.image.pullPolicy | default "IfNotPresent" }}
           command: [kubectl]
-          # Component=controller scopes to the operator pods specifically
-          # — our own cleanup Job pod carries component=cleanup so we
-          # don't wait on ourselves.
+          # component=controller: this Job's own pod carries component=cleanup.
           args:
             - wait
             - --for=delete
             - pod
             - --selector
-            - app.kubernetes.io/name={{ include "kube-vnet.name" . }},app.kubernetes.io/component=controller
+            - app.kubernetes.io/name={{ include "kube-vnet.name" . }},app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/component=controller
             - --namespace
             - {{ .Release.Namespace }}
             - --timeout=60s
