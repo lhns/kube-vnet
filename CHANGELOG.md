@@ -65,6 +65,11 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **Fewer auto-allow reconciles on pod churn.** The external-allow and
+  apiserver-reachable reconcilers now re-run a named-`targetPort` Service only
+  when a pod enters or leaves its selector, instead of on every pod create,
+  delete or relabel in the namespace. The operator's own membership stamp no
+  longer re-runs them. Emitted policies are unchanged.
 - Built against controller-runtime v0.25.0 (was v0.24.1) and the Kubernetes
   v0.37 client libraries (was v0.36), with Go 1.27 (was 1.26). No behaviour
   change is expected.

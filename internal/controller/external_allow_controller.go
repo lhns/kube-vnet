@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -367,19 +368,6 @@ func externalAllowPolicyPredicate(sourceKind string) predicate.Predicate {
 	})
 }
 
-// backingPodChanged passes the pod events that can change how a named
-// targetPort resolves: creates, deletes, and label changes (which move a pod
-// into or out of a Service's selector). Container ports are immutable, so no
-// other update matters.
-var backingPodChanged = predicate.Funcs{
-	CreateFunc: func(event.CreateEvent) bool { return true },
-	UpdateFunc: func(e event.UpdateEvent) bool {
-		return !maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels())
-	},
-	DeleteFunc:  func(event.DeleteEvent) bool { return true },
-	GenericFunc: func(event.GenericEvent) bool { return false },
-}
-
 func (r *ExternalAllowReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		Named("external-allow").
@@ -404,11 +392,7 @@ func (s serviceSource) watchInputs(b *builder.Builder, mgr ctrl.Manager, c clien
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(namespaceToServices(c)),
 		).
-		Watches(
-			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(c)),
-			builder.WithPredicates(backingPodChanged),
-		)
+		Watches(&corev1.Pod{}, podToSelectingServices(c))
 }
 
 // namespaceToServices enqueues every Service in a namespace when it changes,
@@ -419,11 +403,41 @@ func namespaceToServices(c client.Reader) handler.MapFunc {
 	}
 }
 
-// podToServicesWithNamedPorts enqueues the Services in the pod's namespace
-// that use a named targetPort, the only ones whose policy depends on pods.
-func podToServicesWithNamedPorts(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		return servicesInNamespace(ctx, c, obj.GetNamespace(), hasNamedTargetPort)
+// podToSelectingServices enqueues the named-targetPort Services whose
+// selector a pod enters or leaves. Only those Services resolve ports from
+// pods, and container ports are immutable, so a pod can change a Service's
+// resolution only by entering its selector (create, relabel in) or leaving
+// it (delete, relabel out). A relabel that flips no selector, such as the
+// operator's own kube-vnet.system stamp, enqueues nothing; a Service that
+// selects on a stamped label still flips. Matching is labelsMatchSelector,
+// the same test resolveTargetPorts applies.
+func podToSelectingServices(c client.Reader) handler.Funcs {
+	enqueue := func(ctx context.Context, q workqueue.TypedRateLimitingInterface[reconcile.Request], ns string, affected func(selector map[string]string) bool) {
+		for _, req := range servicesInNamespace(ctx, c, ns, func(svc *corev1.Service) bool {
+			return hasNamedTargetPort(svc) && affected(svc.Spec.Selector)
+		}) {
+			q.Add(req)
+		}
+	}
+	matches := func(obj client.Object) func(map[string]string) bool {
+		return func(sel map[string]string) bool { return labelsMatchSelector(obj.GetLabels(), sel) }
+	}
+	return handler.Funcs{
+		CreateFunc: func(ctx context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, q, e.Object.GetNamespace(), matches(e.Object))
+		},
+		UpdateFunc: func(ctx context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			oldL, newL := e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels()
+			if maps.Equal(oldL, newL) {
+				return
+			}
+			enqueue(ctx, q, e.ObjectNew.GetNamespace(), func(sel map[string]string) bool {
+				return labelsMatchSelector(oldL, sel) != labelsMatchSelector(newL, sel)
+			})
+		},
+		DeleteFunc: func(ctx context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			enqueue(ctx, q, e.Object.GetNamespace(), matches(e.Object))
+		},
 	}
 }
 

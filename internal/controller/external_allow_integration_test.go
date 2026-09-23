@@ -11,7 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // extAllowPolicyName returns the policy name produced for Service ns/name,
@@ -318,6 +320,23 @@ func TestIntegration_ExternalAllow_NamedTargetPort_Renumbered(t *testing.T) {
 	if err := testClient.Delete(context.Background(), old); err != nil {
 		t.Fatalf("delete old pod: %v", err)
 	}
+	waitForPorts(9090)
+
+	// A relabel moves a pod into, then out of, the selector: each flip alone
+	// must reach the Service.
+	canary := pod("web-canary", 7070)
+	canary.Labels = map[string]string{"app": "canary"}
+	mustCreate(t, canary)
+	relabel := func(app string) {
+		t.Helper()
+		patch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"labels":{"app":"`+app+`"}}}`))
+		if err := testClient.Patch(context.Background(), canary, patch); err != nil {
+			t.Fatalf("relabel canary: %v", err)
+		}
+	}
+	relabel("web")
+	waitForPorts(7070, 9090)
+	relabel("canary")
 	waitForPorts(9090)
 }
 
