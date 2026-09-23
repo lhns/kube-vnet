@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 
+	admissionv1 "k8s.io/api/admission/v1"
+	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/lhns/kube-vnet/internal/controller"
@@ -47,9 +49,24 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 	controller.SyncStamps(out, desired, r.untouched)
 	controller.MarkResolved(out, controller.ResolvedByAdmission)
 
+	// Init containers can only be set at creation.
+	var warning string
+	if req.Operation == admissionv1.Create {
+		var wait *corev1.Container
+		if wait, warning = networkWait(out, m.NetworkWait); wait != nil {
+			// First, so the kubelet publishes the pod IP while it runs and
+			// nothing else starts before the rules are live.
+			out.Spec.InitContainers = append([]corev1.Container{*wait}, out.Spec.InitContainers...)
+		}
+	}
+
 	marshaled, err := json.Marshal(out)
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
-	return admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
+	resp := admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
+	if warning != "" {
+		resp = resp.WithWarnings(warning)
+	}
+	return resp
 }

@@ -117,6 +117,7 @@ func TestMain(m *testing.M) {
 		NSFilter:         nsFilter,
 		Decoder:          admission.NewDecoder(mgr.GetScheme()),
 		OperatorUsername: controller.ServiceAccountUsername("kube-vnet-system-test", "kube-vnet-controller"),
+		NetworkWait:      &NetworkWaitConfig{Image: testNetworkWaitImage, Beacons: "beacons.test.svc:9444"},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -48,6 +48,10 @@ func init() {
 }
 
 func main() {
+	if handled, code := runSubcommand(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
 	var (
 		metricsAddr         string
 		probeAddr           string
@@ -59,6 +63,8 @@ func main() {
 		webhookPort         int
 		webhookCertDir      string
 		serviceAccountName  string
+		networkWaitImage    string
+		networkWaitBeacons  string
 	)
 	flag.BoolVar(&showVersion, "version", false, "print version info and exit")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
@@ -97,6 +103,13 @@ func main() {
 	flag.IntVar(&webhookPort, "webhook-port", 9443, "port for the admission webhook server")
 	flag.StringVar(&webhookCertDir, "webhook-cert-dir", "/tmp/k8s-webhook-server/serving-certs",
 		"directory holding tls.crt and tls.key for the webhook server")
+	flag.StringVar(&networkWaitBeacons, "network-wait-beacons", "",
+		"host:port of the network-wait beacons' headless Service. Set, together "+
+			"with --network-wait-image, to let pods opt into the network wait with "+
+			"the kube-vnet/network-max-wait annotation (ADR 0045). Empty disables it.")
+	flag.StringVar(&networkWaitImage, "network-wait-image", "",
+		"image of the init container injected for the network wait: this "+
+			"operator's own image. Required with --network-wait-beacons.")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -114,6 +127,18 @@ func main() {
 		setupLog.Error(err, "invalid --apiserver-source-cidr",
 			"value", apiserverSourceCIDR)
 		os.Exit(1)
+	}
+
+	// Same for the network wait: a half-configured wait would inject an init
+	// container that can't run.
+	var networkWait *podresolution.NetworkWaitConfig
+	if networkWaitBeacons != "" {
+		if _, _, err := net.SplitHostPort(networkWaitBeacons); err != nil || networkWaitImage == "" {
+			setupLog.Error(err, "--network-wait-beacons needs host:port and --network-wait-image",
+				"beacons", networkWaitBeacons, "image", networkWaitImage)
+			os.Exit(1)
+		}
+		networkWait = &podresolution.NetworkWaitConfig{Image: networkWaitImage, Beacons: networkWaitBeacons}
 	}
 
 	// POD_NAMESPACE is the operator's release namespace, set through the
@@ -269,6 +294,7 @@ func main() {
 			NSFilter:         nsFilter,
 			Decoder:          admission.NewDecoder(mgr.GetScheme()),
 			OperatorUsername: controller.ServiceAccountUsername(operatorNS, serviceAccountName),
+			NetworkWait:      networkWait,
 		})
 		setupLog.Info("pod-resolution admission webhooks enabled",
 			"port", webhookPort, "certDir", webhookCertDir)
