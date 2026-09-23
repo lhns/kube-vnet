@@ -313,8 +313,8 @@ permanently rather than slowly.
 | `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` Events on the declaring object; `InvalidJoinLabelDirection`, `ResolutionConflict`, `OverrideRejected` Events on the pod | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
-| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (creates, deletes, label changes), own policies (drift) |
+| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift) |
 | `HostPortReconciler` | `NetworkPolicy` (`ext.host`) | `Namespace`, `Pod` (hostPort changes), own policies (drift) |
-| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (creates, deletes, label changes), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
+| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.

@@ -4,6 +4,8 @@
 
 > **Amendment (2026-09-23) — two rows of the read/trigger table corrected.** `VirtualNetworkReconciler` never read `VirtualNetworkBinding`: it reads only the stamps resolution derives from bindings, and a stamp change is a pod event. Its binding watch was dead weight and has been removed, so the row now lists four inputs, not five. The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` fired on creates only, which missed a backing pod leaving (delete) or moving out of a Service's selector (label change). It now fires on creates, deletes and label changes; the rows say so.
 
+> **Amendment (2026-09-23, later) — the auto-allow Pod trigger narrowed to selector flips.** The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` enqueued every named-`targetPort` Service in the pod's namespace on any create, delete or label change, so each new pod, and the operator's own `kube-vnet.system/*` stamp on it, re-ran every such Service. Container ports are immutable, so a pod can change a Service's named-port resolution only by entering or leaving its selector. The watch now enqueues just the named-port Services whose selector the pod matches (create, delete) or whose match differs between old and new labels (update), using the `labelsMatchSelector` test that `resolveTargetPorts` applies. This narrows which changes fire, not which fields matter: a Service that selects on a `kube-vnet.system` label still flips.
+
 ## Context
 
 Four bugs of one shape surfaced in quick succession. In each, a reconciler decided something by reading state it does not watch, so the decision was never revisited:
@@ -69,8 +71,8 @@ The checklist for future changes. Any read not covered by a trigger is a bug of 
 | `NamespaceReconciler` | Namespace, NetworkPolicy | both |
 | `SystemVnetReconciler` | Namespace, VirtualNetwork | both |
 | `HostPortReconciler` | Namespace, Pod, NetworkPolicy | all three |
-| `ExternalAllowReconciler` | Service, Namespace, Pod, NetworkPolicy | all four; Pod on create, delete and label change (+30s requeue for pending named ports) |
-| `ApiserverReachableReconciler` | Service, Namespace, Pod, NetworkPolicy, 4 discovery kinds | all; Pod on create, delete and label change (+30s requeue) |
+| `ExternalAllowReconciler` | Service, Namespace, Pod, NetworkPolicy | all four; Pod when it enters or leaves a named-port Service's selector (+30s requeue for pending named ports) |
+| `ApiserverReachableReconciler` | Service, Namespace, Pod, NetworkPolicy, 4 discovery kinds | all; Pod when it enters or leaves a named-port Service's selector (+30s requeue) |
 | `MetricsCollector` | live Lists on a 30s tick | n/a — not a reconciler |
 
 Predicates may narrow *which* changes fire, never *which fields matter*. `GenerationChangedPredicate` on the resolution controller's `VirtualNetwork` watch is legitimate: the CRD has a status subresource, so generation tracks spec only, and without it every membership status write would fan out to pods and recreate the loop `75c14a6` removed.

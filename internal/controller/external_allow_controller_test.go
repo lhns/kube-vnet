@@ -16,11 +16,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/managedfields"
+	"k8s.io/client-go/util/workqueue"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // svc returns a minimal Service skeleton; specific fields overridden per-test.
@@ -388,27 +391,97 @@ func TestExternalAllowPolicyPredicate_FiltersBySourceKind(t *testing.T) {
 	}
 }
 
-func TestBackingPodChanged(t *testing.T) {
-	pod := func(labels map[string]string, phase corev1.PodPhase) *corev1.Pod {
-		return &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: labels},
-			Status:     corev1.PodStatus{Phase: phase},
-		}
+// namedPortSvc returns a Service in "ns" with a named targetPort and the
+// given selector.
+func namedPortSvc(name string, selector map[string]string) *corev1.Service {
+	s := svc(name, "ns")
+	s.Spec.Selector = selector
+	s.Spec.Ports[0].TargetPort = intstr.FromString("http")
+	return s
+}
+
+// podToSelectingServicesEnqueued runs fire against podToSelectingServices
+// over a client holding "ns" Services web (app=web, named port), canary
+// (track=canary, named port), numeric (app=web, numeric port), stamped
+// (selects on a kube-vnet.system label, named port) and a Service in another
+// namespace, and returns the enqueued names, sorted.
+func podToSelectingServicesEnqueued(t *testing.T, fire func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request])) []string {
+	t.Helper()
+	numeric := svc("numeric", "ns")
+	numeric.Spec.Selector = map[string]string{"app": "web"}
+	other := namedPortSvc("web", map[string]string{"app": "web"})
+	other.Namespace = "other"
+	c := autoAllowClient(t,
+		namedPortSvc("web", map[string]string{"app": "web"}),
+		namedPortSvc("canary", map[string]string{"track": "canary"}),
+		namedPortSvc("stamped", map[string]string{"kube-vnet.system/net.ns.payments": "both"}),
+		numeric, other,
+	)
+	q := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+	defer q.ShutDown()
+	fire(podToSelectingServices(c), q)
+	var got []string
+	for q.Len() > 0 {
+		req, _ := q.Get()
+		got = append(got, req.Namespace+"/"+req.Name)
+		q.Done(req)
 	}
-	old := pod(map[string]string{"app": "a"}, corev1.PodPending)
-	if !backingPodChanged.Create(event.CreateEvent{Object: old}) {
-		t.Error("create should pass")
+	slices.Sort(got)
+	return got
+}
+
+// A pod event reaches a Service's named-port resolution only by moving the
+// pod into or out of its selector; everything else must enqueue nothing.
+func TestPodToSelectingServices(t *testing.T) {
+	ctx := context.Background()
+	pod := func(labels map[string]string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: labels}}
 	}
-	// A deleted pod may have been the only one resolving a port number.
-	if !backingPodChanged.Delete(event.DeleteEvent{Object: old}) {
-		t.Error("delete should pass")
+	web := map[string]string{"app": "web"}
+	cases := []struct {
+		name string
+		fire func(handler.Funcs, workqueue.TypedRateLimitingInterface[reconcile.Request])
+		want []string
+	}{
+		{"create matching", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Create(ctx, event.CreateEvent{Object: pod(web)}, q)
+		}, []string{"ns/web"}},
+		{"create matching nothing", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Create(ctx, event.CreateEvent{Object: pod(map[string]string{"app": "db"})}, q)
+		}, nil},
+		{"delete matching", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Delete(ctx, event.DeleteEvent{Object: pod(map[string]string{"app": "web", "track": "canary"})}, q)
+		}, []string{"ns/canary", "ns/web"}},
+		{"delete matching nothing", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Delete(ctx, event.DeleteEvent{Object: pod(nil)}, q)
+		}, nil},
+		{"update flips in", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", "track": "canary"})}, q)
+		}, []string{"ns/canary"}},
+		{"update flips out", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "db"})}, q)
+		}, []string{"ns/web"}},
+		{"update without flip", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(map[string]string{"app": "web", "v": "1"}), ObjectNew: pod(map[string]string{"app": "web", "v": "2"})}, q)
+		}, nil},
+		{"stamp only", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", LabelSystemNetPrefix + "ns.other": "both"})}, q)
+		}, nil},
+		{"stamp flips a Service selecting it", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", "kube-vnet.system/net.ns.payments": "both"})}, q)
+		}, []string{"ns/stamped"}},
+		{"status-only update", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			running := pod(web)
+			running.Status.Phase = corev1.PodRunning
+			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: running}, q)
+		}, nil},
 	}
-	// A relabel can move the pod into a Service's selector.
-	if !backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "b"}, corev1.PodPending)}) {
-		t.Error("label change should pass")
-	}
-	if backingPodChanged.Update(event.UpdateEvent{ObjectOld: old, ObjectNew: pod(map[string]string{"app": "a"}, corev1.PodRunning)}) {
-		t.Error("status-only update should not pass")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podToSelectingServicesEnqueued(t, tc.fire); !slices.Equal(got, tc.want) {
+				t.Fatalf("enqueued %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
