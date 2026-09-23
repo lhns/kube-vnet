@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/util/rand"
 )
 
 const (
@@ -234,5 +236,5 @@ func cannotReach(t *testing.T, ns, srcPod, dstIP string, timeout time.Duration) 
 // uniqueNS returns a randomized e2e namespace name.
 func uniqueNS(t *testing.T, prefix string) string {
 	t.Helper()
-	return fmt.Sprintf("e2e-%s-%d", prefix, time.Now().UnixNano()%100000)
+	return "e2e-" + prefix + "-" + rand.String(5)
 }

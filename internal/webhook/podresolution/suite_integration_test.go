@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/rand"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -197,7 +198,7 @@ func eventually(t *testing.T, timeout time.Duration, fn func() error) {
 
 func uniqueNS(t *testing.T, prefix string) string {
 	t.Helper()
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano()%100000)
+	return prefix + "-" + rand.String(5)
 }
 
 func mustCreate(t *testing.T, obj client.Object) {

@@ -15,6 +15,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -165,7 +166,7 @@ func TestIntegration_VAP_SystemLabels_StatusSubresource(t *testing.T) {
 	stamp := LabelSystemNetPrefix + ns + ".web"
 
 	awaitVAPActive(t, userClient, func() client.Object {
-		return makePod(ns, fmt.Sprintf("probe-%d", time.Now().UnixNano()%100000),
+		return makePod(ns, "probe-"+rand.String(5),
 			map[string]string{stamp: "both"})
 	})
 

@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
@@ -114,7 +115,7 @@ func webhookNS(t *testing.T, vnetName string) string {
 	})
 
 	eventually(t, 60*time.Second, func() error {
-		p := makePod(ns, fmt.Sprintf("probe-%d", time.Now().UnixNano()%100000),
+		p := makePod(ns, "probe-"+rand.String(5),
 			map[string]string{"kube-vnet/net." + vnetName: "both"})
 		if err := testClient.Create(context.Background(), p); err != nil {
 			return fmt.Errorf("probe create: %w", err)
