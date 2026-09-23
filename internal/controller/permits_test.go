@@ -29,7 +29,6 @@ func TestPermits(t *testing.T) {
 		vnetKey VnetKey
 		podNS   string
 		want    bool
-		wantErr bool
 	}{
 		{
 			name:    "cluster_vnet_always_permitted",
@@ -151,6 +150,23 @@ func TestPermits(t *testing.T) {
 			want:    false,
 		},
 		{
+			// The CRD does not validate the selector. A malformed one is the
+			// vnet's own data problem: it matches nothing. An error would read
+			// as transient and fail every resolution naming the vnet, forever.
+			name: "non_home_NS_malformed_selector",
+			objects: []runtime.Object{
+				mkVnet("payments", "platform", &vnetv1alpha1.NamespaceSelector{
+					Selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+						{Key: "tier", Operator: metav1.LabelSelectorOpIn}, // In needs values
+					}},
+				}),
+				mkNamespace("api", map[string]string{"tier": "prod"}),
+			},
+			vnetKey: VnetKey("platform.payments"),
+			podNS:   "api",
+			want:    false,
+		},
+		{
 			name: "per_NS_namespace_vnet_only_home",
 			// The per-NS `namespace` system vnet has AllowedNamespaces=nil.
 			// Only pods in headlamp can join headlamp.namespace.
@@ -176,12 +192,6 @@ func TestPermits(t *testing.T) {
 			}
 			c := b.Build()
 			got, err := Permits(context.Background(), c, tt.vnetKey, tt.podNS)
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("expected error, got nil")
-				}
-				return
-			}
 			if err != nil {
 				t.Errorf("unexpected err: %v", err)
 				return
@@ -217,5 +227,26 @@ func TestSplitVnetKey(t *testing.T) {
 				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)", home, name, ok, c.homeNS, c.vnetName, c.ok)
 			}
 		})
+	}
+}
+
+// PermitsForVnet must agree with Permits on the qualified key. A vnet named
+// `cluster` outside the operator namespace (possible when the reserved-name
+// VAP is absent) gets no pass from its name alone (ADR 0043).
+func TestPermitsForVnet_ClusterNameIsNotAPass(t *testing.T) {
+	v := mkVnet(SystemVnetCluster, "bogus", nil)
+	c := fake.NewClientBuilder().WithScheme(schemeForPermits(t)).WithRuntimeObjects(v).Build()
+	ctx := context.Background()
+
+	byKey, err := Permits(ctx, c, VnetKey("bogus."+SystemVnetCluster), "other")
+	if err != nil {
+		t.Fatalf("Permits: %v", err)
+	}
+	byVnet, err := PermitsForVnet(ctx, c, v, "other")
+	if err != nil {
+		t.Fatalf("PermitsForVnet: %v", err)
+	}
+	if byKey || byVnet {
+		t.Errorf("Permits=%v PermitsForVnet=%v, want both false", byKey, byVnet)
 	}
 }

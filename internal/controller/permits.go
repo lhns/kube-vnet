@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -44,10 +45,7 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 		}
 		return false, err
 	}
-	if podNS == v.Namespace {
-		return true, nil
-	}
-	return matchesAllowedNamespaces(ctx, c, v.Spec.AllowedNamespaces, podNS)
+	return PermitsForVnet(ctx, c, &v, podNS)
 }
 
 // NamespacesAdmittedBy is the inverse of Permits: given a vnet, which
@@ -83,13 +81,12 @@ func NamespacesAdmittedBy(ctx context.Context, c client.Reader, vnet *vnetv1alph
 	return out, nil
 }
 
-// PermitsForVnet is Permits for a caller that already holds the vnet.
+// PermitsForVnet is Permits for a caller that already holds the vnet. It
+// decides on the object alone, never on its name: the real `cluster` vnet is
+// permitted by its `allowedNamespaces: {all: true}`.
 func PermitsForVnet(ctx context.Context, c client.Reader, v *vnetv1alpha1.VirtualNetwork, podNS string) (bool, error) {
 	if v == nil {
 		return false, nil
-	}
-	if v.Name == SystemVnetCluster {
-		return true, nil
 	}
 	if podNS == v.Namespace {
 		return true, nil
@@ -97,38 +94,32 @@ func PermitsForVnet(ctx context.Context, c client.Reader, v *vnetv1alpha1.Virtua
 	return matchesAllowedNamespaces(ctx, c, v.Spec.AllowedNamespaces, podNS)
 }
 
-// matchesAllowedNamespaces implements the per-vnet NamespaceSelector
-// check shared by both Permits entry points. nil selector means
-// "home NS only" (caller already returned true if podNS == home).
+// matchesAllowedNamespaces reports whether sel admits podNS. A nil sel admits
+// nothing; the caller has already admitted the home namespace.
 func matchesAllowedNamespaces(ctx context.Context, c client.Reader, sel *vnetv1alpha1.NamespaceSelector, podNS string) (bool, error) {
 	if sel == nil {
 		return false, nil
 	}
-	if sel.All {
+	if sel.All || slices.Contains(sel.Names, podNS) {
 		return true, nil
 	}
-	for _, n := range sel.Names {
-		if n == podNS {
-			return true, nil
-		}
+	if sel.Selector == nil {
+		return false, nil
 	}
-	if sel.Selector != nil {
-		var nsObj corev1.Namespace
-		if err := c.Get(ctx, client.ObjectKey{Name: podNS}, &nsObj); err != nil {
-			if apierrors.IsNotFound(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		s, err := metav1.LabelSelectorAsSelector(sel.Selector)
-		if err != nil {
-			return false, err
-		}
-		if s.Matches(labels.Set(nsObj.Labels)) {
-			return true, nil
-		}
+	// A malformed selector is the vnet's own data problem, not a transient
+	// error: it matches nothing, like a malformed binding selector.
+	s, err := metav1.LabelSelectorAsSelector(sel.Selector)
+	if err != nil {
+		return false, nil
 	}
-	return false, nil
+	var nsObj corev1.Namespace
+	if err := c.Get(ctx, client.ObjectKey{Name: podNS}, &nsObj); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return s.Matches(labels.Set(nsObj.Labels)), nil
 }
 
 // splitVnetKey decomposes a canonical VnetKey into (homeNS, vnetName).
