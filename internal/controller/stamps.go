@@ -32,7 +32,7 @@ func ResolutionStamps(pod *corev1.Pod) map[string]string {
 // with a message rather than silently rewritten.
 func SyncStamps(pod *corev1.Pod, desired map[string]string, owns func(key string) bool) bool {
 	if owns == nil {
-		return syncManagedLabels(pod, IsResolutionManagedLabel, desired)
+		owns = func(string) bool { return true }
 	}
 	owned := make(map[string]string, len(desired))
 	for k, v := range desired {

@@ -112,7 +112,7 @@ type OverrideRejected struct {
 type ResolutionResult struct {
 	// Effective is the desired set of (vnet, direction) pairs. Directions are
 	// always bare — the default-* prefix is consumed during resolution.
-	// Entries with effective Direction=none are EXCLUDED from this map.
+	// Entries with effective Direction=none are left out.
 	Effective map[VnetKey]Direction
 
 	// Conflicts records same-scope disagreements that were resolved via
@@ -224,7 +224,7 @@ func Resolve(layers []ResolutionLayer) ResolutionResult {
 				}
 			}
 			// The intersection result `eff` is bare. Re-apply default-* prefix
-			// when ALL participants in this layer were default-*; otherwise the
+			// when all participants in this layer were default-*; otherwise the
 			// stricter bare form propagates to the next tier.
 			if anyDefault && !anyBare {
 				switch eff {

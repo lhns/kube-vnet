@@ -82,7 +82,7 @@ type VirtualNetworkReconciler struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
-// Events need BOTH groups. Every reconciler emits through
+// Events need both groups. Every reconciler emits through
 // mgr.GetEventRecorder, controller-runtime's events.k8s.io/v1 recorder, so
 // without the second rule every Event the operator writes is forbidden and the
 // logs fill with RBAC errors. The core "" rule stays because controller-runtime's
