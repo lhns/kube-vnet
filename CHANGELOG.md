@@ -27,8 +27,10 @@ release. Pinning to an exact version is recommended.
   keep today's guarantee that `kube-vnet.system/*` labels cannot be forged even
   while the operator is unreachable; the cost is that an operator outage blocks
   pod creation in managed namespaces. `kube-system`, `kube-public`,
-  `kube-node-lease` and the release namespace are excluded so the cluster and
-  the operator can always recover. Run 2+ replicas. The mutating half is
+  `kube-node-lease`, the release namespace and every namespace in
+  `operator.disabledNamespaces` are excluded, so the cluster, the operator and
+  what it doesn't manage (typically the CNI and cert-manager) can always
+  recover. Run 2+ replicas. The mutating half is
   `failurePolicy: Ignore` and degrades to the previous behaviour.
 
   When enabled, the validating webhook takes over from the system-labels
@@ -50,6 +52,13 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
+- **`kube-vnet.system/*` stamps could be written through `pods/status`.** A
+  status write keeps the request's labels, and the system-labels policy
+  checked only `pods`. Anyone allowed to write pod status — a node, or a
+  controller granted `pods/status` — could stamp a pod into a vnet or onto a
+  host-port policy until the operator stripped it. The policy now covers
+  `pods/status`; ordinary status writes are unaffected.
+
 - **Two status conditions reported problems that did not exist.**
   - A `VirtualNetworkBinding` that omits `virtualNetworkRef.namespace` — the
     recommended form — reported `Ready=False, VirtualNetworkNotFound` while its
@@ -58,6 +67,11 @@ release. Pinning to an exact version is recommended.
   - One pod with a malformed `kube-vnet/net.namespace` label turned the
     `namespace` vnet of every managed namespace `Degraded`. Only the pod's own
     namespace's vnet is affected now.
+
+- **The CoreDNS carve-out rendered into an unmanaged `kube-system`** when
+  `operator.disabledNamespaces` was `null`. The operator still disables
+  `kube-system` by default then, so the policy only restricted CoreDNS ingress
+  to `:53`, cutting off its metrics port.
 
 - **`release.yaml` ran whatever `ghcr.io/lhns/kube-vnet:latest` was at pull
   time.** It was rendered from `config/default` unchanged, with
