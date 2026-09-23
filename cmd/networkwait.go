@@ -36,11 +36,9 @@ func runNetworkWait(args []string) int {
 	fs := flag.NewFlagSet("network-wait", flag.ContinueOnError)
 	beacons := fs.String("beacons", "", "beacon Service address, host:port")
 	maxWait := fs.Duration("max-wait", 30*time.Second, "longest to hold the pod")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
+	parseErr := fs.Parse(args)
 	host, port, err := net.SplitHostPort(*beacons)
-	if err != nil || *maxWait <= 0 {
+	if parseErr != nil || err != nil || *maxWait <= 0 {
 		// Never block a pod over a bad argument: the wait is a convenience.
 		fmt.Fprintf(os.Stderr, "network-wait: invalid arguments (beacons %q, max-wait %v); not waiting\n", *beacons, *maxWait)
 		return 0
