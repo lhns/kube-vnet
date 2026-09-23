@@ -157,7 +157,7 @@ Dev builds are single-arch (`linux/amd64`) and use the GitHub Actions buildx cac
 
 ## `kubectl apply` install
 
-Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`. One file, no Helm:
+Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag. One file, no Helm:
 
 ```bash
 kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml
@@ -168,7 +168,7 @@ This installs:
 - The `kube-vnet-system` namespace.
 - The four CRDs.
 - The `kube-vnet-controller` ServiceAccount, `kube-vnet-manager` ClusterRole + binding, and the leader-election Role + RoleBinding.
-- The `kube-vnet-controller` Deployment (default flags: `--disabled-namespaces=kube-system`).
+- The `kube-vnet-controller` Deployment (flag defaults, so `--disabled-namespaces` is `kube-system`).
 - The three `ValidatingAdmissionPolicies` — unconditionally, so this path needs Kubernetes ≥ 1.30.
 
 It does **not** create a `ClusterVirtualNetworkBaseline`. Without one, pods get no default memberships — the strictest posture. Apply one yourself, e.g. [sample 09](../../config/samples/09_clustervirtualnetworkbaseline.yaml) (the `namespace` preset). It also ships no uninstall hook: `kubectl delete -f release.yaml` leaves the generated policies behind, so delete them by label first (see [Uninstalling](#uninstalling)).
@@ -185,7 +185,7 @@ If you've cloned the repository:
 kubectl apply -k config/default
 ```
 
-This is equivalent to `release.yaml` but always tracks `main`. Useful for testing changes before they're tagged.
+This is equivalent to `release.yaml` but always tracks `main` and runs the `ghcr.io/lhns/kube-vnet:latest` image. Useful for testing changes before they're tagged.
 
 ---
 

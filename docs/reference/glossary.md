@@ -8,7 +8,7 @@ Defined terms used throughout the kube-vnet documentation.
 
 **AdminNetworkPolicy (ANP)** — a `policy.networking.k8s.io/v1` resource. Cluster-scoped, distinct RBAC from `NetworkPolicy`, higher precedence. Tracked as the future direction for kube-vnet's deny baseline; currently deferred — see [ADR 0019](../adr/0019-baseline-durability.md).
 
-**Admission webhook** — the optional pod-resolution webhook pair (`webhook.enabled`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)). The mutating half stamps *system labels* during pod admission; the validating half rejects writes whose system labels disagree with resolution, and replaces the pod rule of the system-labels `ValidatingAdmissionPolicy`.
+**Admission webhook** — the optional pod-resolution webhook pair (`webhook.enabled`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)). The mutating half stamps *system labels* during pod admission; the validating half rejects writes whose system labels disagree with resolution, and, for the pods it sees, takes over from the system-labels `ValidatingAdmissionPolicy`, which keeps covering the pods the webhooks skip.
 
 **Bare label form** — a join label without a namespace prefix: `kube-vnet/net.<vnet-name>=<direction>`. Used by pods *in the VirtualNetwork's home namespace* (for the system vnets, in any managed namespace). (Pods in the home namespace may also use the prefixed form — see [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).) Compare *prefixed label form*.
 

@@ -31,16 +31,43 @@ release. Pinning to an exact version is recommended.
   the operator can always recover. Run 2+ replicas. The mutating half is
   `failurePolicy: Ignore` and degrades to the previous behaviour.
 
-  When enabled, the pods rule of the system-labels `ValidatingAdmissionPolicy`
-  is replaced by that validating webhook: a mutating webhook's patch is
-  attributed to the requester, not to the operator, so the policy's exemption
-  could not cover it. The webhook enforces a stronger property in its place —
-  the labels must equal what resolution produces, which CEL cannot check
-  because it cannot resolve. The policy's networkpolicies and virtualnetworks
-  rules are unchanged, and with the webhook off the chart renders exactly as
-  before.
+  When enabled, the validating webhook takes over from the system-labels
+  `ValidatingAdmissionPolicy` for the pods it admits: a mutating webhook's
+  patch is attributed to the requester, not to the operator, so the policy's
+  exemption could not cover it. The webhook enforces a stronger property in its
+  place — the labels must equal what resolution produces, which CEL cannot
+  check because it cannot resolve. The policy keeps checking the pods the
+  webhooks skip (the excluded namespaces, and pods carrying the chart's
+  `app.kubernetes.io/name` label), so no pod is left unprotected. Its
+  networkpolicies and virtualnetworks rules are unchanged, and with the webhook
+  off the chart renders exactly as before.
+
+  `helm uninstall` deletes the two webhook configurations before stopping the
+  operator, so pod admission is not blocked while it shuts down. With
+  `certSource: helm` the generated serving certificate is kept across
+  `helm upgrade`; any `certSource` other than `helm` or `cert-manager` fails
+  the render instead of installing a webhook the apiserver cannot call.
 
 ### Fixed
+
+- **Two status conditions reported problems that did not exist.**
+  - A `VirtualNetworkBinding` that omits `virtualNetworkRef.namespace` — the
+    recommended form — reported `Ready=False, VirtualNetworkNotFound` while its
+    pods were joined, and never re-evaluated when the vnet changed. The status
+    now infers the namespace the same way resolution does.
+  - One pod with a malformed `kube-vnet/net.namespace` label turned the
+    `namespace` vnet of every managed namespace `Degraded`. Only the pod's own
+    namespace's vnet is affected now.
+
+- **`release.yaml` ran whatever `ghcr.io/lhns/kube-vnet:latest` was at pull
+  time.** It was rendered from `config/default` unchanged, with
+  `imagePullPolicy: IfNotPresent`, so nodes also kept a stale `:latest`. The
+  release manifest now pins the image to its own version.
+
+- **`kubectl explain` described status conditions the operator never sets.**
+  The baseline CRDs listed `Ready`, `Conflicts` and `OverrideRejected`, and the
+  binding CRD `Degraded`. Baselines have no conditions yet; bindings only
+  `Ready`.
 
 - **e2e: the helm-uninstall cleanup assertion slept a fixed 5s and then checked
   once.** On a loaded runner that is a spurious failure — the same

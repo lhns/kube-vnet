@@ -308,7 +308,7 @@ The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permi
 | Status | Reason | Meaning |
 |---|---|---|
 | True | `PodsAttached` | The selector matched at least one pod and the binding is producing the corresponding membership policy. `attachedPods` lists the pod names. |
-| False | `NoPodsMatch` | The selector is valid but matched zero pods in the binding's namespace. |
+| True | `NoPodsMatch` | The binding is accepted, but the selector currently matches zero pods in the binding's namespace. |
 | False | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. |
 | False | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
 | False | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. |
@@ -391,7 +391,7 @@ This baseline itself inherits from the [`ClusterVirtualNetworkBaseline`](#cluste
 
 ## status
 
-The API declares `status.conditions` (documented types `Ready`, `Conflicts`, `OverrideRejected`) and `status.observedGeneration`, but no controller writes baseline status yet: duplicate entries are intersected fail-closed and rejected overrides are dropped without a condition. The `READY` printer column is therefore empty.
+The API declares `status.conditions` and `status.observedGeneration`, but no controller writes baseline status yet: duplicate entries are intersected fail-closed and rejected overrides are dropped without a condition. The `READY` printer column is therefore empty.
 
 ## Printer columns
 
@@ -446,7 +446,7 @@ Identical shape to `VirtualNetworkBaseline.spec` — `memberships[]` with `virtu
 
 ## status
 
-Same as `VirtualNetworkBaseline`: declared (`Ready`, `Conflicts`), not yet written by any controller.
+Same as `VirtualNetworkBaseline`: declared, not yet written by any controller.
 
 ## Printer columns
 

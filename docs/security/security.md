@@ -19,7 +19,7 @@ Every policy kube-vnet emits is `policyTypes: [Ingress]`. Egress — DNS, the ap
 - **Accidentally-too-open ingress.** The default-allow Kubernetes posture for ingress is the bug; kube-vnet flips it to membership-based ingress allow with the uniform ingress-deny baseline `kube-vnet.base` (how much of it bites is set by the [baseline tier](../getting-started/concepts.md#the-deny-all-baseline) — the `pod`/`namespace`/`cluster` presets and their per-namespace overrides).
 - **Drift on operator-managed `NetworkPolicy` resources** (deletion, hand-edit). The watch + reconcile loop restores the desired state within seconds; re-created membership policies also emit a `PolicyRestored` Event.
 - **Misconfiguration via wrong namespace.** Pods that try to join a vnet from a non-permitted namespace get a `VirtualNetworkNotJoinable` event and appear as `InvalidJoiners` on the vnet's `Degraded` condition rather than silently failing.
-- **Forged membership.** The `kube-vnet.system/*` labels the policies select on are admission-protected: by a `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30, and for pods by the validating webhook when `webhook.enabled=true`.
+- **Forged membership.** The `kube-vnet.system/*` labels the policies select on are admission-protected: by a `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30, and, when `webhook.enabled=true`, by the validating webhook for the pods it sees (the policy still covers the rest).
 - **Cross-namespace surprise.** `allowedNamespaces` is explicit; foreign namespaces don't get to join unless the vnet says so.
 
 ### What kube-vnet does NOT defend against
@@ -69,7 +69,7 @@ The operator runs as its own ServiceAccount in the release namespace (`<release>
 
 ### Uninstall hook (chart only, transient)
 
-The `pre-delete` cleanup Job runs as `<release>-cleanup` with a ClusterRole granting `networkpolicies` list/delete/deletecollection, `deployments` get/delete and `pods` get/list/watch, cluster-wide. It exists only during `helm uninstall` ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md), [threat model F-01](threat-model.md#7-findings-register)).
+The `pre-delete` cleanup Job runs as `<release>-cleanup` with a ClusterRole granting `networkpolicies` list/delete/deletecollection, `deployments` get/delete and `pods` get/list/watch, cluster-wide; with `webhook.enabled`, also get/delete on the two `<release>-pod-resolution` webhook configurations (by `resourceNames`). It exists only during `helm uninstall` ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md), [threat model F-01](threat-model.md#7-findings-register)).
 
 ### What this means for blast radius
 

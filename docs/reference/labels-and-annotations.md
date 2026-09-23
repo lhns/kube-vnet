@@ -81,7 +81,7 @@ Written together with the stamp. Membership policies skip pods without it, so a 
 
 ### `kube-vnet.system/resolved-by` (annotation)
 
-Which path last stamped the pod: `admission` (the mutating webhook, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) or `controller` (the `ResolutionReconciler`). Diagnostic only; nothing branches on it. Seeing `controller` on a new pod while the webhook is enabled means the webhook was unreachable for that pod and the reconciler stamped it afterwards.
+Which path last stamped the pod: `admission` (the mutating webhook, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) or `controller` (the `ResolutionReconciler`). Diagnostic only; nothing branches on it. Seeing `controller` on a new pod while the webhook is enabled means the webhook was unreachable for that pod and the reconciler stamped it afterwards. Removed, like `resolved-generation`, when the namespace becomes disabled.
 
 Annotations are not admission-protected; forging them grants nothing, because membership also requires the protected stamp.
 

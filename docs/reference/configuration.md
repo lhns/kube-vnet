@@ -51,7 +51,7 @@ If you run the binary outside Kubernetes (`make run`), `POD_NAMESPACE` is unset 
 
 ## Helm chart values
 
-Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<value>` or a values file.
+Mirror of `charts/kube-vnet/values.yaml`, plus `nameOverride`/`fullnameOverride`, which the templates read but `values.yaml` leaves unset. Pass any of these via `--set <key>=<value>` or a values file.
 
 ### `image.*`
 
@@ -83,14 +83,14 @@ Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<va
 
 ### `webhook.*` (pod-resolution admission webhooks — ADR 0034)
 
-Off by default. When enabled, pods are stamped with their `kube-vnet.system/net.*` membership labels during admission, closing the window in which a newly created pod is denied because the controller has not stamped it yet. The chart then installs a `MutatingWebhookConfiguration` (`failurePolicy: Ignore`) and a `ValidatingWebhookConfiguration` (`failurePolicy: Fail`), both named `<release>-pod-resolution`, a `<release>-webhook` Service, and the serving certificate. The validating webhook takes over the pod rule of the system-labels `ValidatingAdmissionPolicy`.
+Off by default. When enabled, pods are stamped with their `kube-vnet.system/net.*` membership labels during admission, closing the window in which a newly created pod is denied because the controller has not stamped it yet. The chart then installs a `MutatingWebhookConfiguration` (`failurePolicy: Ignore`) and a `ValidatingWebhookConfiguration` (`failurePolicy: Fail`), both named `<release>-pod-resolution`, a `<release>-webhook` Service, and the serving certificate. For the pods it sees, the validating webhook takes over from the system-labels `ValidatingAdmissionPolicy`; the policy keeps checking the pods the webhooks skip (the excluded namespaces below, and pods labelled `app.kubernetes.io/name=<chart name>`).
 
 **Trade-off:** because the validating half fails closed, an operator outage blocks pod creation and update in managed namespaces. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are excluded from both webhooks. Run at least two replicas. See [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `webhook.enabled` | bool | `false` | → `--webhook-enabled` (and `--service-account-name`). |
-| `webhook.certSource` | string | `helm` | `helm`: self-signed CA generated at install and reused across upgrades via `lookup`. `cert-manager`: renders a `Certificate` against `webhook.certManager.issuerRef` and relies on the CA injector for the `caBundle`. |
+| `webhook.certSource` | string | `helm` | `helm`: self-signed CA generated at install and reused across upgrades via `lookup`. `cert-manager`: renders a `Certificate` against `webhook.certManager.issuerRef` and relies on the CA injector for the `caBundle`. Any other value fails the render. |
 | `webhook.certManager.issuerRef` | object | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`. `name` is required in that mode. |
 | `webhook.timeoutSeconds` | int | `5` | Admission timeout for both webhooks. |
 
@@ -158,7 +158,7 @@ See [`security.md`](../security/security.md#who-can-write-what) for the trust-mo
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `metricsService.enabled` | bool | `false` | Create a `ClusterIP` Service exposing `:8080`. Useful if Prometheus scrapes via Service rather than Pod. |
+| `metricsService.enabled` | bool | `false` | Create a Service (`metricsService.type`, `metricsService.port`) in front of the operator's metrics port. Useful if Prometheus scrapes via Service rather than Pod. |
 | `metricsService.port` | int | `8080` | Service port. |
 | `metricsService.type` | string | `ClusterIP` | Service type. |
 | `podMonitor.enabled` | bool | `false` | Create a `monitoring.coreos.com/v1 PodMonitor` (requires the Prometheus operator). |
@@ -168,7 +168,7 @@ See [`security.md`](../security/security.md#who-can-write-what) for the trust-mo
 
 ### `cleanup.*` (uninstall hook)
 
-A Helm **pre-delete hook** Job that removes every operator-managed `NetworkPolicy` (selector `kube-vnet.system/managed-by=kube-vnet`) cluster-wide before the controller is torn down — without it, the deny-all baselines would keep enforcing after uninstall with nothing left to manage them. CRDs and CRs (annotated `helm.sh/resource-policy: keep`) survive uninstall. See [ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md).
+A Helm **pre-delete hook** Job that removes every operator-managed `NetworkPolicy` (selector `kube-vnet.system/managed-by=kube-vnet`) cluster-wide before Helm removes the release — without it, the deny-all baselines would keep enforcing after uninstall with nothing left to manage them. It deletes the operator Deployment and waits for its pods to exit first, so drift correction cannot recreate the policies. With `webhook.enabled=true` it deletes the two `<release>-pod-resolution` webhook configurations before that, so pod admission in managed namespaces is not blocked while the operator stops. CRDs and CRs (annotated `helm.sh/resource-policy: keep`) survive uninstall. See [ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md).
 
 | Key | Type | Default | Description |
 |---|---|---|---|

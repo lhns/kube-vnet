@@ -500,7 +500,7 @@ Check the `Ready` condition's reason:
 | Reason | Meaning | Fix |
 |---|---|---|
 | `PodsAttached` | Working — `attachedPods` lists the pod names. | — |
-| `NoPodsMatch` | Selector matched no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
+| `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
 | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
 | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |
 | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |

@@ -78,7 +78,8 @@ helm uninstall kube-vnet --namespace kube-vnet-system
 ```
 
 A pre-delete hook first removes the operator-managed NetworkPolicies
-(`cleanup.enabled`). The four CRDs and the seeded `ClusterVirtualNetworkBaseline`
+(`cleanup.enabled`), and with `webhook.enabled` the pod-resolution webhook
+configurations before that. The four CRDs and the seeded `ClusterVirtualNetworkBaseline`
 carry `helm.sh/resource-policy: keep` and survive uninstall. To remove the CRDs
 (and with them every kube-vnet custom resource):
 

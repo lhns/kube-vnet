@@ -144,9 +144,9 @@ so it belongs in review.
 Three workflows under `.github/workflows/`:
 
 - `ci.yaml` — runs on pushes to `main` and on PRs:
-  - `unit` — `go vet`, `go build`, `go test ./...`, regen-and-diff (catches forgot-to-regenerate)
+  - `unit` — `go vet`, `go build`, `go test ./...`, `make generate manifests render-kustomize-vaps` and fail on any diff or untracked file (catches forgot-to-regenerate)
   - `integration` — envtest suite
-  - `helm` — `helm lint` + `helm template` with two value sets
+  - `helm` — `helm lint` + `helm template` over each isolation preset, a full-options set, and the admission webhook with both cert sources
   - `docker` — builds the image (no push) + Trivy image scan (CRITICAL/HIGH gates the build)
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
 - `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
@@ -160,7 +160,7 @@ Three workflows under `.github/workflows/`:
   - syft generates SPDX SBOM, attached as cosign attestation + release asset
   - Packages and pushes the Helm chart to `oci://ghcr.io/lhns/charts/kube-vnet:<chart-ver>`
   - Cosign signs the chart artifact, SBOM attached too
-  - Renders `release.yaml` via `kubectl kustomize config/default`
+  - Renders `release.yaml` via `kubectl kustomize config/default`, replacing the `:latest` operator image with the release tag
   - Generates `checksums.txt` for all assets
   - Creates the GitHub Release with all assets
 
