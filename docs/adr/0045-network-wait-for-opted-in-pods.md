@@ -2,6 +2,16 @@
 
 **Status**: Accepted (2026-09-23)
 
+> **Amendment (2026-09-23) — order of beacon and vnet rule, measured.** A manual experiment (the `e2e-experiment` workflow, `test/e2e/beacon_ordering_test.go`) measures the order directly. Probe pods join a vnet on the worker without the wait. From the pod's start, a sidecar dials the control-plane node's beacon and a vnet member on that node every few ms and records the first success of each; delta = vnet − beacon. 20 pods per CNI and run, under extra NetworkPolicy load and churn:
+>
+> | run | kube-router | Calico | Cilium |
+> |---|---|---|---|
+> | 300 policies, 10/s churn, 20 ms probe | 0 to +23 ms; 7 pods one probe round late | 0 on every pod | 0 to +3 ms |
+> | 1000 policies, 20/s churn, 5 ms probe | −240 to −67 ms | −140 to +5 ms | no data (the load overflowed Cilium's policy map) |
+> | 1000 policies on 20 ports, 20/s churn, 5 ms probe | −3195 to 0 ms | −690 to 0 ms | 0 to +1 ms |
+>
+> On kube-router the beacon and the vnet rule land in the same sync, but not at the same instant, and either can come first. In the one run where the vnet rule came second, it trailed by less than one 20 ms probe round. That is less than the kubelet takes to start the app container after the wait exits. On Calico the pod's own node usually opened all targets at once. Where the remote node came later, the vnet rule came before the beacon or within 5 ms of it. On Cilium every target was already open when the pod started. No run saw a vnet rule trail the beacon by more than one probe round. On Calico and Cilium the beacon remains a strong hint, not a proof, because both CNIs update each policy separately.
+
 > **Amendment (2026-09-23) — tested on Calico and Cilium.** CI now runs the network wait tests on Calico and Cilium (`e2e-network-wait`) as well as kube-router. Two runs gave the same results; all tests pass on all three and none is skipped.
 >
 > | | kube-router | Calico | Cilium |
@@ -57,7 +67,7 @@ ADR 0028 rejected continuous in-operator probing. This wait differs on every poi
 ## Consequences
 
 - An opted-in pod starts its app once every node has applied it, typically within the real programming time and never later than its maximum. The wait's log names each beacon's time, or the beacons that never accepted.
-- **The argument is kube-router's.** On Calico or Cilium a beacon accepting is a strong hint, not a proof, and the maximum still bounds the wait.
+- **The argument is kube-router's.** There, the vnet rules land in the same sync as the beacon but not at the same instant; when they came second, they trailed by milliseconds (see the amendment above). On Calico or Cilium a beacon accepting is a strong hint, not a proof, and the maximum still bounds the wait.
 - **The first member of a vnet in its namespace** can, rarely, be released before kube-vnet's new membership policy is applied. kube-vnet creates the policy at pod CREATE, long before the pod has an IP, so in practice it lands first.
 - **Not covered:** relabelling a running pod, and Windows nodes.
 - **Egress policies and meshes.** A user egress policy or a traffic-intercepting mesh that blocks the probe makes the wait run to its maximum. kube-vnet's own policies are ingress-only.
