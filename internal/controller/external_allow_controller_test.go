@@ -80,7 +80,7 @@ func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
 }
 
 func TestBuildExternalAllowPolicy_NodePort_TargetPortToPodSide(t *testing.T) {
-	// Allowed port must be the pod-side targetPort, NOT the Service Port nor
+	// Allowed port must be the pod-side targetPort, not the Service Port or
 	// the nodePort. By the time external traffic reaches the pod, kube-proxy
 	// has DNAT'd node:nodePort → pod:targetPort.
 	s := svc("api", "api")

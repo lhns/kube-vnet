@@ -171,9 +171,9 @@ func TestSweepStalePoliciesByOwner_DeletesLegacyKeepsCurrent(t *testing.T) {
 	managed := map[string]string{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow}
 
 	// Three objects in the fake client:
-	//   legacy:  current-keep-set MISS  → should be deleted
-	//   current: in keep-set            → kept
-	//   other:   different owner        → untouched
+	//   legacy:  not in keep set → deleted
+	//   current: in keep set     → kept
+	//   other:   different owner → untouched
 	legacy := mkPolicy("kube-vnet.external-web-deadbeef", "ns1", managed, svcRef)
 	current := mkPolicy("kube-vnet.ext.svc.web-cafebabe", "ns1", managed, svcRef)
 	other := mkPolicy("kube-vnet.ext.svc.other-feedface", "ns1", managed,
@@ -280,7 +280,7 @@ func TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind(t *test
 
 	// Same Service owns all three:
 	//   svcPol:       source-kind=svc       → swept (empty keep set)
-	//   apiserverPol: source-kind=apiserver → PROTECTED by the predicate
+	//   apiserverPol: source-kind=apiserver → spared by the skip predicate
 	//   legacyPol:    no source-kind        → swept (legacy migration path)
 	svcPol := mkPolicy("kube-vnet.ext.svc.webhook-aaaa1111", "ns1", svcKind, svcRef)
 	apiserverPol := mkPolicy("kube-vnet.ext.apiserver.webhook-bbbb2222", "ns1", apiserverKind, svcRef)
@@ -340,7 +340,7 @@ func TestSweepStalePoliciesByOwner_SkipsPoliciesWithoutOwner(t *testing.T) {
 // informational only. It is user-writable and not VAP-protectable, so a
 // user could stamp it on a third-party policy; if any sweep treated it
 // as an ownership signal, kube-vnet would delete objects it doesn't own.
-// Both sweep entry points must ignore a policy that carries ONLY the
+// Both sweep entry points must ignore a policy that carries only the
 // standard label (plus a matching owner-ref, to make the owner-based
 // sweep's ignore-decision maximally adversarial).
 func TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative(t *testing.T) {
@@ -355,7 +355,7 @@ func TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative(t *testing.T) {
 		Controller: &truePtr,
 	}
 	// Adversarial object: standard managed-by label (user-settable) +
-	// role label + owner-ref, but NO kube-vnet.system/managed-by.
+	// role label + owner-ref, but no kube-vnet.system/managed-by.
 	impostor := mkPolicy("user-policy-with-standard-label", "ns1", map[string]string{
 		LabelK8sManagedBy: LabelManagedByValue,
 		LabelRole:         LabelRoleExternalAllow,
