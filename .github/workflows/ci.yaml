@@ -153,8 +153,8 @@ jobs:
             --set operator.leaderElect=false --set rbac.aggregate=false --set cleanup.enabled=false
           # Metrics off: no metrics port (kubeconform accepts containerPort 0).
           render $pod --set operator.metricsBindAddress=0
-          if helm template testrelease charts/kube-vnet $pod --set operator.metricsBindAddress=0 \
-              | grep -q 'containerPort: 0$'; then
+          if helm template testrelease charts/kube-vnet --kube-version 1.31.0 $pod \
+              --set operator.metricsBindAddress=0 | grep -q 'containerPort: 0$'; then
             echo "metrics off still renders containerPort: 0"; exit 1
           fi
           # Before Kubernetes 1.30: no ValidatingAdmissionPolicies. The last
