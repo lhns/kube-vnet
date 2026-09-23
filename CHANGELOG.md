@@ -58,6 +58,12 @@ release. Pinning to an exact version is recommended.
   `kubectl describe pod`. This replaces the annotation, metric and baseline
   conditions ADR 0031 described, which were never built.
 
+### Changed
+
+- Built against controller-runtime v0.25.0 (was v0.24.1) and the Kubernetes
+  v0.37 client libraries (was v0.36), with Go 1.27 (was 1.26). No behaviour
+  change is expected.
+
 ### Fixed
 
 - **`kube-vnet.system/*` stamps could be written through `pods/status`.** A
