@@ -12,17 +12,13 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -72,14 +68,10 @@ type serviceRef struct {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	logger := log.FromContext(ctx).WithValues("service", req.NamespacedName)
-
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
-			// Owner-ref GC deletes the policy in a real cluster; delete by
-			// label too, for when GC doesn't run (envtest).
-			return ctrl.Result{}, r.deletePolicyByServiceKey(ctx, req.Namespace, req.Name)
+			return ctrl.Result{}, apiserverPolicies.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
@@ -100,14 +92,14 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if !r.NSFilter.IsManaged(ns) ||
 		ExternalAllowOptedOut(ns.Annotations) ||
 		ExternalAllowOptedOut(svc.Annotations) {
-		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
+		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
 	}
 
 	// Headless / ExternalName / selector-less Services have no podSelector
 	// to mirror.
 	if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.Type == corev1.ServiceTypeExternalName ||
 		len(svc.Spec.Selector) == 0 {
-		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
+		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
 	}
 
 	ports, err := r.collectReferencedPorts(ctx, svc)
@@ -116,11 +108,10 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	if len(ports) == 0 {
 		// Nothing references this Service and it hasn't opted in.
-		return ctrl.Result{}, r.deletePolicyForService(ctx, svc)
+		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
 	}
 
-	// Pods resolve named targetPorts (e.g. cert-manager-webhook's
-	// `targetPort: https`).
+	// Pods resolve named targetPorts.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
 		return ctrl.Result{}, err
@@ -135,34 +126,7 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
-
-	if err := controllerutil.SetControllerReference(svc, desired, r.Scheme); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	desired.SetResourceVersion("")
-	if err := r.Patch(ctx, desired, client.Apply,
-		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
-		logger.Error(err, "apply apiserver-reachable policy failed")
-		return ctrl.Result{}, err
-	}
-
-	// Sweep this Service's stale apiserver-reachable policies.
-	keep := map[client.ObjectKey]bool{
-		{Namespace: svc.Namespace, Name: desired.Name}: true,
-	}
-	if err := sweepStalePoliciesByOwner(ctx, r.Client,
-		inNamespacePolicyLabels(svc.Namespace, map[string]string{
-			LabelRole:       LabelRoleExternalAllow,
-			LabelSourceKind: LabelSourceKindApiserver,
-		}),
-		"Service", svc.Name, svc.UID,
-		keep,
-		nil, // List filter already narrows to source-kind=apiserver
-	); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, apiserverPolicies.apply(ctx, r.Client, r.Scheme, svc, desired)
 }
 
 // collectReferencedPorts walks all four discovery resource kinds and the
@@ -323,37 +287,7 @@ func buildApiserverReachablePolicy(svc *corev1.Service, podsInNS []corev1.Pod, p
 			policyPorts = appendPolicyPort(policyPorts, corev1.ProtocolTCP, tp)
 		}
 	}
-	return &networkingv1.NetworkPolicy{
-		TypeMeta: metav1.TypeMeta{
-			APIVersion: "networking.k8s.io/v1",
-			Kind:       "NetworkPolicy",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      apiserverReachablePolicyName(svc),
-			Namespace: svc.Namespace,
-			Labels: map[string]string{
-				LabelManagedBy:    LabelManagedByValue,
-				LabelK8sManagedBy: LabelManagedByValue,
-				LabelRole:         LabelRoleExternalAllow,
-				LabelSourceKind:   LabelSourceKindApiserver,
-				LabelSource:       SourceLabelValue("apiserver-", svc.Namespace, svc.Name),
-			},
-		},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{
-				MatchLabels: maps.Clone(svc.Spec.Selector),
-			},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{
-				{
-					From: []networkingv1.NetworkPolicyPeer{
-						{IPBlock: &networkingv1.IPBlock{CIDR: sourceCIDR}},
-					},
-					Ports: policyPorts,
-				},
-			},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress},
-		},
-	}, nil
+	return apiserverPolicies.policy(svc, apiserverReachablePolicyName(svc), sourceCIDR, policyPorts), nil
 }
 
 // findServicePort returns the spec.ports entry with the given Port.
@@ -372,54 +306,11 @@ func apiserverReachablePolicyName(svc *corev1.Service) string {
 	return servicePolicyName(PolicySourceKindApiserver, svc)
 }
 
-// deletePolicyForService removes every apiserver-reachable policy owned
-// by this Service.
-func (r *ApiserverReachableReconciler) deletePolicyForService(ctx context.Context, svc *corev1.Service) error {
-	return sweepStalePoliciesByOwner(ctx, r.Client,
-		inNamespacePolicyLabels(svc.Namespace, map[string]string{
-			LabelRole:       LabelRoleExternalAllow,
-			LabelSourceKind: LabelSourceKindApiserver,
-		}),
-		"Service", svc.Name, svc.UID,
-		nil, // keep nothing
-		nil, // List filter already narrows to source-kind=apiserver
-	)
-}
-
-// deletePolicyByServiceKey handles the Service-NotFound path: with no UID to
-// match owner refs against, it deletes by LabelSource.
-func (r *ApiserverReachableReconciler) deletePolicyByServiceKey(ctx context.Context, namespace, serviceName string) error {
-	return sweepStalePolicies(ctx, r.Client,
-		inNamespacePolicyLabels(namespace, map[string]string{
-			LabelRole:       LabelRoleExternalAllow,
-			LabelSourceKind: LabelSourceKindApiserver,
-			LabelSource:     SourceLabelValue("apiserver-", namespace, serviceName),
-		}),
-		nil,
-	)
-}
-
 func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("apiserver-reachable").
-		For(&corev1.Service{}).
-		Watches(
-			&networkingv1.NetworkPolicy{},
-			// By owner ref: LabelSource is length-bounded and doesn't
-			// round-trip to a Service name (ADR 0011).
-			handler.EnqueueRequestForOwner(mgr.GetScheme(), mgr.GetRESTMapper(),
-				&corev1.Service{}, handler.OnlyControllerOwner()),
-			builder.WithPredicates(externalAllowPolicyPredicate(LabelSourceKindApiserver)),
-		).
-		Watches(
-			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(namespaceToServices(r.Client)),
-		).
-		Watches(
-			&corev1.Pod{},
-			handler.EnqueueRequestsFromMapFunc(podToServicesWithNamedPorts(r.Client)),
-			builder.WithPredicates(backingPodChanged),
-		).
+		For(&corev1.Service{})
+	return apiserverPolicies.watchInputs(b, mgr, r.Client).
 		Watches(
 			&admissionregistrationv1.ValidatingWebhookConfiguration{},
 			handler.EnqueueRequestsFromMapFunc(validatingWebhookToServices),

@@ -359,7 +359,7 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	// Plain ClusterIP webhook Service — not externally exposed, so every
-	// ExternalAllowReconciler pass takes the deletePolicyForService path.
+	// ExternalAllowReconciler pass sweeps the Service's policies.
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
 	mustCreateValidatingWebhook(t, "ar-coexist-"+ns, serviceWebhookClientConfig(ns, "webhook"))

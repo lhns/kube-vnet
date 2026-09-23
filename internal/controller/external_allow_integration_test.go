@@ -85,7 +85,7 @@ func TestIntegration_ExternalAllow_ServiceDeleted_PolicyCollected(t *testing.T) 
 	if err := testClient.Delete(context.Background(), svc); err != nil {
 		t.Fatalf("delete svc: %v", err)
 	}
-	// Either the owner-ref cascade or deletePolicyForService may remove it.
+	// Removed by label on the NotFound path; envtest has no owner-ref GC.
 	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
 }
 

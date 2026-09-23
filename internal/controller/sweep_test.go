@@ -289,14 +289,9 @@ func TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind(t *test
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(svcPol, apiserverPol, legacyPol).Build()
 
-	// Simulate ExternalAllowReconciler.deletePolicyForService: role-only
-	// List filter, empty keep set, claimedByOtherSourceKind predicate.
-	err := sweepStalePoliciesByOwner(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		"Service", "webhook", types.UID("svc-webhook-uid"),
-		nil,
-		claimedByOtherSourceKind,
-	)
+	// The ExternalAllowReconciler's sweep when its policy isn't wanted.
+	webhook := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "webhook", UID: "svc-webhook-uid"}}
+	err := svcSourcePolicies.sweep(context.Background(), c, webhook, "")
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
