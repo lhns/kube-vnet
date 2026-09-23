@@ -87,8 +87,9 @@ type ResolutionLayer struct {
 // ResolutionConflict surfaces when two rules within the same scope disagree
 // on direction for the same vnet. Under intersection semantics (ADR 0031)
 // the conflict still produces a deterministic effective direction — the
-// intersection of all participating directions. Conflict reporting is for
-// human resolution; the effective direction is correct without it.
+// intersection of all participating directions. The report (a
+// ResolutionConflict Warning on the pod) is for humans; the effective
+// direction is correct without it.
 type ResolutionConflict struct {
 	Vnet         VnetKey
 	Scope        ResolutionScope
