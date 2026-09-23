@@ -110,34 +110,72 @@ jobs:
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3
+      - name: install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP" kubeconform
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      # Without values the chart refuses to render, and helm lint reports that
+      # as INFO and passes without linting anything.
       - name: helm lint
-        run: helm lint charts/kube-vnet
-      - name: helm template (each isolationLevel preset)
+        run: helm lint charts/kube-vnet --strict --set operator.clusterBaseline.ingressIsolationLevel=pod
+      - name: helm template + kubeconform (each supported combination)
         run: |
+          set -euo pipefail
+          # kube-vnet's own CRs are validated against the repo's schemas/.
+          render() {
+            helm template testrelease charts/kube-vnet --kube-version 1.31.0 "$@" \
+              | kubeconform -strict -summary -kubernetes-version 1.31.0 \
+                  -schema-location default \
+                  -schema-location 'schemas/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+                  -ignore-missing-schemas
+          }
+          pod="--set operator.clusterBaseline.ingressIsolationLevel=pod"
           for level in pod namespace cluster; do
-            helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
-              --set operator.clusterBaseline.ingressIsolationLevel=$level > /dev/null
+            render --set operator.clusterBaseline.ingressIsolationLevel=$level
           done
-      - name: helm template (full options on, explicit memberships override)
-        run: |
-          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
+          # Explicit memberships instead of a preset, plus the optional extras.
+          render \
             --set operator.clusterBaseline.memberships.namespace=default-both \
             --set operator.clusterBaseline.memberships.cluster=default-egress \
             --set podMonitor.enabled=true \
-            --set metricsService.enabled=true > /dev/null
-      - name: helm template (admission webhook, each certSource)
-        run: |
-          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
-            --set operator.clusterBaseline.ingressIsolationLevel=pod \
-            --set webhook.enabled=true > /dev/null
-          helm template testrelease charts/kube-vnet --kube-version 1.31.0 \
-            --set operator.clusterBaseline.ingressIsolationLevel=pod \
-            --set webhook.enabled=true \
+            --set metricsService.enabled=true
+          # Admission webhook with each certSource, then the network wait.
+          render $pod --set webhook.enabled=true
+          render $pod --set webhook.enabled=true \
             --set webhook.certSource=cert-manager \
-            --set webhook.certManager.issuerRef.name=ci-issuer > /dev/null
-      - name: helm template (network wait; refused without the webhook)
+            --set webhook.certManager.issuerRef.name=ci-issuer
+          render $pod --set webhook.enabled=true --set webhook.networkWait.enabled=true
+          # kube-system enrolled: the CoreDNS carve-out renders.
+          render $pod --set-json 'operator.disabledNamespaces=[]'
+          # Every optional part off.
+          render --set operator.clusterBaseline.create=false \
+            --set operator.leaderElect=false --set rbac.aggregate=false --set cleanup.enabled=false
+          # Before Kubernetes 1.30: no ValidatingAdmissionPolicies. The last
+          # --kube-version wins.
+          render $pod --kube-version 1.29.0
+      - name: helm template refuses invalid values
         run: |
-          helm template testrelease charts/kube-vnet --kube-version 1.31.0             --set operator.clusterBaseline.ingressIsolationLevel=pod             --set webhook.enabled=true             --set webhook.networkWait.enabled=true > /dev/null
-          if helm template testrelease charts/kube-vnet --kube-version 1.31.0             --set operator.clusterBaseline.ingressIsolationLevel=pod             --set webhook.networkWait.enabled=true > /dev/null 2>&1; then
-            echo "webhook.networkWait.enabled rendered without webhook.enabled"; exit 1
-          fi
+          set -uo pipefail
+          # Match the chart's own message, so a render that fails for any
+          # other reason does not count.
+          refuse() {
+            local want=$1; shift
+            local err
+            if err=$(helm template testrelease charts/kube-vnet --kube-version 1.31.0 "$@" 2>&1 >/dev/null); then
+              echo "rendered, want a failure: $*"; exit 1
+            fi
+            if ! grep -qF -- "$want" <<<"$err"; then
+              echo "failed without '$want': $*"; echo "$err"; exit 1
+            fi
+          }
+          pod="--set operator.clusterBaseline.ingressIsolationLevel=pod"
+          refuse "there is no default"
+          refuse "not both" $pod --set operator.clusterBaseline.memberships.namespace=default-both
+          refuse "must be one of: pod, namespace, cluster" --set operator.clusterBaseline.ingressIsolationLevel=strict
+          refuse "requires webhook.certManager.issuerRef.name" $pod \
+            --set webhook.enabled=true --set webhook.certSource=cert-manager
+          refuse "webhook.certSource must be one of" $pod \
+            --set webhook.enabled=true --set webhook.certSource=vault
+          refuse "webhook.networkWait.enabled requires webhook.enabled" $pod \
+            --set webhook.networkWait.enabled=true
