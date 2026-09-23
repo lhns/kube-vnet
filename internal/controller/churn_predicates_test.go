@@ -20,7 +20,7 @@ func podWithLabels(ns, name string, labels map[string]string) *corev1.Pod {
 
 // A pure status update on a join-labelled pod must not enqueue.
 func TestJoinLabelChangedPredicate_StatusOnlyUpdate_DoesNotFire(t *testing.T) {
-	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	p := JoinLabelChangedPredicate()
 	labels := map[string]string{"kube-vnet/net.payments": "both", "app": "web"}
 
 	oldPod := podWithLabels("shop", "web-0", labels)
@@ -40,7 +40,7 @@ func TestJoinLabelChangedPredicate_StatusOnlyUpdate_DoesNotFire(t *testing.T) {
 // kube-vnet.system/net.* label, so a diff that only watched the user prefix
 // would silently break stamp-driven policy regeneration.
 func TestJoinLabelChangedPredicate_FiresOnEitherPrefix(t *testing.T) {
-	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	p := JoinLabelChangedPredicate()
 
 	for _, tc := range []struct {
 		name     string
@@ -119,7 +119,7 @@ func TestJoinLabelChangedPredicate_FiresOnEitherPrefix(t *testing.T) {
 // the 10-minute resync. The annotation diff makes the vnet re-evaluate exactly
 // when resolution finishes.
 func TestJoinLabelChangedPredicate_ResolvedGenerationChangeFires(t *testing.T) {
-	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	p := JoinLabelChangedPredicate()
 
 	// Labels identical on both sides — only the resolution annotation moves.
 	labels := map[string]string{"kube-vnet/net.payments": "both"}
@@ -145,7 +145,7 @@ func TestJoinLabelChangedPredicate_ResolvedGenerationChangeFires(t *testing.T) {
 // Create/Delete keep membership semantics — those are genuine state changes,
 // and the handler needs them to enqueue (or clean up) the vnet.
 func TestJoinLabelChangedPredicate_CreateDeleteUnchanged(t *testing.T) {
-	p := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	p := JoinLabelChangedPredicate()
 	labelled := podWithLabels("shop", "web-0", map[string]string{"kube-vnet/net.payments": "both"})
 	plain := podWithLabels("shop", "web-1", map[string]string{"app": "web"})
 

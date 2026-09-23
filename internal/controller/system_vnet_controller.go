@@ -8,14 +8,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
@@ -170,13 +168,8 @@ func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Namespace{}).
 		Watches(
 			&vnetv1alpha1.VirtualNetwork{},
-			handler.EnqueueRequestsFromMapFunc(systemVnetToNamespace),
+			handler.EnqueueRequestsFromMapFunc(objectNamespace),
 			builder.WithPredicates(systemPredicate),
 		).
 		Complete(r)
-}
-
-// systemVnetToNamespace maps a system VirtualNetwork event to its namespace.
-func systemVnetToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }

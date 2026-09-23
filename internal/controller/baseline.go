@@ -11,20 +11,11 @@ import (
 // hash).
 const BaselinePolicyName = "kube-vnet.base"
 
-// DesiredBaseline returns the deny-all baseline NetworkPolicy for a managed
-// namespace. Per ADR 0030, the baseline is uniformly deny-all ingress
-// (`policyTypes: [Ingress]`, no allow rules) selecting every pod in the
-// namespace. Per ADR 0035, there is no elide-list exemption: the previous
-// `--elide-baseline-for` mechanism added a `NotIn` matchExpression to the
-// `podSelector` to skip cluster-receiver pods, but per NetworkPolicy union
-// semantics that had no observable effect — the baseline contributes only
-// deny-all (zero allows), and a pod's effective ingress is determined by the
-// allows from any selecting membership policy. Removing the elide knob
-// preserves connectivity exactly.
-//
-// Callers that want "no kube-vnet objects in this namespace" must check
-// IsManaged separately; the disabled-namespaces path bypasses
-// DesiredBaseline entirely.
+// DesiredBaseline returns the baseline NetworkPolicy for a managed namespace:
+// deny-all ingress (`policyTypes: [Ingress]`, no rules) selecting every pod
+// (ADR 0030). It has no exemptions: a deny-all policy adds no allows, so
+// excluding pods from it would change nothing (ADR 0035). Callers check
+// IsManaged first; unmanaged namespaces get no baseline.
 func DesiredBaseline(ns string) *networkingv1.NetworkPolicy {
 	return &networkingv1.NetworkPolicy{
 		TypeMeta: metav1.TypeMeta{

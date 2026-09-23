@@ -26,12 +26,9 @@ import (
 // not change anything — which makes the single question cover join labels,
 // bindings and both baselines at once.
 //
-// This REPLACES an earlier per-source table. Cases like "a binding naming a
-// different vnet does not fan out" are deliberately gone: such a pod now IS
-// enqueued when its namespace is admitted. That is a superset, and an
-// intentional trade — a redundant resolution reconcile is idempotent and cheap,
-// whereas per-source matching duplicated permission logic four times and had to
-// special-case omitted-namespace refs.
+// The fan-out is a deliberate superset: a pod in an admitted namespace is
+// enqueued even if nothing in it names the vnet. A redundant resolution
+// reconcile is idempotent and cheap.
 
 func fanoutScheme() *k8sruntime.Scheme {
 	scheme := k8sruntime.NewScheme()

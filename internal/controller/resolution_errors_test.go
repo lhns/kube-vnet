@@ -16,11 +16,9 @@ import (
 )
 
 // These tests pin the NotFound-vs-transient error contract of the
-// resolution input paths. A transient apiserver error MUST propagate
-// (caller requeues with backoff) rather than silently collapse to "no
-// rules" / "not permitted" — that collapse stripped valid stamps from
-// pods during apiserver blips, causing momentary membership loss with
-// no requeue to recover.
+// resolution input paths. A transient apiserver error must propagate (the
+// caller requeues with backoff) rather than collapse to "no rules" or "not
+// permitted", which would strip valid stamps during an apiserver blip.
 
 var errInjected = errors.New("injected transient apiserver error")
 

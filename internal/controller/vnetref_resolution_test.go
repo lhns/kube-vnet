@@ -282,8 +282,8 @@ func TestBareJoinLabelHint(t *testing.T) {
 
 // A binding's omitted virtualNetworkRef.namespace is inferred exactly as
 // resolution infers it: the binding's own namespace, or the operator's
-// namespace for `cluster`. The binding's status and both binding<->vnet
-// mappers must agree, or a binding that resolution honors reports
+// namespace for `cluster`. The binding's status and its vnet->binding mapper
+// must agree, or a binding that resolution honors reports
 // VirtualNetworkNotFound.
 func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
 	const opNS = "kube-vnet-system"
@@ -312,7 +312,6 @@ func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
 		WithStatusSubresource(&vnetv1alpha1.VirtualNetworkBinding{}).
 		Build()
 	br := &VirtualNetworkBindingReconciler{Client: c, NSFilter: NewNamespaceFilter(nil), OperatorNamespace: opNS}
-	vr := &VirtualNetworkReconciler{Client: c, NSFilter: NewNamespaceFilter(nil), OperatorNamespace: opNS}
 
 	for _, tc := range []struct {
 		b    *vnetv1alpha1.VirtualNetworkBinding
@@ -332,16 +331,12 @@ func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
 				t.Errorf("conditions = %+v, want Ready reason %s", got.Status.Conditions, ReasonBindingPodsAttached)
 			}
 
-			wantVnet := types.NamespacedName{Namespace: tc.vnet.Namespace, Name: tc.vnet.Name}
-			if reqs := vr.bindingToVNet(ctx, tc.b); len(reqs) != 1 || reqs[0].NamespacedName != wantVnet {
-				t.Errorf("bindingToVNet = %v, want [%v]", reqs, wantVnet)
-			}
 			found := false
 			for _, req := range br.vnetToBindings(ctx, tc.vnet) {
 				found = found || req.NamespacedName == key
 			}
 			if !found {
-				t.Errorf("vnetToBindings(%v) did not enqueue %v", wantVnet, key)
+				t.Errorf("vnetToBindings(%s/%s) did not enqueue %v", tc.vnet.Namespace, tc.vnet.Name, key)
 			}
 		})
 	}

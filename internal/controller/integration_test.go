@@ -429,11 +429,10 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 }
 
 // The vnet's own namespace never needs to appear in spec.allowedNamespaces: it
-// is permitted before the selector is consulted (Permits/PermitsForVnet), and
-// discoverMembers skips the permits check for home-NS pods.
-// TestPermits_HomeNamespaceAlwaysAllowed covers the permit gate; this covers the
-// generated policy, where the home namespace's ingress `from` peer comes from
-// having member pods, not from being listed.
+// is permitted before the selector is consulted (PermitsForVnet).
+// TestPermits covers the permit gate; this covers the generated policy, where
+// the home namespace's ingress `from` peer comes from having member pods, not
+// from being listed.
 func TestIntegration_AllowedNamespaces_HomeNamespaceNeedNotBeListed(t *testing.T) {
 	ctx := context.Background()
 	home := uniqueNS(t, "hnl-home")

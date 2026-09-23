@@ -7,14 +7,12 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // NamespaceReconciler is the sole owner of the baseline NetworkPolicy: the
@@ -81,15 +79,8 @@ func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Namespace{}).
 		Watches(
 			&networkingv1.NetworkPolicy{},
-			handler.EnqueueRequestsFromMapFunc(baselinePolicyToNamespace),
+			handler.EnqueueRequestsFromMapFunc(objectNamespace),
 			builder.WithPredicates(baselinePredicate),
 		).
 		Complete(r)
-}
-
-// baselinePolicyToNamespace maps a baseline NetworkPolicy event back to a
-// reconcile request keyed on the policy's namespace (NamespaceReconciler is
-// keyed on the cluster-scoped namespace name).
-func baselinePolicyToNamespace(_ context.Context, obj client.Object) []reconcile.Request {
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: obj.GetNamespace()}}}
 }

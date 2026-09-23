@@ -47,9 +47,8 @@ type Resolver struct {
 // exposure stamps (ADR 0040).
 //
 // The returned map is the *desired* set, not a diff. Callers apply it with
-// syncManagedLabels, which also prunes managed labels that are no longer
-// desired — pruning is part of the contract, not an optimization: a stale
-// membership stamp is a stale grant.
+// SyncStamps, which also prunes stamps that are no longer desired; pruning is
+// part of the contract, since a stale membership stamp is a stale grant.
 //
 // The ResolutionResult is returned alongside for callers that need the
 // diagnostics (conflicts, rejected overrides); the labels alone are enough
@@ -148,9 +147,6 @@ func (r *Resolver) notJoinableNote(ctx context.Context, key VnetKey, podNS strin
 // (ADR 0043). A transient error propagates instead, so the caller requeues
 // rather than stripping a possibly valid stamp.
 func (r *Resolver) filterPermittedRules(ctx context.Context, rules []ResolutionRule, podNS string) ([]ResolutionRule, error) {
-	if len(rules) == 0 {
-		return rules, nil
-	}
 	out := rules[:0]
 	for _, rule := range rules {
 		ok, err := Permits(ctx, r.Reader, rule.Vnet, podNS)
@@ -282,10 +278,10 @@ func (r *Resolver) bindingRules(ctx context.Context, pod *corev1.Pod) ([]Resolut
 // prefixed (`<homeNS>.<vnet>`); both forms canonicalize to the same FQ
 // VnetKey.
 func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
-	userNetPrefix := DefaultLabelPrefix + "net."
 	var out []ResolutionRule
 	for k, v := range pod.Labels {
-		if !strings.HasPrefix(k, userNetPrefix) {
+		suffix, ok := strings.CutPrefix(k, userJoinPrefix)
+		if !ok {
 			continue
 		}
 		dir, ok := ParseBareDirection(v)
@@ -301,7 +297,6 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			}
 			continue
 		}
-		suffix := strings.TrimPrefix(k, userNetPrefix)
 		out = append(out, ResolutionRule{
 			Vnet:      VnetKey(CanonicalSuffix(suffix, pod.Namespace)),
 			Direction: dir,

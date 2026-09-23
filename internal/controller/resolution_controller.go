@@ -27,9 +27,9 @@ import (
 // these (not on the user-input `kube-vnet/net.<vnet>` labels). See ADR 0030.
 const LabelSystemNetPrefix = "kube-vnet.system/net."
 
-// AnnotationResolvedGeneration is the marker the resolution controller writes
-// once a pod has been resolved. The generator uses it to skip pods that
-// haven't been resolved yet (fail-closed during the race window).
+// AnnotationResolvedGeneration marks a pod as resolved, by the reconciler or
+// the admission webhook. VirtualNetworkReconciler skips pods without it, so a
+// pod is no member until resolution has run (fail closed).
 const AnnotationResolvedGeneration = "kube-vnet.system/resolved-generation"
 
 // AnnotationResolvedBy records which path stamped the pod: the admission
@@ -54,14 +54,13 @@ const (
 //     scope intersect on conflict (fail-closed).
 //
 // On change to any of those input sources, the affected pod(s) get
-// re-resolved. Disabled namespaces are skipped entirely.
+// re-resolved. Pods in disabled namespaces have their stamps removed.
 type ResolutionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
-	// Recorder surfaces VirtualNetworkNotJoinable Warning Events on the
-	// object that declared an unjoinable rule. Optional; nil disables the
-	// diagnostic (unit tests construct the reconciler without one).
+	// Recorder emits the resolution Warning Events (the Reason* constants
+	// below). Optional; nil disables them.
 	Recorder events.EventRecorder
 }
 
@@ -165,14 +164,11 @@ func notAMember(d Direction) string {
 // enriched, by notJoinableHint.
 const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
 
-// ReasonInvalidJoinLabelDirection is the Event reason emitted on a Pod when one
-// of its `kube-vnet/net.*` join labels carries a direction value the operator
-// doesn't recognize (anything other than both, ingress, egress, none). It is
-// the operator-side counterpart to the admission VAP: the same bad value is
-// surfaced at reconcile time even on clusters where the VAP isn't installed
-// (Kubernetes < 1.30, or when disabled), so a typo never fails silently. The
-// vnet-owner-facing mirror is the vnet's `UnknownDirection`/`InvalidJoiners`
-// condition, which fires only when the named vnet exists.
+// ReasonInvalidJoinLabelDirection is the Event reason emitted on a Pod whose
+// `kube-vnet/net.*` join label has a direction other than both, ingress,
+// egress or none. It surfaces the typo where the direction-value VAP is absent
+// (Kubernetes < 1.30, or disabled). The vnet owner sees the same pod as an
+// UnknownDirection invalid joiner, but only if the named vnet exists.
 const ReasonInvalidJoinLabelDirection = "InvalidJoinLabelDirection"
 
 // Event reasons for the two ways resolution silently narrows a pod's
@@ -279,10 +275,7 @@ func (r *ResolutionReconciler) stripStampedLabels(ctx context.Context, pod *core
 	if !labelsChanged && !markersChanged {
 		return ctrl.Result{}, nil
 	}
-	if err := r.Patch(ctx, patched, client.MergeFrom(pod)); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, r.Patch(ctx, patched, client.MergeFrom(pod))
 }
 
 func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {

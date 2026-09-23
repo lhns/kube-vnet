@@ -68,21 +68,18 @@ type VirtualNetworkReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  events.EventRecorder
 	NSFilter  *NamespaceFilter
-	// OperatorNamespace is where the `cluster` system vnet lives. Pod and
-	// binding events that name `cluster` without a namespace are routed
-	// there.
+	// OperatorNamespace is where the `cluster` system vnet lives. Pod events
+	// that name bare `cluster` are routed there.
 	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
-// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
-// Events need BOTH groups. Every reconciler emits through
+// Events need both groups. Every reconciler emits through
 // mgr.GetEventRecorder, controller-runtime's events.k8s.io/v1 recorder, so
 // without the second rule every Event the operator writes is forbidden and the
 // logs fill with RBAC errors. The core "" rule stays because controller-runtime's
@@ -145,9 +142,10 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
 		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
-		// Clean up any policies that may exist from a previous reconcile.
-		_ = r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
-		return ctrl.Result{}, nil
+		setMembers(vnet.Namespace, vnet.Name, 0)
+		// Remove policies from earlier reconciles; a failure must retry, or
+		// the stale grants stay.
+		return ctrl.Result{}, r.deleteMembershipPolicies(ctx, vnet.Namespace, vnet.Name, nil)
 	}
 
 	members, invalid, err := r.discoverMembers(ctx, vnet)
@@ -230,11 +228,6 @@ func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string
 	return ns, nil
 }
 
-// permits reports whether pods in ns may join vnet (see PermitsForVnet).
-func (r *VirtualNetworkReconciler) permits(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	return PermitsForVnet(ctx, r.Client, vnet, ns)
-}
-
 // discoverMembers lists pods cluster-wide and partitions them into the
 // generator's MembersByNS shape (namespace → direction → pods). Membership is
 // the canonical system label (SystemLabelKey) stamped by resolution; user
@@ -244,10 +237,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 ) (members map[string]map[Direction][]string, invalid []InvalidJoiner, err error) {
 	members = map[string]map[Direction][]string{}
 	sysKey := SystemLabelKey(vnet.Namespace, vnet.Name)
-
-	userPrefix := DefaultLabelPrefix
-	userBareKey := userPrefix + "net." + vnet.Name
-	userPrefixedKey := userPrefix + "net." + vnet.Namespace + "." + vnet.Name
+	userBareKey := userJoinPrefix + vnet.Name
+	userPrefixedKey := userJoinPrefix + vnet.Namespace + "." + vnet.Name
 	clusterVnet := vnet.Name == SystemVnetCluster
 
 	var pods corev1.PodList
@@ -255,33 +246,27 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		return nil, nil, err
 	}
 
-	// Per-NS memo for the managed and permits decisions — namespaces
-	// repeat heavily across the pod list; one Get/selector-match per
-	// distinct NS instead of per pod.
-	nsManaged := map[string]bool{}
-	nsPermitted := map[string]bool{}
-	managedFor := func(nsName string) (bool, error) {
-		if v, seen := nsManaged[nsName]; seen {
-			return v, nil
+	// ineligible returns why pods in ns cannot be members, or "" if they can.
+	// Memoized: namespaces repeat heavily across the pod list.
+	nsReason := map[string]string{}
+	ineligible := func(ns string) (string, error) {
+		if reason, seen := nsReason[ns]; seen {
+			return reason, nil
 		}
-		ns, err := r.getNamespace(ctx, nsName)
+		nsObj, err := r.getNamespace(ctx, ns)
 		if err != nil {
-			return false, err
+			return "", err
 		}
-		v := ns != nil && r.NSFilter.IsManaged(ns)
-		nsManaged[nsName] = v
-		return v, nil
-	}
-	permittedFor := func(nsName string) (bool, error) {
-		if v, seen := nsPermitted[nsName]; seen {
-			return v, nil
+		reason := ""
+		if nsObj == nil || !r.NSFilter.IsManaged(nsObj) {
+			reason = ReasonNamespaceExcluded
+		} else if ok, err := PermitsForVnet(ctx, r.Client, vnet, ns); err != nil {
+			return "", err
+		} else if !ok {
+			reason = ReasonNamespaceNotAllowed
 		}
-		v, err := r.permits(ctx, vnet, nsName)
-		if err != nil {
-			return false, err
-		}
-		nsPermitted[nsName] = v
-		return v, nil
+		nsReason[ns] = reason
+		return reason, nil
 	}
 
 	for i := range pods.Items {
@@ -292,50 +277,27 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		// stays a member even if it also carries a malformed join label.
 		// The bare form names a vnet in the pod's own namespace, except
 		// `cluster`, which is reachable by its bare name from anywhere.
-		userBareVal, hasUserBare := "", false
-		userPrefVal, hasUserPref := "", false
-		if p.Namespace == vnet.Namespace || clusterVnet {
-			userBareVal, hasUserBare = p.Labels[userBareKey]
+		var userVals []string
+		if v, ok := p.Labels[userBareKey]; ok && (p.Namespace == vnet.Namespace || clusterVnet) {
+			userVals = append(userVals, v)
 		}
-		if !clusterVnet {
-			if v, ok := p.Labels[userPrefixedKey]; ok {
-				userPrefVal, hasUserPref = v, true
-			}
+		if v, ok := p.Labels[userPrefixedKey]; ok && !clusterVnet {
+			userVals = append(userVals, v)
 		}
-		badDirection := false
-		if hasUserBare {
-			if _, ok := ParseBareDirection(userBareVal); !ok {
-				badDirection = true
+		if len(userVals) > 0 {
+			reason := ""
+			for _, v := range userVals {
+				if _, ok := ParseBareDirection(v); !ok {
+					reason = ReasonUnknownDirection
+				}
 			}
-		}
-		if hasUserPref && !badDirection {
-			if _, ok := ParseBareDirection(userPrefVal); !ok {
-				badDirection = true
-			}
-		}
-		if badDirection {
-			invalid = append(invalid, InvalidJoiner{
-				PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
-			})
-		} else if hasUserBare || hasUserPref {
-			managed, err := managedFor(p.Namespace)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !managed {
-				invalid = append(invalid, InvalidJoiner{
-					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceExcluded,
-				})
-			} else if p.Namespace != vnet.Namespace && !clusterVnet {
-				permitted, err := permittedFor(p.Namespace)
-				if err != nil {
+			if reason == "" {
+				if reason, err = ineligible(p.Namespace); err != nil {
 					return nil, nil, err
 				}
-				if !permitted {
-					invalid = append(invalid, InvalidJoiner{
-						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceNotAllowed,
-					})
-				}
+			}
+			if reason != "" {
+				invalid = append(invalid, InvalidJoiner{PodNamespace: p.Namespace, PodName: p.Name, Reason: reason})
 			}
 		}
 
@@ -343,12 +305,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if p.Annotations[AnnotationResolvedGeneration] == "" {
 			continue
 		}
-
-		sysVal, hasSys := p.Labels[sysKey]
-		if !hasSys {
-			continue
-		}
-		dir, ok := ParseBareDirection(sysVal)
+		dir, ok := ParseBareDirection(p.Labels[sysKey])
 		if !ok || dir == DirectionNone {
 			continue
 		}
@@ -357,21 +314,10 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		// namespace is no longer granted, but only after its own watch fires.
 		// The membership policy must not trust a stamp the current cluster
 		// state wouldn't grant.
-		managed, err := managedFor(p.Namespace)
-		if err != nil {
+		if reason, err := ineligible(p.Namespace); err != nil {
 			return nil, nil, err
-		}
-		if !managed {
+		} else if reason != "" {
 			continue
-		}
-		if p.Namespace != vnet.Namespace && !clusterVnet {
-			permitted, err := permittedFor(p.Namespace)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !permitted {
-				continue
-			}
 		}
 
 		if members[p.Namespace] == nil {
@@ -581,32 +527,29 @@ func summarizeInvalid(in []InvalidJoiner) string {
 	return strings.Join(parts, ", ")
 }
 
-// HasJoinLabel reports whether obj carries a user `<labelPrefix>net.*` or an
-// operator `kube-vnet.system/net.*` label.
-func HasJoinLabel(obj client.Object, labelPrefix string) bool {
-	if obj == nil {
-		return false
-	}
-	userPrefix := labelPrefix + "net."
-	for k := range obj.GetLabels() {
-		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
-			return true
-		}
-	}
-	return false
+// userJoinPrefix is the prefix of the user join labels, `kube-vnet/net.*`.
+const userJoinPrefix = DefaultLabelPrefix + "net."
+
+// isJoinLabel reports whether k is a user `kube-vnet/net.*` or an operator
+// `kube-vnet.system/net.*` label. The generator selects on the latter and the
+// diagnostics read the former, so a change in either must enqueue.
+func isJoinLabel(k string) bool {
+	return strings.HasPrefix(k, userJoinPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix)
 }
 
-// joinLabelSet extracts the user `<prefix>net.*` and operator
-// `kube-vnet.system/net.*` labels. The generator selects on the latter and
-// the diagnostics read the former, so a change in either must enqueue.
-func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
+// HasJoinLabel reports whether obj carries a join label (isJoinLabel).
+func HasJoinLabel(obj client.Object) bool {
+	return len(joinLabelSet(obj)) > 0
+}
+
+// joinLabelSet extracts obj's join labels (isJoinLabel).
+func joinLabelSet(obj client.Object) map[string]string {
 	out := map[string]string{}
 	if obj == nil {
 		return out
 	}
-	userPrefix := labelPrefix + "net."
 	for k, v := range obj.GetLabels() {
-		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isJoinLabel(k) {
 			out[k] = v
 		}
 	}
@@ -624,29 +567,16 @@ func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
 // the InvalidJoiners diagnostic stale until the periodic requeue.
 //
 // Create/Delete/Generic fire for any pod carrying a join label.
-func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
+func JoinLabelChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if joinLabelSetChanged(e.ObjectOld, e.ObjectNew, labelPrefix) {
-				return true
-			}
-			// Resolution finished (or re-ran) for this pod.
-			return resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
+			return !maps.Equal(joinLabelSet(e.ObjectOld), joinLabelSet(e.ObjectNew)) ||
+				resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
 		},
-		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object) },
 	}
-}
-
-// joinLabelSetChanged reports whether the join-label set (both the user
-// kube-vnet/net.* and the operator kube-vnet.system/net.* families) differs
-// between two revisions of an object.
-func joinLabelSetChanged(oldObj, newObj client.Object, labelPrefix string) bool {
-	return !maps.Equal(
-		joinLabelSet(oldObj, labelPrefix),
-		joinLabelSet(newObj, labelPrefix),
-	)
 }
 
 func resolvedGeneration(obj client.Object) string {
@@ -657,12 +587,11 @@ func resolvedGeneration(obj client.Object) string {
 }
 
 // SetupWithManager wires the watches: VirtualNetwork (primary), Pods (join-label
-// changes, old and new labels), managed NetworkPolicies (drift), bindings and
-// Namespaces.
+// changes, old and new labels), managed NetworkPolicies (drift) and
+// Namespaces. Bindings need no watch: this reconcile reads only the stamps
+// resolution derives from them, and a stamp change is a pod event.
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	keyPrefix := DefaultLabelPrefix + "net."
-
-	podPredicate := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	podPredicate := JoinLabelChangedPredicate()
 
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue
@@ -672,17 +601,13 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&vnetv1alpha1.VirtualNetwork{}).
 		Watches(
 			&corev1.Pod{},
-			r.podEventHandler(keyPrefix),
+			r.podEventHandler(),
 			builder.WithPredicates(podPredicate),
 		).
 		Watches(
 			&networkingv1.NetworkPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.policyToVNet),
 			builder.WithPredicates(policyPredicate),
-		).
-		Watches(
-			&vnetv1alpha1.VirtualNetworkBinding{},
-			handler.EnqueueRequestsFromMapFunc(r.bindingToVNet),
 		).
 		// Namespace managed-ness gates this reconcile twice: the home namespace
 		// decides whether the vnet is served at all, and each member's namespace
@@ -709,15 +634,8 @@ func (r *VirtualNetworkReconciler) nsToVnets(ctx context.Context, obj client.Obj
 	var out []reconcile.Request
 	for i := range vnets.Items {
 		v := &vnets.Items[i]
-		admits := v.Namespace == ns
-		if !admits {
-			ok, err := PermitsForVnet(ctx, r.Client, v, ns)
-			if err != nil {
-				continue
-			}
-			admits = ok
-		}
-		if admits {
+		// PermitsForVnet admits the home namespace too.
+		if ok, err := PermitsForVnet(ctx, r.Client, v, ns); err == nil && ok {
 			out = append(out, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: v.Namespace, Name: v.Name},
 			})
@@ -729,7 +647,7 @@ func (r *VirtualNetworkReconciler) nsToVnets(ctx context.Context, obj client.Obj
 // podEventHandler enqueues the union of vnets named by a pod's old and new
 // join labels, user (`kube-vnet/net.*`) and operator (`kube-vnet.system/net.*`)
 // alike, so both added and removed memberships are seen.
-func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.EventHandler {
+func (r *VirtualNetworkReconciler) podEventHandler() handler.EventHandler {
 	enqueueOne := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS, suffix string) {
 		// Bare `cluster` names the singleton in the operator namespace, not a
 		// vnet in podNS.
@@ -756,8 +674,8 @@ func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.Eve
 	enqueue := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS string, lbls map[string]string) {
 		for k := range lbls {
 			switch {
-			case strings.HasPrefix(k, keyPrefix):
-				enqueueOne(q, podNS, strings.TrimPrefix(k, keyPrefix))
+			case strings.HasPrefix(k, userJoinPrefix):
+				enqueueOne(q, podNS, strings.TrimPrefix(k, userJoinPrefix))
 			case strings.HasPrefix(k, LabelSystemNetPrefix):
 				enqueueOne(q, podNS, strings.TrimPrefix(k, LabelSystemNetPrefix))
 			}
@@ -782,16 +700,6 @@ func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.Eve
 			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
 		},
 	}
-}
-
-// bindingToVNet maps a VirtualNetworkBinding event back to its referenced
-// VirtualNetwork.
-func (r *VirtualNetworkReconciler) bindingToVNet(_ context.Context, obj client.Object) []reconcile.Request {
-	b, ok := obj.(*vnetv1alpha1.VirtualNetworkBinding)
-	if !ok || b.Spec.VirtualNetworkRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: bindingTarget(b, r.OperatorNamespace)}}
 }
 
 // policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork
