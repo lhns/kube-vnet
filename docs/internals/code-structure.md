@@ -113,7 +113,6 @@ kube-vnet/
     ├── virtualnetwork_controller.go ......... VirtualNetworkReconciler: watches
     │                                         VirtualNetwork + Pod +
     │                                         NetworkPolicy +
-    │                                         VirtualNetworkBinding +
     │                                         Namespace. Discovers
     │                                         members (by system label), calls
     │                                         policy_generator.go::Generate,
@@ -227,8 +226,8 @@ Two flows: **input side** (CRDs/pods → stamped pod labels) and **output side**
               │  .Reconcile(vnet)                           │  VirtualNetwork,
               │                                             │  Pod, NetworkPolicy
               │  1. discoverMembers(vnet) — lists pods      │  (drift),
-              │     by FQ system label across NSes,         │  VirtualNetwork
-              │     skips pods missing resolved-generation  │  Binding
+              │     by FQ system label across NSes,         │  Namespace
+              │     skips pods missing resolved-generation  │
               │     (race-window safety)                    │
               │  2. policy_generator.go::Generate()  ──────►│  pure function:
               │     returns per-(vnet, NS) NetworkPolicy    │  selector +
@@ -309,13 +308,13 @@ permanently rather than slowly.
 
 | Reconciler | Writes | Reads = watches |
 |---|---|---|
-| `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `VirtualNetworkBinding`, `NetworkPolicy` (drift), `Namespace` |
+| `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `NetworkPolicy` (drift), `Namespace` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
 | `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` Events on the declaring object; `InvalidJoinLabelDirection`, `ResolutionConflict`, `OverrideRejected` Events on the pod | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
-| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (creates), own policies (drift) |
+| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (creates, deletes, label changes), own policies (drift) |
 | `HostPortReconciler` | `NetworkPolicy` (`ext.host`) | `Namespace`, `Pod` (hostPort changes), own policies (drift) |
-| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (creates), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
+| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (creates, deletes, label changes), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.
