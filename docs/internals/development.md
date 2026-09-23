@@ -150,10 +150,9 @@ Three workflows under `.github/workflows/`:
   - `docker` — builds the image (no push) + Trivy image scan (CRITICAL/HIGH gates the build)
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
 - `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
-  - `e2e-kube-router`
-  - `e2e-calico`
-  - `e2e-webhook` — the admission webhook (ADR 0034), on kube-router
-  - `e2e-helm`, `e2e-helm-namespace` — install via the chart
+  - `e2e-kube-router`, `e2e-calico` — install via kustomize (webhook off)
+  - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with it on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds its own tests and a cert-survives-upgrade check
+  - `e2e-helm-namespace` — the `namespace` isolation preset
 - `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
   - Builds + pushes multi-arch image to `ghcr.io/lhns/kube-vnet:<tag>`
   - Cosign signs the image (keyless via GitHub OIDC)
