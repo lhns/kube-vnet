@@ -71,3 +71,14 @@ func networkWait(pod *corev1.Pod, cfg *NetworkWaitConfig) (*corev1.Container, st
 		},
 	}, ""
 }
+
+// unmanagedNetworkWait is the warning for a pod that asked for the wait in a
+// namespace kube-vnet doesn't manage, where it gets no wait (nor any
+// NetworkPolicy from kube-vnet).
+func unmanagedNetworkWait(pod *corev1.Pod) string {
+	if _, asked := pod.Annotations[AnnotationNetworkMaxWait]; !asked || pod.Spec.HostNetwork {
+		return ""
+	}
+	return fmt.Sprintf("%s is set, but kube-vnet does not manage this namespace; "+
+		"the pod starts without waiting", AnnotationNetworkMaxWait)
+}

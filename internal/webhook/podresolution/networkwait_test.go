@@ -53,7 +53,12 @@ func TestNetworkWait_Injection(t *testing.T) {
 			wantWarning: "webhook.networkWait.enabled"},
 		{name: "update", pod: withMaxWait("30s"), oldPod: withMaxWait("30s"), cfg: testNetworkWait},
 		{name: "hostNetwork", pod: hostNet, cfg: testNetworkWait},
-		{name: "unmanaged namespace", pod: withMaxWait("30s"), cfg: testNetworkWait, disabled: []string{"app"}},
+		{name: "unmanaged namespace", pod: withMaxWait("30s"), cfg: testNetworkWait, disabled: []string{"app"},
+			wantWarning: "does not manage this namespace"},
+		{name: "unmanaged namespace, update", pod: withMaxWait("30s"), oldPod: withMaxWait("30s"),
+			cfg: testNetworkWait, disabled: []string{"app"}},
+		{name: "unmanaged namespace, annotation absent", pod: pod("app", nil), cfg: testNetworkWait,
+			disabled: []string{"app"}},
 		{name: "already injected", pod: alreadyInjected, cfg: testNetworkWait,
 			wantInits: []string{NetworkWaitContainerName, "migrate"}},
 	} {

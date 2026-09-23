@@ -33,7 +33,13 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 	if !managed {
-		return admission.Allowed("namespace is not managed by kube-vnet")
+		resp := admission.Allowed("namespace is not managed by kube-vnet")
+		if req.Operation == admissionv1.Create {
+			if w := unmanagedNetworkWait(r.pod); w != "" {
+				resp = resp.WithWarnings(w)
+			}
+		}
+		return resp
 	}
 
 	desired, _, err := m.Resolver.DesiredLabels(ctx, r.pod)
