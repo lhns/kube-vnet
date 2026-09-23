@@ -1,6 +1,6 @@
 # 0028 — Runtime policy-enforcement verification (design space)
 
-Status: Proposed (draft)
+Status: Proposed (draft). Option C stays rejected; [ADR 0045](0045-network-wait-for-opted-in-pods.md) adds a narrow, opt-in, one-shot wait run by the pod itself, which sets no operator status.
 
 Date: 2026-05-04
 

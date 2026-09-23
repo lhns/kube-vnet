@@ -167,6 +167,7 @@ jobs:
             --set fullnameOverride=kube-vnet-controller \
             --set operator.clusterBaseline.ingressIsolationLevel=pod \
             --set webhook.enabled=${{ matrix.webhook }} \
+            --set webhook.networkWait.enabled=${{ matrix.webhook }} \
             --set image.repository=kube-vnet \
             --set image.tag=e2e \
             --set image.pullPolicy=Never \
@@ -418,6 +419,8 @@ jobs:
           kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
           echo "===== operator logs ====="
           kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
+          echo "===== network beacons ====="
+          kubectl get pods,endpoints -n kube-vnet-system -l app.kubernetes.io/component=network-beacon -o wide || true
           echo "===== helm release ====="
           helm get all kube-vnet -n kube-vnet-system 2>&1 | head -200 || true
           echo "===== virtualnetworks ====="

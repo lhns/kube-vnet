@@ -135,3 +135,9 @@ jobs:
             --set webhook.enabled=true \
             --set webhook.certSource=cert-manager \
             --set webhook.certManager.issuerRef.name=ci-issuer > /dev/null
+      - name: helm template (network wait; refused without the webhook)
+        run: |
+          helm template testrelease charts/kube-vnet --kube-version 1.31.0             --set operator.clusterBaseline.ingressIsolationLevel=pod             --set webhook.enabled=true             --set webhook.networkWait.enabled=true > /dev/null
+          if helm template testrelease charts/kube-vnet --kube-version 1.31.0             --set operator.clusterBaseline.ingressIsolationLevel=pod             --set webhook.networkWait.enabled=true > /dev/null 2>&1; then
+            echo "webhook.networkWait.enabled rendered without webhook.enabled"; exit 1
+          fi

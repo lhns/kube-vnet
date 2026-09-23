@@ -15,6 +15,8 @@
 > **Corrections to the text below.** The Context describes the baseline selecting unstamped pods through a `NotIn` matchExpression. [ADR 0035](0035-removal-of-elide-baseline-for.md) removed that: the baseline now selects every pod (empty `podSelector`) and membership policies grant. The fail-closed property is unchanged. The "Handler shape" sketch shipped as `mutator.go` and `validator.go` in `internal/webhook/podresolution/`, both calling the shared `controller.Resolver` that the reconciler also uses. Restamps caused by config edits (Binding, Baseline or VirtualNetwork changes) stay asynchronous, because no pod admission request sees them.
 >
 > **Scheduling gates were evaluated and rejected (2026-09-23).** Injecting `spec.schedulingGates` at admission and letting the reconciler stamp and then ungate would keep the admission policy as the only label-protection model and remove the fail-closed dependency. It would also delay every pod start by a reconcile and could not stamp a relabelled running pod synchronously. Instant stamping on create and relabel was judged worth the second protection model. Both modes run the full e2e suite, so the split stays tested.
+>
+> **The CNI's share is addressed, opt-in, by [ADR 0045](0045-network-wait-for-opted-in-pods.md) (2026-09-23).** A pod annotated `kube-vnet/network-max-wait` gets an injected init container that holds its app until every node has applied it.
 
 Status: Accepted
 

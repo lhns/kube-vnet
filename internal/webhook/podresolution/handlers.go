@@ -40,6 +40,9 @@ type Deps struct {
 	// rewriting resolved-by would hide that the reconciler stamped the pod)
 	// nor validated.
 	OperatorUsername string
+	// NetworkWait enables the network wait for opted-in pods (ADR 0045);
+	// nil means the feature is off.
+	NetworkWait *NetworkWaitConfig
 }
 
 // Register serves both handlers on srv.

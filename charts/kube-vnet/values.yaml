@@ -262,3 +262,11 @@ webhook:
   # from the controller-runtime cache, so a slow response means the operator
   # is unhealthy, and failing fast is better than holding up every pod write.
   timeoutSeconds: 5
+  # Network wait (ADR 0045). Off by default. When enabled, ships a small
+  # beacon DaemonSet and lets pods opt in with the annotation
+  # kube-vnet/network-max-wait: "30s". An opted-in pod's app starts once every
+  # node has applied its NetworkPolicy rules, or when that maximum runs out,
+  # whichever comes first. Built for kube-router, where a new pod otherwise
+  # waits seconds for its first connection. Requires webhook.enabled.
+  networkWait:
+    enabled: false

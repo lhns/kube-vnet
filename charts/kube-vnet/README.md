@@ -35,6 +35,7 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
 | `webhook.certSource` | `helm` | `helm` (self-signed CA, reused across upgrades via `lookup`) or `cert-manager` |
 | `webhook.certManager.issuerRef` | `{name: "", kind: Issuer, group: cert-manager.io}` | Issuer for `certSource: cert-manager`; `name` is required in that mode |
 | `webhook.timeoutSeconds` | `5` | Admission timeout. Resolution is served from cache, so a slow reply means the operator is unhealthy |
+| `webhook.networkWait.enabled` | `false` | Ship per-node network beacons and let pods opt in with `kube-vnet/network-max-wait: "30s"`: the app starts once every node has applied the pod's rules, or when the maximum runs out (ADR 0045). Requires `webhook.enabled` |
 | `image.repository` | `ghcr.io/lhns/kube-vnet` | Operator image repository |
 | `image.tag` | `""` (chart appVersion) | Operator image tag |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |

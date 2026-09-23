@@ -1,0 +1,100 @@
+{{- /*
+Network wait beacons (ADR 0045).
+
+One TCP listener per node. The NetworkPolicy below admits every pod, so a
+node's CNI rejects a new pod at that node's beacon until it has programmed
+the pod's IP. The init container the webhook injects into pods annotated
+kube-vnet/network-max-wait dials every beacon through the headless Service
+and lets the pod start once all of them accept, or when its maximum runs out.
+
+Chart-owned, like the CoreDNS carve-out: no kube-vnet.system/* labels, so no
+reconciler touches it. The beacons get their own name label: sharing the
+operator's selector labels would put them behind the operator's Services.
+*/}}
+{{- if .Values.webhook.networkWait.enabled }}
+{{- if not .Values.webhook.enabled }}
+{{- fail "webhook.networkWait.enabled requires webhook.enabled: the webhook injects the wait" }}
+{{- end }}
+{{- $name := printf "%s-network-beacon" (include "kube-vnet.fullname" .) }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.networkBeaconLabels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kube-vnet.networkBeaconSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kube-vnet.networkBeaconLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # A node without a beacon is a node the wait can't see.
+      tolerations:
+        - operator: Exists
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+        - name: beacon
+          image: {{ include "kube-vnet.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [network-beacon, --port=9444]
+          ports:
+            - containerPort: 9444
+              name: beacon
+              protocol: TCP
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 50m, memory: 32Mi}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+---
+# Headless: the wait resolves every node's beacon, not one of them.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.networkBeaconLabels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "kube-vnet.networkBeaconSelectorLabels" . | nindent 4 }}
+  ports:
+    - name: beacon
+      port: 9444
+      targetPort: beacon
+      protocol: TCP
+---
+# What makes a beacon a witness: open to every pod, but only once the node's
+# CNI knows the pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kube-vnet.networkBeaconLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kube-vnet.networkBeaconSelectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - port: 9444
+          protocol: TCP
+{{- end }}

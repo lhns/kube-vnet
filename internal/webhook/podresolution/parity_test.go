@@ -198,6 +198,14 @@ func mutatorLabels(t *testing.T, objects []client.Object, p *corev1.Pod) map[str
 // than passing silently.
 func mutate(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) *corev1.Pod {
 	t.Helper()
+	out, _ := mutateWithResponse(t, m, user, oldPod, p)
+	return out
+}
+
+// mutateWithResponse is mutate that also returns the admission response, for
+// checking warnings.
+func mutateWithResponse(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) (*corev1.Pod, admission.Response) {
+	t.Helper()
 	raw := mustJSON(t, p)
 	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
 		Operation: admissionv1.Create,
@@ -227,7 +235,7 @@ func mutate(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) *corev
 	if err := json.Unmarshal(patched, &out); err != nil {
 		t.Fatalf("unmarshal patched pod: %v", err)
 	}
-	return &out
+	return &out, resp
 }
 
 func newClient(t *testing.T, objects []client.Object, p *corev1.Pod) client.Client {
