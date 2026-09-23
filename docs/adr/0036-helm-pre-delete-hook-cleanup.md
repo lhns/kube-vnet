@@ -1,6 +1,6 @@
 # 0036 — Helm pre-delete hook removes operator-managed NetworkPolicies on uninstall
 
-Status: Accepted (cleanup selector renamed from `kube-vnet/managed-by=kube-vnet` to `kube-vnet.system/managed-by=kube-vnet` per [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md); the pre-delete hook design described here is unchanged)
+Status: Accepted (cleanup selector renamed from `kube-vnet/managed-by=kube-vnet` to `kube-vnet.system/managed-by=kube-vnet` per [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md); the pre-delete hook design described here is unchanged, except that with `webhook.enabled` a `remove-webhooks` init container first deletes the pod-resolution webhook configurations, whose `failurePolicy: Fail` would otherwise block pod admission once the operator stops)
 
 Date: 2026-06-25
 

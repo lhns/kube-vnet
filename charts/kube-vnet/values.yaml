@@ -207,7 +207,9 @@ terminationGracePeriodSeconds: 10
 # Without it, the deny-all baselines and per-vnet membership policies the
 # operator generated at runtime survive uninstall and keep enforcing — pods
 # end up stuck in deny-all mode with no controller to recover them. See
-# ADR 0036.
+# ADR 0036. With webhook.enabled it first deletes the two pod-resolution
+# webhook configurations, so pod admission is not blocked while the operator
+# stops.
 #
 # Disable only for a controlled migration where you need to preserve the
 # existing policy set across a brief operator outage. Then clean up manually:
@@ -245,6 +247,7 @@ webhook:
   #                upgrades via lookup. No external dependencies.
   # cert-manager — renders a Certificate against certManager.issuerRef and
   #                relies on the ca-injector for the caBundle.
+  # Any other value fails the render.
   certSource: helm
   certManager:
     issuerRef:

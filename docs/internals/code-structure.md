@@ -281,7 +281,7 @@ The system label `kube-vnet.system/net.<canonical-key>=<direction>` is the contr
 
 - **Writers**: the resolution controller, and the mutating webhook when enabled — both through the same `Resolver`.
 - **Reader**: the policy generator (via `NetworkPolicy` `matchExpressions`).
-- **Guard**: a chart-shipped `ValidatingAdmissionPolicy` lets only the operator's ServiceAccount change these labels; with the webhook enabled, the validating webhook replaces it for pods and additionally checks values against resolution.
+- **Guard**: a chart-shipped `ValidatingAdmissionPolicy` lets only the operator's ServiceAccount change these labels; with the webhook enabled, the validating webhook takes over for the pods it sees and additionally checks values against resolution; the policy still covers the pods the webhooks skip.
 
 ## Reconciler boundaries
 
