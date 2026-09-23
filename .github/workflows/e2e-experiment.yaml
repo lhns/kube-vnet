@@ -7,13 +7,6 @@ name: e2e-experiment
 # docs/internals/development.md for how to run it.
 
 on:
-  # TEMPORARY: runs on the PR that adds this workflow, to collect results
-  # before it exists on main. Removed before merge.
-  pull_request:
-    paths:
-      - .github/workflows/e2e-experiment.yaml
-      - test/e2e/beacon_ordering_test.go
-      - test/e2e/probe/**
   workflow_dispatch:
     inputs:
       cni:
@@ -51,9 +44,9 @@ jobs:
       E2E_CNI: ${{ matrix.cni }}
       E2E_EXPERIMENT_PROBES: ${{ inputs.probes || '20' }}
       E2E_EXPERIMENT_BURST: ${{ inputs.burst || '5' }}
-      E2E_EXPERIMENT_POLICIES: ${{ inputs.policies || '1000' }}
-      E2E_EXPERIMENT_CHURN: ${{ inputs.churn || '20' }}
-      E2E_EXPERIMENT_INTERVAL: ${{ inputs.interval || '5ms' }}
+      E2E_EXPERIMENT_POLICIES: ${{ inputs.policies || '300' }}
+      E2E_EXPERIMENT_CHURN: ${{ inputs.churn || '10' }}
+      E2E_EXPERIMENT_INTERVAL: ${{ inputs.interval || '20ms' }}
       E2E_EXPERIMENT_OUT: ${{ github.workspace }}/experiment-out
     steps:
       - uses: actions/checkout@v7
