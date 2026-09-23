@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Each ADR captures a single decision: the context, what was decided, and the consequences. ADRs are immutable once accepted — if a decision is reversed, a new ADR supersedes the old one. When a later ADR or a code change affects an accepted one, its `Status:` line names the change and links it; a short dated amendment records anything the Status line can't.
+Each ADR captures a single decision: the context, what was decided, and the consequences. ADRs are immutable once accepted — if a decision is reversed, a new ADR supersedes the old one. When a later ADR or a code change affects an accepted one, its `Status:` line names the change and links it; a short dated amendment below the Status line records anything the Status line can't.
 
 For long-form background on the project, see [`../internals/design.md`](../internals/design.md). The design doc explains the *what* and *why* at length; ADRs are the short, decision-scoped record that lives alongside the code.
 
@@ -26,7 +26,7 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 18. [0018 — Test strategy: unit + envtest + kind (kube-router + Calico)](0018-test-strategy-envtest-and-kind-calico.md)
 19. [0019 — Baseline durability via drift correction; AdminNetworkPolicy deferred](0019-baseline-durability.md)
 20. [0020 — `--default-deny-everywhere` flag for cluster-wide default-deny](0020-default-deny-unmanaged-namespaces.md) — *superseded by 0024 and 0025*
-21. [0021 — Direction modes on join labels (`both` / `ingress` / `egress` / `none`)](0021-direction-modes-on-join-labels.md)
+21. [0021 — Direction modes on join labels (`both` / `ingress` / `egress` / `none`)](0021-direction-modes-on-join-labels.md) — *policy shapes and names superseded by 0033 and 0039*
 22. [0022 — Long-form join label accepted in the home namespace](0022-long-form-join-label-in-home-namespace.md)
 23. [0023 — Decoupled `disabled` and `ingress-isolation` namespace annotations](0023-decoupled-disabled-and-ingress-isolation.md) — *superseded by 0030*
 24. [0024 — Operator ingress-isolation default + per-mode override lists](0024-ingress-isolation-mode-and-overrides.md) — *superseded by 0030*
