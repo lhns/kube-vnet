@@ -263,25 +263,12 @@ func main() {
 			// apiserver. The reconciler emits the same diagnostic Events on
 			// its own pass moments later.
 		}
-		decoder := admission.NewDecoder(mgr.GetScheme())
-		operatorUser := controller.ServiceAccountUsername(operatorNS, serviceAccountName)
-		mgr.GetWebhookServer().Register("/mutate-v1-pod", &admission.Webhook{
-			Handler: &podresolution.Mutator{
-				Resolver:         resolver,
-				Reader:           mgr.GetClient(),
-				NSFilter:         nsFilter,
-				Decoder:          decoder,
-				OperatorUsername: operatorUser,
-			},
-		})
-		mgr.GetWebhookServer().Register("/validate-v1-pod", &admission.Webhook{
-			Handler: &podresolution.Validator{
-				Resolver:         resolver,
-				Reader:           mgr.GetClient(),
-				NSFilter:         nsFilter,
-				Decoder:          decoder,
-				OperatorUsername: operatorUser,
-			},
+		podresolution.Register(mgr.GetWebhookServer(), podresolution.Deps{
+			Resolver:         resolver,
+			Reader:           mgr.GetClient(),
+			NSFilter:         nsFilter,
+			Decoder:          admission.NewDecoder(mgr.GetScheme()),
+			OperatorUsername: controller.ServiceAccountUsername(operatorNS, serviceAccountName),
 		})
 		setupLog.Info("pod-resolution admission webhooks enabled",
 			"port", webhookPort, "certDir", webhookCertDir)

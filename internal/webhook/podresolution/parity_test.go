@@ -8,6 +8,7 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	admissionv1 "k8s.io/api/admission/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -19,6 +20,7 @@ import (
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 	"github.com/lhns/kube-vnet/internal/controller"
+	"github.com/lhns/kube-vnet/internal/testutil"
 )
 
 // The webhook and the reconciler must produce the same membership stamps for
@@ -181,57 +183,51 @@ func reconcilerLabels(t *testing.T, objects []client.Object, p *corev1.Pod) map[
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(p), &got); err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
-	return managedLabels(&got)
+	return controller.ResolutionStamps(&got)
 }
 
-// mutatorLabels runs the real handler and applies its JSON patch, so a
-// mis-built patch fails here rather than passing silently.
+// mutatorLabels runs the real handler on a CREATE and returns the stamps.
 func mutatorLabels(t *testing.T, objects []client.Object, p *corev1.Pod) map[string]string {
 	t.Helper()
-	scheme := testScheme(t)
-	c := newClient(t, objects, p)
-	nsFilter := controller.NewNamespaceFilter(nil)
-	m := &Mutator{
-		Resolver: &controller.Resolver{Reader: c, NSFilter: nsFilter},
-		Reader:   c,
-		NSFilter: nsFilter,
-		Decoder:  admission.NewDecoder(scheme),
-	}
+	m := &Mutator{newDeps(t, newClient(t, objects, p))}
+	return controller.ResolutionStamps(mutate(t, m, "alice", nil, p))
+}
 
-	raw, err := json.Marshal(p)
-	if err != nil {
-		t.Fatalf("marshal pod: %v", err)
+// mutate runs m on a CREATE (oldPod nil) or UPDATE and returns the pod with
+// the response's JSON patch applied, so a mis-built patch fails here rather
+// than passing silently.
+func mutate(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) *corev1.Pod {
+	t.Helper()
+	raw := mustJSON(t, p)
+	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+		Operation: admissionv1.Create,
+		Namespace: p.Namespace,
+		UserInfo:  authenticationv1.UserInfo{Username: user},
+		Object:    runtime.RawExtension{Raw: raw},
+	}}
+	if oldPod != nil {
+		req.Operation = admissionv1.Update
+		req.OldObject = runtime.RawExtension{Raw: mustJSON(t, oldPod)}
 	}
-	resp := m.Handle(context.Background(), admission.Request{
-		AdmissionRequest: admissionv1.AdmissionRequest{
-			Operation: admissionv1.Create,
-			Namespace: p.Namespace,
-			Object:    runtime.RawExtension{Raw: raw},
-		},
-	})
+	resp := m.Handle(context.Background(), req)
 	if !resp.Allowed {
 		t.Fatalf("mutator denied the pod: %+v", resp.Result)
 	}
-
 	patched := raw
 	if len(resp.Patches) > 0 {
-		ops, err := json.Marshal(resp.Patches)
+		patch, err := jsonpatch.DecodePatch(mustJSON(t, resp.Patches))
 		if err != nil {
-			t.Fatalf("marshal patches: %v", err)
-		}
-		patch, err := jsonpatch.DecodePatch(ops)
-		if err != nil {
-			t.Fatalf("decode patch %s: %v", ops, err)
+			t.Fatalf("decode patch: %v", err)
 		}
 		if patched, err = patch.Apply(raw); err != nil {
-			t.Fatalf("apply patch %s: %v", ops, err)
+			t.Fatalf("apply patch: %v", err)
 		}
 	}
 	var out corev1.Pod
 	if err := json.Unmarshal(patched, &out); err != nil {
 		t.Fatalf("unmarshal patched pod: %v", err)
 	}
-	return managedLabels(&out)
+	return &out
 }
 
 func newClient(t *testing.T, objects []client.Object, p *corev1.Pod) client.Client {
@@ -241,35 +237,28 @@ func newClient(t *testing.T, objects []client.Object, p *corev1.Pod) client.Clie
 }
 
 func testScheme(t *testing.T) *runtime.Scheme {
+	return testutil.Scheme(t, admissionv1.AddToScheme)
+}
+
+// newDeps wires the handlers the way Register does, over a fake client.
+func newDeps(t *testing.T, c client.Client, disabled ...string) Deps {
 	t.Helper()
-	s := runtime.NewScheme()
-	if err := corev1.AddToScheme(s); err != nil {
-		t.Fatalf("corev1: %v", err)
+	nsFilter := controller.NewNamespaceFilter(disabled)
+	return Deps{
+		Resolver:         &controller.Resolver{Reader: c, NSFilter: nsFilter},
+		Reader:           c,
+		NSFilter:         nsFilter,
+		Decoder:          admission.NewDecoder(testScheme(t)),
+		OperatorUsername: operatorUser,
 	}
-	if err := admissionv1.AddToScheme(s); err != nil {
-		t.Fatalf("admissionv1: %v", err)
-	}
-	if err := vnetv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("vnetv1alpha1: %v", err)
-	}
-	return s
 }
 
-func ns(name string) *corev1.Namespace {
-	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-}
+func ns(name string) *corev1.Namespace { return testutil.Namespace(name, nil, nil) }
 
-func vnet(name, namespace string, allowed *vnetv1alpha1.NamespaceSelector) *vnetv1alpha1.VirtualNetwork {
-	return &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       vnetv1alpha1.VirtualNetworkSpec{AllowedNamespaces: allowed},
-	}
-}
+var vnet = testutil.VirtualNetwork
 
 func pod(namespace string, labels map[string]string) *corev1.Pod {
-	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-		Namespace: namespace, Name: "p", Labels: labels,
-	}}
+	return testutil.Pod(namespace, "p", labels)
 }
 
 func hostPortPod(namespace string, hostNetwork bool) *corev1.Pod {

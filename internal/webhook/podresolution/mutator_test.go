@@ -25,14 +25,7 @@ func TestMutator_OperatorPatchIsNotMutated(t *testing.T) {
 		controller.AnnotationResolvedBy:         controller.ResolvedByController,
 	}
 	c := newClient(t, []client.Object{vnet("web", "app", nil)}, p)
-	nsFilter := controller.NewNamespaceFilter(nil)
-	m := &Mutator{
-		Resolver:         &controller.Resolver{Reader: c, NSFilter: nsFilter},
-		Reader:           c,
-		NSFilter:         nsFilter,
-		Decoder:          admission.NewDecoder(testScheme(t)),
-		OperatorUsername: operatorUser,
-	}
+	m := &Mutator{newDeps(t, c)}
 
 	handle := func(user string) admission.Response {
 		return m.Handle(context.Background(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{

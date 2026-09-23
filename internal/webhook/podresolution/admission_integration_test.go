@@ -58,7 +58,7 @@ func webhookPodRules() []admissionregistrationv1.RuleWithOperations {
 }
 
 func testMutatingWebhook() *admissionregistrationv1.MutatingWebhookConfiguration {
-	path := "/mutate-v1-pod"
+	path := MutatePath
 	sideEffects := admissionregistrationv1.SideEffectClassNone
 	failurePolicy := admissionregistrationv1.Ignore
 	return &admissionregistrationv1.MutatingWebhookConfiguration{
@@ -80,7 +80,7 @@ func testMutatingWebhook() *admissionregistrationv1.MutatingWebhookConfiguration
 }
 
 func testValidatingWebhook() *admissionregistrationv1.ValidatingWebhookConfiguration {
-	path := "/validate-v1-pod"
+	path := ValidatePath
 	sideEffects := admissionregistrationv1.SideEffectClassNone
 	failurePolicy := admissionregistrationv1.Fail
 	return &admissionregistrationv1.ValidatingWebhookConfiguration{
@@ -109,7 +109,7 @@ func testValidatingWebhook() *admissionregistrationv1.ValidatingWebhookConfigura
 func webhookNS(t *testing.T, vnetName string) string {
 	t.Helper()
 	ns := uniqueNS(t, "wh")
-	mustCreate(t, makeNamespace(ns, map[string]string{webhookOptInLabel: "true"}))
+	mustCreate(t, makeNamespace(ns, nil, map[string]string{webhookOptInLabel: "true"}))
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: vnetName},
 	})
@@ -156,7 +156,7 @@ func TestIntegration_Webhook_StampsDuringAdmission(t *testing.T) {
 // becomes a member once the reconciler catches up.
 func TestIntegration_Webhook_WithoutWebhook_StampArrivesLate(t *testing.T) {
 	ns := uniqueNS(t, "nowh")
-	mustCreate(t, makeNamespace(ns, nil)) // no opt-in label
+	mustCreate(t, makeNamespace(ns, nil, nil)) // no opt-in label
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web"},
 	})

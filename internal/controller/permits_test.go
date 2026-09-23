@@ -10,42 +10,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
+	"github.com/lhns/kube-vnet/internal/testutil"
 )
 
 // schemeForPermits builds the minimal scheme Permits' fake client needs.
-func schemeForPermits(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	if err := corev1.AddToScheme(s); err != nil {
-		t.Fatalf("corev1.AddToScheme: %v", err)
-	}
-	if err := vnetv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("vnetv1alpha1.AddToScheme: %v", err)
-	}
-	return s
-}
+var schemeForPermits = testutil.Scheme
 
-func mkVnet(name, namespace string, allowed *vnetv1alpha1.NamespaceSelector) *vnetv1alpha1.VirtualNetwork {
-	return &vnetv1alpha1.VirtualNetwork{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec:       vnetv1alpha1.VirtualNetworkSpec{AllowedNamespaces: allowed},
-	}
-}
+var mkVnet = testutil.VirtualNetwork
 
 func mkNamespace(name string, labels map[string]string) *corev1.Namespace {
-	return &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels},
-	}
+	return testutil.Namespace(name, nil, labels)
 }
 
 func TestPermits(t *testing.T) {
 	tests := []struct {
-		name     string
-		objects  []runtime.Object
-		vnetKey  VnetKey
-		podNS    string
-		want     bool
-		wantErr  bool
+		name    string
+		objects []runtime.Object
+		vnetKey VnetKey
+		podNS   string
+		want    bool
+		wantErr bool
 	}{
 		{
 			name:    "cluster_vnet_always_permitted",

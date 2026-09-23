@@ -6,15 +6,10 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"os/signal"
 	"path/filepath"
-	goruntime "runtime"
-	"syscall"
 	"testing"
 	"time"
 
-	"k8s.io/apimachinery/pkg/util/rand"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -34,6 +29,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
+	"github.com/lhns/kube-vnet/internal/testutil"
 )
 
 // Shared envtest fixture set up by TestMain. All integration tests share one apiserver.
@@ -189,100 +185,23 @@ func TestMain(m *testing.M) {
 		}
 	}()
 
-	// stop runs on every exit path (normal, panic, interrupt). On Windows,
-	// testEnv.Stop() can't signal its children and leaves etcd and
-	// kube-apiserver running, so they are then killed by parent PID. Not by
-	// image name: that would also kill another suite's apiserver on the same
-	// machine, which looks like a flake over there.
-	stop := func() {
+	os.Exit(testutil.Run(m, func() {
 		cancel()
-		_ = testEnv.Stop()
-		if goruntime.GOOS == "windows" {
-			script := fmt.Sprintf(
-				`Get-CimInstance Win32_Process -Filter "ParentProcessId=%d" | `+
-					`Where-Object { $_.Name -in 'etcd.exe','kube-apiserver.exe' } | `+
-					`ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`,
-				os.Getpid())
-			_ = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", script).Run()
-		}
-	}
-
-	// Signal handler for Ctrl+C. On Windows os.Interrupt is delivered for
-	// CTRL_C_EVENT / CTRL_BREAK_EVENT; SIGTERM is included for unix shells.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		stop()
-		os.Exit(130)
-	}()
-
-	// Wrap m.Run() so a panic in setup-after-Start or in any Test* still
-	// runs `stop()` before the process exits.
-	code := func() (rc int) {
-		defer stop()
-		return m.Run()
-	}()
-	os.Exit(code)
+		testutil.StopEnv(testEnv)
+	}))
 }
 
-// eventually polls fn until it returns nil or the deadline expires. fn returns
-// an error describing the current expectation failure; the most recent error is
-// surfaced via t.Fatalf if the deadline expires.
-func eventually(t *testing.T, timeout time.Duration, fn func() error) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		lastErr = fn()
-		if lastErr == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("eventually: %v", lastErr)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// uniqueNS returns a randomized namespace name unique to a test, to keep
-// tests independent on the shared apiserver.
-func uniqueNS(t *testing.T, prefix string) string {
-	t.Helper()
-	return prefix + "-" + rand.String(5)
-}
+// Shared with the webhook suite through internal/testutil.
+var (
+	eventually    = testutil.Eventually
+	uniqueNS      = testutil.UniqueNS
+	makePod       = testutil.Pod
+	makeNamespace = testutil.Namespace
+)
 
 func mustCreate(t *testing.T, obj client.Object) {
 	t.Helper()
-	if err := testClient.Create(context.Background(), obj); err != nil {
-		t.Fatalf("create %T %s/%s: %v", obj, obj.GetNamespace(), obj.GetName(), err)
-	}
-}
-
-func makeNamespace(name string, annotations map[string]string, labels map[string]string) *corev1.Namespace {
-	merged := map[string]string{"kubernetes.io/metadata.name": name}
-	for k, v := range labels {
-		merged[k] = v
-	}
-	return &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
-			Annotations: annotations,
-			Labels:      merged,
-		},
-	}
-}
-
-func makePod(ns, name string, labels map[string]string) *corev1.Pod {
-	return &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: labels},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:  "app",
-				Image: "registry.k8s.io/pause:3.10",
-			}},
-		},
-	}
+	testutil.MustCreate(t, testClient, obj)
 }
 
 // findPolicy gets the NetworkPolicy ns/name.
