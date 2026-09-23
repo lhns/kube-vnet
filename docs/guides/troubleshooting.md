@@ -592,7 +592,7 @@ Possible causes:
 - A misbehaving controller is repeatedly deleting them. Find it and stop it.
 - An attempted bypass — see [`security.md`](../security/security.md).
 
-If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple times per minute), there's an active loop somewhere. The sample alert `KubeVnetPolicyRestoredRepeatedly` ([metrics-and-events](../reference/metrics-and-events.md#sample-alert-rules)) catches this.
+If `PolicyRestored` is firing repeatedly in the same namespace (e.g. multiple times per minute), there's an active loop somewhere. `PolicyRestored` is an Event, not a metric, so alerting on it needs Events forwarded ([metrics-and-events](../reference/metrics-and-events.md#forward-events-to-your-aggregator)).
 
 ---
 
