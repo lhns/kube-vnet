@@ -38,7 +38,7 @@ All three families are **additive and port-scoped**: NetworkPolicy union semanti
 | `type: ClusterIP` (or unset) with non-empty `spec.externalIPs` | yes |
 | plain `ClusterIP`, headless (`clusterIP: None`), `ExternalName`, or no `spec.selector` | no |
 
-**Emitted** — `kube-vnet.ext.svc.<service>-<8hex>` in the Service's namespace: podSelector copied from the Service's selector, ingress `from: ipBlock 0.0.0.0/0` on the Service's **targetPort(s)** (that's the port the packet actually carries after kube-proxy DNAT — allowing the nodePort would match nothing). Named targetPorts are resolved against every backing pod, and each port number in use is allowed (pods may map the name to different numbers); until a matching pod exists the policy is held back and a `Pending` event is emitted on the Service.
+**Emitted** — `kube-vnet.ext.svc.<service>-<8hex>` in the Service's namespace: podSelector copied from the Service's selector, ingress `from: ipBlock 0.0.0.0/0` on the Service's **targetPort(s)** (that's the port the packet actually carries after kube-proxy DNAT — allowing the nodePort would match nothing). Named targetPorts are resolved against every backing pod's containers and native sidecars (init containers with `restartPolicy: Always`), as the EndpointSlice controller does, and each port number in use is allowed (pods may map the name to different numbers); until a matching pod exists the policy is held back and a `Pending` event is emitted on the Service.
 
 The policy carries an owner reference to the Service, so deleting the Service cascades the policy away.
 
@@ -56,6 +56,8 @@ Only the literal value `"false"` opts out. Opting out means you take over: write
 **Trigger** — any pod declaring `hostPort` on a container port. One policy per distinct `(namespace, port, protocol)` — stable across pod restarts and rollouts, because the identity is the port, not the pod.
 
 **Emitted** — `kube-vnet.ext.host.<port>.<proto>-<8hex>`: ingress `ipBlock 0.0.0.0/0` on that port/protocol, selecting pods via an operator-stamped marker label `kube-vnet.system/host-port.<port>.<proto>=true` (the resolution controller stamps it on every pod declaring that hostPort; the stamp is VAP-protected like all `kube-vnet.system/*` keys).
+
+Only `spec.containers` count: the kubelet doesn't forward a `hostPort` declared on an init container, native sidecars included, so it gets no policy.
 
 `hostNetwork: true` pods are skipped — NetworkPolicy enforcement on host-network pods is CNI-dependent, so a policy would promise nothing.
 

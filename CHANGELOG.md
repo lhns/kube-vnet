@@ -95,6 +95,13 @@ release. Pinning to an exact version is recommended.
   binding CRD `Degraded`. Baselines have no conditions yet; bindings only
   `Ready`.
 
+- **A named targetPort declared only on a native sidecar got no allow.** A
+  Service whose named `targetPort` is served by an init container with
+  `restartPolicy: Always` stayed `Pending` and its traffic was denied. Named
+  targetPorts now resolve against native sidecars too, as the EndpointSlice
+  controller does; ordinary init containers still don't count. A `hostPort` on
+  a sidecar still gets no allow: the kubelet never forwards it.
+
 ### Security
 
 - **`kube-vnet.system/*` stamps could be written through `pods/status`.** A

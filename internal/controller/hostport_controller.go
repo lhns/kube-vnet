@@ -105,6 +105,8 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
 			// NetworkPolicy on hostNetwork pods.
 			continue
 		}
+		// spec.containers only, as the kubelet's port mappings: a native
+		// sidecar's hostPort is reserved by the scheduler but never forwarded.
 		for _, c := range p.Spec.Containers {
 			for _, cp := range c.Ports {
 				if cp.HostPort == 0 {
