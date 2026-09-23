@@ -28,7 +28,7 @@ Under the hood each preset seeds directions on the two system vnets (`namespace`
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
+  --version <version> \
   --namespace kube-vnet-system --create-namespace \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster   # or: namespace | pod
 ```

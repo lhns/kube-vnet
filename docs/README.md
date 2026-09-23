@@ -31,7 +31,7 @@ Then head to [recipes](guides/recipes.md) for real-world patterns.
 - [`recipes.md`](guides/recipes.md) — worked examples: three-tier app, observability network, bridge pods, direction patterns, enrolling third-party pods, migrating an existing namespace, coexisting with user-managed NetworkPolicy, egress allowlists.
 - [`auto-allow.md`](guides/auto-allow.md) — the traffic the operator admits without being asked: externally-exposed Services, hostPort pods, and Services the apiserver dials (webhooks, metrics-server). Triggers, opt-outs, the `ext.*` policy naming.
 - [`operations.md`](guides/operations.md) — running it in production: topology, HA, leader election, sizing, monitoring, the operational playbooks.
-- [`troubleshooting.md`](guides/troubleshooting.md) — symptom → diagnosis → fix, from "my pod isn't a member" to admission-webhook timeouts.
+- [`troubleshooting.md`](guides/troubleshooting.md) — symptom → diagnosis → fix, from "my pod isn't a member" to first connections failing at pod startup (the network wait) and admission-webhook errors.
 - [`cni-pitfalls.md`](guides/cni-pitfalls.md) — CNI-layer enforcement failures (kube-router, k0s, Calico, Cilium) with per-node verification commands and a manual isolation probe.
 
 ### security/

@@ -33,12 +33,12 @@ Kubernetes ≥ 1.25 and a CNI that **enforces** NetworkPolicy (Calico, Cilium, k
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
+  --version <version> \
   --namespace kube-vnet-system --create-namespace \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster   # ← required choice, see below
 ```
 
-No Helm: `kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v0.1.0/release.yaml` or `kubectl apply -k config/default` ([other paths, air-gapped, signatures](docs/getting-started/install.md)).
+`<version>` is a [release](https://github.com/lhns/kube-vnet/releases) without the `v` (e.g. `0.7.3`). No Helm: `kubectl apply -f https://github.com/lhns/kube-vnet/releases/latest/download/release.yaml` or `kubectl apply -k config/default` ([other paths, air-gapped, signatures](docs/getting-started/install.md)).
 
 ### The one required choice: isolation level
 
@@ -58,6 +58,8 @@ No Helm: `kubectl apply -f https://github.com/lhns/kube-vnet/releases/download/v
 | `operator.disabledNamespaces` | `[kube-system]` | Namespaces the operator never touches (`[]` disables none; remove `kube-system` to enroll it — DNS stays up via `dnsCarveout`) |
 | `operator.apiserverSourceCIDR` | `0.0.0.0/0` | Narrow the webhook auto-allow to your control-plane subnet |
 | `replicaCount` | `1` | `2` for HA (leader election already on) |
+| `webhook.enabled` | `false` | Stamp pod membership at admission ([trade-off](docs/reference/configuration.md#webhook-pod-resolution-admission-webhooks--adr-0034): pod creation then needs the operator up) |
+| `webhook.networkWait.enabled` | `false` | Let pods opt into waiting until every node has applied their rules (needs `webhook.enabled`) |
 
 Everything else: [`docs/reference/configuration.md`](docs/reference/configuration.md).
 
@@ -110,7 +112,8 @@ Home namespace is always included. Foreign pods use the prefixed label form (`ku
 |---|---|---|
 | `kube-vnet/disabled: "true"` | Namespace | Operator does nothing here (no baseline, no policies, pods not joinable) |
 | `kube-vnet/external-allow: "false"` | Service or Namespace | Opt out of all auto-allow families |
-| `kube-vnet/apiserver-reachable: "true"` | Service | Opt IN to the apiserver auto-allow when no webhook/APIService declares it |
+| `kube-vnet/apiserver-reachable: "true"` | Service | Opt in to the apiserver auto-allow when no webhook/APIService declares it |
+| `kube-vnet/network-max-wait: "30s"` | Pod | Hold the app until every node has applied its NetworkPolicy rules, at most this long ([network wait](docs/reference/labels-and-annotations.md#kube-vnetnetwork-max-wait)) |
 
 ### The NetworkPolicies the operator creates
 
