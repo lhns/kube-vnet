@@ -2,13 +2,13 @@
 
 **Status**: Accepted (2026-09-23)
 
-> **Amendment (2026-09-23) — tested on Calico and Cilium.** CI now runs the network wait tests on Calico and Cilium (`e2e-network-wait`) as well as kube-router. All pass on all three; no test is skipped.
+> **Amendment (2026-09-23) — tested on Calico and Cilium.** CI now runs the network wait tests on Calico and Cilium (`e2e-network-wait`) as well as kube-router. Two runs gave the same results; all tests pass on all three and none is skipped.
 >
 > | | kube-router | Calico | Cilium |
 > |---|---|---|---|
 > | hostNetwork pod to the remote beacon | refused | dropped (timeout) | dropped (timeout) |
 > | hostNetwork pod to its own node's beacon | accepted | accepted | accepted |
-> | wait released after | 3–185 ms | 1–4 ms | 4–119 ms |
+> | wait released after (5 pods, 2 runs) | 3–241 ms | 1–97 ms | 2–119 ms |
 >
 > So the beacon is a witness on all three: a node admits a pod only once it knows the pod's IP as a pod. On kube-router that is the one-pass rebuild, so the vnet rules are live. On Calico (the pod in the selector's IP set) and Cilium (the pod's IP in the ipcache) it is the piece a vnet rule also needs, but those CNIs update each policy separately, so it stays a strong hint, not a proof. Because Calico and Cilium drop rather than reject, a beacon that has not yet accepted costs a round the 500 ms dial timeout instead of a quick refusal. The kind clusters in CI did not reproduce the race: all unwaited one-shot clients connected on every CNI, so the tests show the wait releases promptly and does not break the first connection; the evidence that it fixes the race is still the live kube-router cluster in Context.
 
