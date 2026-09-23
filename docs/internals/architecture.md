@@ -46,7 +46,7 @@ Pure pieces the reconcilers delegate to:
 Source: `internal/controller/virtualnetwork_controller.go`. For each enqueued vnet, `Reconcile`:
 
 1. Records duration and outcome for the metrics (`defer observeReconcile`).
-2. Fetches the vnet. If it is gone or being deleted, `cleanupForDeleted` removes every policy carrying its `kube-vnet.system/network` label, in every namespace.
+2. Fetches the vnet. If it is gone or being deleted, `deleteMembershipPolicies` (with no keep-set) removes every policy carrying its `kube-vnet.system/network` label, in every namespace.
 3. Snapshots the prior `Ready`/`Degraded` status so transitions can emit Events.
 4. Validates the name (DNS-1123 label; defense in depth behind the CRD's CEL rule, [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md)). On failure: `Ready=False`/`Degraded=True`, reason `InvalidName`.
 5. Checks the home namespace via `NSFilter.IsManaged`; system vnets are exempt. If unmanaged: `HomeNamespaceExcluded`, and leftover policies are cleaned up.
@@ -55,7 +55,7 @@ Source: `internal/controller/virtualnetwork_controller.go`. For each enqueued vn
    - Membership comes only from the stamped `kube-vnet.system/net.*` label. Pods without the `resolved-generation` annotation are skipped (fail-closed during the stamping window), and a stamp is trusted only if the pod's namespace is still managed and still permitted by `allowedNamespaces`.
 7. Generates the desired policies (`Generate`).
 8. Applies each with `applyPolicyAndDetectRestore`: an uncached `Get` detects a missing policy (→ `PolicyRestored` Event), then server-side apply with field owner `kube-vnet` and `ForceOwnership`. On error: `kube_vnet_apply_errors_total{kind="membership_policy"}`, an `ApplyFailed` Event, `Ready=False`.
-9. Deletes stale policies (`deleteStale`): this vnet's policies no longer in the desired set.
+9. Deletes stale policies (`deleteMembershipPolicies` with the desired set as keep-set): this vnet's policies no longer in the desired set.
 10. Sets `Degraded` (`InvalidJoiners` or `NoIssues`) and `Ready` (`NoMembers` or `PoliciesGenerated`), writes status only if it changed, and emits transition Events.
 11. Updates `kube_vnet_members_total` and returns `RequeueAfter: 10m` as a safety-net resync.
 
@@ -87,7 +87,7 @@ Details: [ADR 0009](../adr/0009-server-side-apply-with-field-manager.md).
 
 ## Cross-namespace cleanup via the network label
 
-Kubernetes has no cross-namespace owner references. Every membership policy carries `kube-vnet.system/network=<homeNS>.<vnet>`, and `cleanupForDeleted` deletes by that label cluster-wide. The home-namespace policy additionally has an owner reference to the vnet, so garbage collection covers it too. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md).
+Kubernetes has no cross-namespace owner references. Every membership policy carries `kube-vnet.system/network=<homeNS>.<vnet>`, and `deleteMembershipPolicies` deletes by that label cluster-wide. The home-namespace policy additionally has an owner reference to the vnet, so garbage collection covers it too. See [ADR 0010](../adr/0010-cross-namespace-cleanup-via-network-label.md).
 
 ---
 
