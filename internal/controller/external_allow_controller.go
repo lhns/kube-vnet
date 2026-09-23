@@ -159,8 +159,7 @@ func (s serviceSource) apply(ctx context.Context, c client.Client, scheme *runti
 	if err := controllerutil.SetControllerReference(svc, desired, scheme); err != nil {
 		return err
 	}
-	if err := c.Patch(ctx, desired, client.Apply,
-		client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
+	if _, err := applyPolicy(ctx, c, c, desired); err != nil {
 		return err
 	}
 	return s.sweep(ctx, c, svc, desired.Name)
@@ -188,7 +187,7 @@ func (s serviceSource) deleteByServiceKey(ctx context.Context, c client.Client, 
 			LabelSourceKind: s.kind,
 			LabelSource:     SourceLabelValue(s.prefix, ns, name),
 		}),
-		nil,
+		nil, nil,
 	)
 }
 

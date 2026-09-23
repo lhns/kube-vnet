@@ -55,10 +55,10 @@ Source: `internal/controller/virtualnetwork_controller.go`. For each enqueued vn
    - An advisory scan of `kube-vnet/net.*` join labels records `InvalidJoiner`s (`UnknownDirection`, `NamespaceExcluded`, `NamespaceNotAllowed`) for the `Degraded` condition. The bare form counts only in the vnet's home namespace (from anywhere for `cluster`), so a bad `kube-vnet/net.namespace` label degrades only the pod's own `namespace` vnet. It never decides membership.
    - Membership comes only from the stamped `kube-vnet.system/net.*` label. Pods without the `resolved-generation` annotation are skipped (fail-closed during the stamping window), and a stamp is trusted only if the pod's namespace is still managed and still permitted by `allowedNamespaces`.
 7. Generates the desired policies (`Generate`).
-8. Applies each with `applyPolicyAndDetectRestore`: an uncached `Get` detects a missing policy (→ `PolicyRestored` Event), then server-side apply with field owner `kube-vnet` and `ForceOwnership`. On error: `kube_vnet_apply_errors_total{kind="membership_policy"}`, an `ApplyFailed` Event, `Ready=False`.
-9. Deletes stale policies (`deleteMembershipPolicies` with the desired set as keep-set): this vnet's policies no longer in the desired set.
-10. Sets `Degraded` (`InvalidJoiners` or `NoIssues`) and `Ready` (`NoMembers` or `PoliciesGenerated`), writes status only if it changed, and emits transition Events.
-11. Updates `kube_vnet_members_total` and returns `RequeueAfter: 10m` as a safety-net resync.
+8. Applies each with `applyPolicyAndDetectRestore`: an uncached `Get` detects a missing policy (→ `PolicyRestored` Event), then server-side apply with field owner `kube-vnet` and `ForceOwnership`, skipped if the live policy already matches. A failed apply doesn't stop the loop: it counts `kube_vnet_apply_errors_total{kind="membership_policy"}`, emits an `ApplyFailed` Event, and the remaining namespaces are still applied.
+9. Deletes stale policies (`deleteMembershipPolicies` with the desired set as keep-set): this vnet's policies no longer in the desired set. This runs even if an apply failed, but spares the namespaces where one did.
+10. Sets `Degraded` (`InvalidJoiners` or `NoIssues`) and `Ready` (`ApplyFailed`, `NoMembers` or `PoliciesGenerated`), writes status only if it changed, and emits transition Events.
+11. Updates `kube_vnet_members_total`. Returns the joined apply errors if any failed (retry with backoff), otherwise `RequeueAfter: 10m` as a safety-net resync.
 
 ---
 
@@ -81,6 +81,7 @@ Every operator-managed object is written with `client.Apply`, `client.FieldOwner
 - Drift correction is automatic: a hand-added allow rule on an operator policy is removed on the next apply.
 - User-managed `NetworkPolicy` objects are separate objects and unaffected; NetworkPolicies are ORed, so user policies compose additively.
 - Create-or-update is one call, with no optimistic-concurrency loop.
+- `NetworkPolicy` writes go through `applyPolicy` (`sweep.go`), which first reads the live policy and skips the apply when spec, owner references and labels already match and every desired annotation is present. A steady-state reconcile writes nothing; an edited policy no longer matches and is re-applied.
 
 Details: [ADR 0009](../adr/0009-server-side-apply-with-field-manager.md).
 

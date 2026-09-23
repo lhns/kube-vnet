@@ -367,7 +367,7 @@ func TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative(t *testing.T) {
 	// system managed-by label, so the impostor must not match the List.
 	if err := sweepStalePolicies(context.Background(), c,
 		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		nil,
+		nil, nil,
 	); err != nil {
 		t.Fatalf("label sweep: %v", err)
 	}

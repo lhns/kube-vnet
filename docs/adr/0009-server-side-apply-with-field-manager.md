@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+> **Amendment (2026-09-23)**: the apply is now skipped when the live policy already matches the desired one on everything the operator sets (spec, owner references, labels, its annotations); see `applyPolicy` in `sweep.go`. Drift correction is unchanged: an edited policy no longer matches and is re-applied.
+
 ## Context
 
 The operator must (a) reliably reconcile its own `NetworkPolicy` resources to match desired state, (b) coexist with user-managed policies in the same namespace, and (c) revert drift on its own resources without stomping on fields the user has touched intentionally.
