@@ -62,7 +62,7 @@ Symptom-first walkthroughs: [troubleshooting § pod events](../guides/troublesho
 | **Meaning** | "Hold this pod's app until every node has applied its NetworkPolicy rules, for at most this long." The webhook injects an init container, `kube-vnet-network-wait`, that runs first. When the maximum runs out, the app starts anyway. |
 | **Requires** | `webhook.enabled` and `webhook.networkWait.enabled`. Without them the annotation does nothing. With the webhook on but the wait off, or with an invalid value, the pod starts without waiting and `kubectl` prints an admission warning. |
 
-For one-shot clients on kube-router, such as a Job whose first connection must succeed. Only applies at pod creation and in namespaces the webhook covers (not disabled or system namespaces); hostNetwork pods are skipped. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
+For one-shot clients on kube-router, such as a Job whose first connection must succeed. Only applies at pod creation and in namespaces kube-vnet manages; hostNetwork pods are skipped. In a namespace disabled with the `kube-vnet/disabled` annotation the pod gets an admission warning instead; namespaces the chart excludes (system namespaces and `operator.disabledNamespaces`) never reach the webhook, so there the annotation is silently ignored. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
 
 ```yaml
 template:

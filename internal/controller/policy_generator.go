@@ -85,9 +85,9 @@ const (
 	LabelSourceKind = "kube-vnet.system/source-kind"
 
 	// LabelSourceKindService / LabelSourceKindHost / LabelSourceKindApiserver
-	// are the values for LabelSourceKind. Match the third-segment values
-	// used in policy names (`kube-vnet.ext.svc.*` / `kube-vnet.ext.host.*` /
-	// `kube-vnet.ext.apiserver.*`) for consistency.
+	// are the values for LabelSourceKind, and also the third segment of
+	// external-allow policy names (`kube-vnet.ext.svc.*` /
+	// `kube-vnet.ext.host.*` / `kube-vnet.ext.apiserver.*`).
 	LabelSourceKindService   = "svc"
 	LabelSourceKindHost      = "host"
 	LabelSourceKindApiserver = "apiserver"
@@ -109,14 +109,6 @@ const (
 	// segment count. Format: `kube-vnet.<kind>.<identity>-<8hex>`.
 	PolicyKindMembership = "mem"
 	PolicyKindExternal   = "ext"
-
-	// External-allow source kinds per ADR 0039 / 0040 / 0041. `svc` covers
-	// Service-fronted exposures (LB/NodePort/ClusterIP+externalIPs); `host`
-	// covers pod-direct exposures (hostPort); `apiserver` covers Services
-	// reached by the apiserver via webhook/APIService discovery resources.
-	PolicySourceKindService   = "svc"
-	PolicySourceKindHostPort  = "host"
-	PolicySourceKindApiserver = "apiserver"
 )
 
 // Direction is the per-pod direction of a vnet membership. Set as the value
@@ -294,7 +286,7 @@ func truncatePolicyName(name string) string {
 // limit: ADR 0011's truncate-and-hash applied to a label value.
 //
 // Callers must use this both for writing the label and for any selector that
-// queries it (see deletePolicyByServiceKey); if the two disagree, deletes
+// queries it (see serviceSource.deleteByServiceKey); if the two disagree, deletes
 // silently match nothing and leave policies orphaned. The hash covers
 // namespace/name so two truncated-to-identical names stay distinguishable.
 //

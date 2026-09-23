@@ -48,14 +48,23 @@ func runNetworkWait(args []string) int {
 	for _, ip := range sortedKeys(res.Accepted) {
 		fmt.Printf("network-wait: beacon %s accepted after %v\n", ip, res.Accepted[ip].Round(time.Millisecond))
 	}
-	if res.Released {
-		fmt.Printf("network-wait: all %d beacons accepted after %v; starting\n",
-			len(res.Accepted), res.Elapsed.Round(time.Millisecond))
-	} else {
-		fmt.Printf("network-wait: max wait %v reached; starting anyway. Beacons that never accepted: %v\n",
-			*maxWait, res.Pending)
-	}
+	fmt.Println(waitOutcome(res, host, *maxWait))
 	return 0
+}
+
+// waitOutcome is the wait's last log line.
+func waitOutcome(res networkwait.Result, host string, maxWait time.Duration) string {
+	switch {
+	case res.Released:
+		return fmt.Sprintf("network-wait: all %d beacons accepted after %v; starting",
+			len(res.Accepted), res.Elapsed.Round(time.Millisecond))
+	case len(res.Pending) == 0:
+		return fmt.Sprintf("network-wait: max wait %v reached; starting anyway. "+
+			"The beacon Service %s never resolved to any beacon", maxWait, host)
+	default:
+		return fmt.Sprintf("network-wait: max wait %v reached; starting anyway. "+
+			"Beacons that never accepted: %v", maxWait, res.Pending)
+	}
 }
 
 func runNetworkBeacon(args []string) int {

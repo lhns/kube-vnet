@@ -38,7 +38,7 @@ func TestClusterBaselineRules_TransientErrorPropagates(t *testing.T) {
 			},
 		}).Build()
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	_, err := r.clusterBaselineRules(context.Background(), testPod("ns1"))
 	if !errors.Is(err, errInjected) {
 		t.Errorf("transient Get error should propagate, got err=%v", err)
@@ -49,7 +49,7 @@ func TestClusterBaselineRules_NotFoundIsNotAnError(t *testing.T) {
 	scheme := resolutionSchemeForTest(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).Build() // no baseline exists
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	rules, err := r.clusterBaselineRules(context.Background(), testPod("ns1"))
 	if err != nil {
 		t.Errorf("NotFound should mean 'no baseline', not an error: %v", err)
@@ -71,7 +71,7 @@ func TestNamespaceBaselineRules_TransientErrorPropagates(t *testing.T) {
 			},
 		}).Build()
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	_, err := r.namespaceBaselineRules(context.Background(), testPod("ns1"))
 	if !errors.Is(err, errInjected) {
 		t.Errorf("transient Get error should propagate, got err=%v", err)
@@ -90,7 +90,7 @@ func TestBindingRules_TransientListErrorPropagates(t *testing.T) {
 			},
 		}).Build()
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	_, err := r.bindingRules(context.Background(), testPod("ns1"))
 	if !errors.Is(err, errInjected) {
 		t.Errorf("transient List error should propagate, got err=%v", err)
@@ -110,7 +110,7 @@ func TestFilterPermittedRules_TransientErrorPropagates(t *testing.T) {
 			},
 		}).Build()
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	rules := []ResolutionRule{{Vnet: VnetKey("other.v"), Direction: DirectionBoth, Source: "test"}}
 	_, err := r.filterPermittedRules(context.Background(), rules, "ns1")
 	if !errors.Is(err, errInjected) {
@@ -124,7 +124,7 @@ func TestFilterPermittedRules_NotPermittedStillDropsSilently(t *testing.T) {
 	// dropped, NO error. The legitimate deny path is unchanged.
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-	r := &Resolver{Reader: c, NSFilter: NewNamespaceFilter(nil)}
+	r := &Resolver{Reader: c}
 	rules := []ResolutionRule{{Vnet: VnetKey("other.ghost"), Direction: DirectionBoth, Source: "test"}}
 	out, err := r.filterPermittedRules(context.Background(), rules, "ns1")
 	if err != nil {

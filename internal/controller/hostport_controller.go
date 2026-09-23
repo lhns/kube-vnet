@@ -135,7 +135,7 @@ func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy
 // hostPortPolicyName returns `kube-vnet.ext.host.<port>.<proto>-<8hex>`
 // (ADR 0039/0040).
 func hostPortPolicyName(ns string, key hostPortKey) string {
-	const prefix = "kube-vnet." + PolicyKindExternal + "." + PolicySourceKindHostPort + "."
+	const prefix = "kube-vnet." + PolicyKindExternal + "." + LabelSourceKindHost + "."
 	const hashLen = 8
 	identity := key.String() // e.g. "8080.tcp"
 	h := sha256.Sum256([]byte(ns + "/" + identity))

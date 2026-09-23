@@ -31,8 +31,7 @@ import (
 //
 // Every method only reads, so Reader may be a cache-backed client.Reader.
 type Resolver struct {
-	Reader   client.Reader
-	NSFilter *NamespaceFilter
+	Reader client.Reader
 	// Recorder surfaces VirtualNetworkNotJoinable and
 	// InvalidJoinLabelDirection Warning Events. Optional; nil disables the
 	// diagnostic. The webhook passes nil — admission is not a place to

@@ -126,8 +126,7 @@ func TestValidator_AcceptsMutatorOutput(t *testing.T) {
 			// Resolve exactly as the mutator does, then hand the result to
 			// the validator the way the apiserver would.
 			c := newClient(t, tc.objects, tc.pod)
-			nsFilter := controller.NewNamespaceFilter(nil)
-			r := &controller.Resolver{Reader: c, NSFilter: nsFilter}
+			r := &controller.Resolver{Reader: c}
 			desired, _, err := r.DesiredLabels(context.Background(), tc.pod)
 			if err != nil {
 				t.Fatalf("DesiredLabels: %v", err)

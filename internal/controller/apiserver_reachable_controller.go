@@ -303,7 +303,7 @@ func findServicePort(svc *corev1.Service, port int32) (corev1.ServicePort, bool)
 // apiserverReachablePolicyName returns
 // `kube-vnet.ext.apiserver.<svcName>-<8hex>` (ADR 0039).
 func apiserverReachablePolicyName(svc *corev1.Service) string {
-	return servicePolicyName(PolicySourceKindApiserver, svc)
+	return servicePolicyName(LabelSourceKindApiserver, svc)
 }
 
 func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error {
