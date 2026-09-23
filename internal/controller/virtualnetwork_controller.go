@@ -68,17 +68,14 @@ type VirtualNetworkReconciler struct {
 	Scheme    *runtime.Scheme
 	Recorder  events.EventRecorder
 	NSFilter  *NamespaceFilter
-	// OperatorNamespace is where the `cluster` system vnet lives. Pod and
-	// binding events that name `cluster` without a namespace are routed
-	// there.
+	// OperatorNamespace is where the `cluster` system vnet lives. Pod events
+	// that name bare `cluster` are routed there.
 	OperatorNamespace string
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks/finalizers,verbs=update
-// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings,verbs=get;list;watch
-// +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworkbindings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
@@ -589,8 +586,9 @@ func resolvedGeneration(obj client.Object) string {
 }
 
 // SetupWithManager wires the watches: VirtualNetwork (primary), Pods (join-label
-// changes, old and new labels), managed NetworkPolicies (drift), bindings and
-// Namespaces.
+// changes, old and new labels), managed NetworkPolicies (drift) and
+// Namespaces. Bindings need no watch: this reconcile reads only the stamps
+// resolution derives from them, and a stamp change is a pod event.
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	podPredicate := JoinLabelChangedPredicate()
 
@@ -609,10 +607,6 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&networkingv1.NetworkPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.policyToVNet),
 			builder.WithPredicates(policyPredicate),
-		).
-		Watches(
-			&vnetv1alpha1.VirtualNetworkBinding{},
-			handler.EnqueueRequestsFromMapFunc(r.bindingToVNet),
 		).
 		// Namespace managed-ness gates this reconcile twice: the home namespace
 		// decides whether the vnet is served at all, and each member's namespace
@@ -705,16 +699,6 @@ func (r *VirtualNetworkReconciler) podEventHandler() handler.EventHandler {
 			enqueue(q, e.Object.GetNamespace(), e.Object.GetLabels())
 		},
 	}
-}
-
-// bindingToVNet maps a VirtualNetworkBinding event back to its referenced
-// VirtualNetwork.
-func (r *VirtualNetworkReconciler) bindingToVNet(_ context.Context, obj client.Object) []reconcile.Request {
-	b, ok := obj.(*vnetv1alpha1.VirtualNetworkBinding)
-	if !ok || b.Spec.VirtualNetworkRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: bindingTarget(b, r.OperatorNamespace)}}
 }
 
 // policyToVNet maps a managed NetworkPolicy event back to its owning VirtualNetwork
