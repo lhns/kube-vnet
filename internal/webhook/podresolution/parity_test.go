@@ -8,7 +8,6 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
 	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -206,17 +205,8 @@ func mutate(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) *corev
 // checking warnings.
 func mutateWithResponse(t *testing.T, m *Mutator, user string, oldPod, p *corev1.Pod) (*corev1.Pod, admission.Response) {
 	t.Helper()
-	raw := mustJSON(t, p)
-	req := admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
-		Operation: admissionv1.Create,
-		Namespace: p.Namespace,
-		UserInfo:  authenticationv1.UserInfo{Username: user},
-		Object:    runtime.RawExtension{Raw: raw},
-	}}
-	if oldPod != nil {
-		req.Operation = admissionv1.Update
-		req.OldObject = runtime.RawExtension{Raw: mustJSON(t, oldPod)}
-	}
+	req := admissionRequest(t, user, oldPod, p)
+	raw := req.Object.Raw
 	resp := m.Handle(context.Background(), req)
 	if !resp.Allowed {
 		t.Fatalf("mutator denied the pod: %+v", resp.Result)

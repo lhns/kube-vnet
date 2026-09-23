@@ -2,13 +2,9 @@ package podresolution
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
-	admissionv1 "k8s.io/api/admission/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -29,13 +25,7 @@ func TestMutator_OperatorPatchIsNotMutated(t *testing.T) {
 	m := &Mutator{newDeps(t, c)}
 
 	handle := func(user string) admission.Response {
-		return m.Handle(context.Background(), admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
-			Operation: admissionv1.Update,
-			Namespace: "app",
-			UserInfo:  authenticationv1.UserInfo{Username: user},
-			Object:    runtime.RawExtension{Raw: mustJSON(t, stamped)},
-			OldObject: runtime.RawExtension{Raw: mustJSON(t, p)},
-		}})
+		return m.Handle(context.Background(), admissionRequest(t, user, p, stamped))
 	}
 
 	if resp := handle(operatorUser); !resp.Allowed || len(resp.Patches) != 0 {
@@ -48,9 +38,8 @@ func TestMutator_OperatorPatchIsNotMutated(t *testing.T) {
 	if !resp.Allowed {
 		t.Fatalf("user request denied: %+v", resp.Result)
 	}
-	ops, _ := json.Marshal(resp.Patches)
 	if len(resp.Patches) == 0 {
-		t.Fatalf("control request was not mutated; the test cannot tell the exemption apart: %s", ops)
+		t.Fatal("control request was not mutated; the test cannot tell the exemption apart")
 	}
 }
 
