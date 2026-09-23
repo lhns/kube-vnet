@@ -1,0 +1,134 @@
+name: e2e-experiment
+
+# Manually triggered measurements that are not pass/fail tests. For now one:
+# the beacon-ordering experiment (test/e2e/beacon_ordering_test.go, ADR 0045),
+# which measures whether a node's network wait beacon accepting a new pod
+# means that node has applied the pod's vnet rules. See
+# docs/internals/development.md for how to run it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cni:
+        description: CNI to measure
+        type: choice
+        options: [all, kube-router, calico, cilium]
+        default: all
+      probes:
+        description: probe pods per CNI
+        default: '20'
+      burst:
+        description: probe pods created at once
+        default: '5'
+      policies:
+        description: extra NetworkPolicies created before the probes (load)
+        default: '300'
+      churn:
+        description: extra NetworkPolicies created and deleted per second while probing (load)
+        default: '10'
+      interval:
+        description: probe interval
+        default: 20ms
+
+jobs:
+  beacon-ordering:
+    name: beacon-ordering (${{ matrix.cni }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        cni: ${{ fromJSON((inputs.cni == '' || inputs.cni == 'all') && '["kube-router","calico","cilium"]' || format('["{0}"]', inputs.cni)) }}
+    env:
+      CLUSTER: kube-vnet-exp-${{ matrix.cni }}
+      E2E_CNI: ${{ matrix.cni }}
+      E2E_EXPERIMENT_PROBES: ${{ inputs.probes || '20' }}
+      E2E_EXPERIMENT_BURST: ${{ inputs.burst || '5' }}
+      E2E_EXPERIMENT_POLICIES: ${{ inputs.policies || '300' }}
+      E2E_EXPERIMENT_CHURN: ${{ inputs.churn || '10' }}
+      E2E_EXPERIMENT_INTERVAL: ${{ inputs.interval || '20ms' }}
+      E2E_EXPERIMENT_OUT: ${{ github.workspace }}/experiment-out
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.3
+
+      - name: create kind cluster (no default CNI)
+        uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          config: test/e2e/kind-config.yaml
+          wait: 60s
+
+      - name: install ${{ matrix.cni }}, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: ${{ matrix.cni }}
+          cluster-name: ${{ env.CLUSTER }}
+
+      - name: build + load the probe image
+        run: |
+          set -euxo pipefail
+          docker build -t kube-vnet-probe:e2e test/e2e/probe
+          kind load docker-image kube-vnet-probe:e2e --name "$CLUSTER"
+
+      - name: deploy operator (helm, webhook + network wait)
+        run: |
+          set -euxo pipefail
+          helm install kube-vnet charts/kube-vnet \
+            --namespace kube-vnet-system --create-namespace \
+            --set fullnameOverride=kube-vnet-controller \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=true \
+            --set webhook.networkWait.enabled=true \
+            --set image.repository=kube-vnet \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --wait --timeout 3m
+
+      - name: run the beacon-ordering experiment
+        run: go test -tags e2e_experiment ./test/e2e/... -run TestExperiment_BeaconOrdering -count=1 -v -timeout 30m
+
+      - name: job summary
+        if: always()
+        run: cat "$E2E_EXPERIMENT_OUT/summary.md" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: beacon-ordering-${{ matrix.cni }}
+          path: experiment-out/
+          if-no-files-found: ignore
+
+      - name: dump diagnostics on failure
+        if: failure()
+        uses: ./.github/actions/e2e-diagnostics
+        with:
+          cni: ${{ matrix.cni }}
+
+  # One table across the CNIs.
+  summary:
+    needs: beacon-ordering
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: beacon-ordering-*
+          path: out
+      - name: cross-CNI table
+        run: |
+          {
+            echo "### Beacon ordering"
+            echo
+            echo "Times in ms from the probe's start; delta = vnet − beacon (first successful attempt of each)."
+            echo
+            echo "| CNI | pods | load | beacon ms (median / max) | vnet ms (median / max) | delta ms (min / median / max) | vnet > 1 interval after beacon | vnet > 1 interval before beacon |"
+            echo "|---|---|---|---|---|---|---|---|"
+            cat out/*/row.md 2>/dev/null || true
+          } | tee -a "$GITHUB_STEP_SUMMARY"

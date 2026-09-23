@@ -50,8 +50,8 @@ release. Pinning to an exact version is recommended.
   chart ships a small beacon DaemonSet, one TCP listener per node behind a
   chart-owned NetworkPolicy open to every pod; the wait ends once every beacon
   accepts the pod. On kube-router, which applies all of a node's rules in one
-  pass, that means the pod's vnet rules are live; on other CNIs it is a strong
-  hint, still bounded by the maximum. An invalid value, or the annotation
+  pass, that means the pod's vnet rules are live or follow within milliseconds;
+  on other CNIs it is a strong hint, still bounded by the maximum. An invalid value, or the annotation
   with the webhook on but the wait off, gives a `kubectl` warning and no wait.
   Implements [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
 
