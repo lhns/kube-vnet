@@ -17,7 +17,7 @@ Three assumptions carry the entire model. Each fails **silently** — that is wh
 | # | Assumption | If false | Signal you get |
 |---|---|---|---|
 | A-1 | **The CNI actually enforces NetworkPolicy.** | Every policy kube-vnet writes is decorative. Nothing is isolated. | **None.** The operator reports `Ready=True` regardless — [ADR 0028](../adr/0028-runtime-policy-verification.md):82. [`cni-pitfalls.md`](../guides/cni-pitfalls.md) enumerates CNIs that *claim* to enforce and silently don't (kube-router `ipMasq`, Calico Felix down, Cilium identity lag). |
-| A-2 | **Kubernetes ≥ 1.30.** | All three ValidatingAdmissionPolicies render *nothing* (`charts/kube-vnet/templates/system-vnet-vap.yaml:49` and siblings). Operator-owned labels, reserved vnet names, and join-label values become unprotected at admission; only drift-correction remains, which is a race, not a boundary. (With `webhook.enabled=true`, pod stamps stay protected by the validating webhook, which does not depend on VAP.) | Since v0.6.0, `helm install` prints a warning. Previously: none. See **F-02**. |
+| A-2 | **Kubernetes ≥ 1.30.** | All three ValidatingAdmissionPolicies render *nothing* (`charts/kube-vnet/templates/system-vnet-vap.yaml:47` and siblings). Operator-owned labels, reserved vnet names, and join-label values become unprotected at admission; only drift-correction remains, which is a race, not a boundary. (With `webhook.enabled=true`, pod stamps stay protected by the validating webhook, which does not depend on VAP.) | Since v0.6.0, `helm install` prints a warning. Previously: none. See **F-02**. |
 | A-3 | **Tenants do not hold `patch namespace`.** | A tenant sets `kube-vnet/disabled=true` on their own namespace (`internal/controller/namespace.go:12`) and opts out of *all* isolation — baseline included. | None. This is ordinary Kubernetes RBAC; kube-vnet cannot police it. See **F-04**. |
 
 **Explicitly out of scope** (unchanged from [`security.md`](security.md)): egress exfiltration ([ADR 0025](../adr/0025-ingress-isolation-rename-egress-unrestricted.md) — the baseline is `PolicyTypes: [Ingress]` only, `internal/controller/baseline.go:45`), L7/application-layer attacks, in-pod compromise, kernel/container escape, hostNetwork pods (outside NetworkPolicy entirely), and cluster-admin compromise.
@@ -49,7 +49,7 @@ Columns state what each actor can do **without** kube-vnet, so the model never t
 | **A2 · Namespace admin** (+ `patch namespace`) | Everything A1 has. | `kube-vnet/disabled=true` → total opt-out (**F-04**). Delete `kube-vnet.base` → restore-window (**F-05**). |
 | **A3 · Cluster admin** | Everything. | — (out of scope; can uninstall the operator.) |
 | **A4 · Compromised operator SA** | — | Rewrite/delete **any** NetworkPolicy cluster-wide (`config/rbac/role.yaml:102`) and relabel **any** pod (`:19`). Total isolation bypass (**F-10**). |
-| **A5 · Compromised cleanup-hook SA** (transient, during `helm uninstall`) | — | `deletecollection` on networkpolicies cluster-wide (`charts/kube-vnet/templates/cleanup-hook.yaml:56`) → collapse the cluster to default-allow (**F-01**). |
+| **A5 · Compromised cleanup-hook SA** (transient, during `helm uninstall`) | — | `deletecollection` on networkpolicies cluster-wide (`charts/kube-vnet/templates/cleanup-hook.yaml:38`) → collapse the cluster to default-allow (**F-01**). |
 | **A6 · Compromised node / CNI** | Already owns the dataplane. | — (kube-vnet cannot defend below its own output.) |
 
 ---
@@ -74,7 +74,7 @@ flowchart LR
 
     subgraph WH["Optional admission webhooks, webhook.enabled: served by the operator"]
         mwh["mutating: stamp kube-vnet.system/net.*<br/>failurePolicy Ignore"]
-        vwh["validating: stamps must equal resolution<br/>failurePolicy Fail; replaces the VAP pod rule"]
+        vwh["validating: stamps must equal resolution<br/>failurePolicy Fail; takes over from the VAP for the pods it sees"]
     end
 
     subgraph CP["Trust boundary: control plane"]
@@ -146,7 +146,7 @@ sequenceDiagram
 
     API-->>RES: watch event
     RES->>API: GET VirtualNetwork
-    Note over RES: Gate 0. The vnet must EXIST before the<br/>home-namespace short-circuit, permits.go 54-70.<br/>Otherwise a label naming a ghost vnet<br/>would produce a lying stamp.
+    Note over RES: Gate 0. The vnet must EXIST before the<br/>home-namespace short-circuit, permits.go 38-49.<br/>Otherwise a label naming a ghost vnet<br/>would produce a lying stamp.
     alt not permitted
         RES->>API: Warning event VirtualNetworkNotJoinable
         Note over RES: No stamp is written. Pod stays on the deny floor.
@@ -155,8 +155,8 @@ sequenceDiagram
     end
 
     API-->>GEN: watch event
-    Note over GEN: Gate 1, fail closed. Skip any pod lacking<br/>resolved-generation, virtualnetwork_controller.go 399.<br/>Closes the resolution race window.
-    Note over GEN: Gate 2, do not trust the stamp. Re-run<br/>managedFor plus Permits, lines 413-437.<br/>A narrowed allowedNamespaces does not re-resolve<br/>pods in the dropped namespaces, so the stamp<br/>can be stale-permissive.
+    Note over GEN: Gate 1, fail closed. Skip any pod lacking<br/>resolved-generation, virtualnetwork_controller.go 344.<br/>Closes the resolution race window.
+    Note over GEN: Gate 2, do not trust the stamp. Re-run<br/>managedFor plus Permits, lines 357-376.<br/>Until resolution strips a stamp that a narrowed<br/>allowedNamespaces revoked, the stamp<br/>can be stale-permissive.
     GEN->>API: server-side apply, ingress-only NetworkPolicy
 
     API-->>CNI: watch NetworkPolicy
@@ -164,11 +164,11 @@ sequenceDiagram
     Note over CNI: Enforcement happens HERE, not in the operator.<br/>If the CNI does not enforce, the operator still<br/>reports Ready true. ADR 0028.
 ```
 
-Gate 2 is worth reading in source (`internal/controller/virtualnetwork_controller.go:413-437`), because its comment states the exact threat:
+Gate 2 is worth reading in source (`internal/controller/virtualnetwork_controller.go:357-376`), because its comment states the exact threat:
 
-> *"The membership policy must not trust a stamp the CURRENT cluster state wouldn't grant"* — a narrowed `allowedNamespaces` never re-triggers resolution, so a stamp written while a namespace *was* permitted survives the revocation. Gate 2 catches it.
+> *"Resolution strips stamps a namespace is no longer granted, but only after its own watch fires. The membership policy must not trust a stamp the current cluster state wouldn't grant."* — a narrowed `allowedNamespaces` does re-trigger resolution, but until it has stripped the stamps written while a namespace *was* permitted, those stamps are stale. Gate 2 ignores them.
 
-> **Note the exemption.** Gate 2 skips the re-check for system vnets (`p.Namespace != vnet.Namespace && !systemVnet`, `:426`). This is sound: the per-namespace `namespace` vnet is same-namespace by construction, and the `cluster` vnet is `allowedNamespaces.all: true`, so a forged `net.cluster` stamp grants nothing a tenant could not obtain legitimately with a join label.
+> **Note the exemption.** Gate 2 skips the re-check for the `cluster` vnet (`p.Namespace != vnet.Namespace && !clusterVnet`, `:368`). This is sound: it is `allowedNamespaces.all: true`, so a forged `net.cluster` stamp grants nothing a tenant could not obtain legitimately with a join label. The per-namespace `namespace` vnet goes through the same check as a user vnet.
 
 ---
 
@@ -180,9 +180,9 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 | Threat | Actor | Control | Residual | Status |
 |---|---|---|---|---|
-| Forge a `kube-vnet.system/net.*` stamp on own pod to fake membership | A1 | system-labels VAP denies any non-operator write to `kube-vnet.system/*` (`system-labels-vap.yaml`); with `webhook.enabled` the validating webhook takes over for pods and rejects any stamp that differs from resolution (`internal/webhook/podresolution/validator.go`); resolution strips unauthorized stamps; **Gate 2** re-checks `Permits` for cross-namespace joins | Low on ≥1.30 or with the webhook. Otherwise a stamp survives until the next reconcile, but Gate 2 still denies cross-namespace membership, so the gain is limited to self-exposure the tenant could get anyway. With the webhook, pods in `kube-system`/`kube-public`/`kube-node-lease` are unprotected (**F-12**) | Accepted |
+| Forge a `kube-vnet.system/net.*` stamp on own pod to fake membership | A1 | system-labels VAP denies any non-operator write to `kube-vnet.system/*` (`system-labels-vap.yaml`); with `webhook.enabled` the validating webhook takes over for the pods it sees and rejects any stamp that differs from resolution (`internal/webhook/podresolution/validator.go`); resolution strips unauthorized stamps; **Gate 2** re-checks `Permits` for cross-namespace joins | Low on ≥1.30 or with the webhook. Otherwise a stamp survives until the next reconcile, but Gate 2 still denies cross-namespace membership, so the gain is limited to self-exposure the tenant could get anyway. Pods the webhook skips stay under the VAP (**F-12**) | Accepted |
 | Create a `VirtualNetwork` named `cluster`/`namespace`, or one labelled `kube-vnet.system/managed-by`, to impersonate a system vnet | A1/A2 | system-vnet VAP (reserved names + label) | Low on ≥1.30; **unprotected on <1.30** | **F-02** |
-| Label a hostile NetworkPolicy `app.kubernetes.io/managed-by=kube-vnet` to be treated as operator-owned | A1 | That key is **never** an ownership signal — "INFORMATIONAL ONLY" (`internal/controller/policy_generator.go:26`), enforced by a regression test. Only the VAP-protected `kube-vnet.system/managed-by` is authoritative | None | Accepted |
+| Label a hostile NetworkPolicy `app.kubernetes.io/managed-by=kube-vnet` to be treated as operator-owned | A1 | That key is **never** an ownership signal — "Never select, sweep, or gate any operation on it" (`internal/controller/policy_generator.go:25`), enforced by a regression test. Only the VAP-protected `kube-vnet.system/managed-by` is authoritative | None | Accepted |
 
 ### T — Tampering (altering the isolation posture)
 
@@ -204,7 +204,7 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 | Threat | Actor | Control | Residual | Status |
 |---|---|---|---|---|
-| Auto-allow opens a pod's port to the whole internet | A0 | Opt-out annotation `kube-vnet/external-allow=false`; `--apiserver-source-cidr` narrows the apiserver family | Default-on for LoadBalancer/NodePort Services (`external_allow_controller.go:298`) and hostPort pods (`hostport_controller.go:197`), both `0.0.0.0/0` | **F-03** (Accepted, ADR 0038/0040) |
+| Auto-allow opens a pod's port to the whole internet | A0 | Opt-out annotation `kube-vnet/external-allow=false`; `--apiserver-source-cidr` narrows the apiserver family | Default-on for LoadBalancer/NodePort Services (`external_allow_controller.go:237`) and hostPort pods (`hostport_controller.go:178`), both `0.0.0.0/0` | **F-03** (Accepted, ADR 0038/0040) |
 | Read foreign-namespace pod names via `status.members` / `Degraded` messages on a vnet | A1 with `view` in the vnet's **home** namespace | None by design — surfacing members is what `status.members` is *for*. Not an enumeration primitive: the joining namespace must label its own pods first | Pod names (not contents) of joining namespaces are visible to home-namespace viewers; the `Degraded` path also names pods from namespaces the vnet **denied** | **F-06** (Low, Accepted) |
 
 ### D — Denial of service
@@ -231,18 +231,18 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 | # | Finding | STRIDE | Severity | Status |
 |---|---|---|---|---|
-| **F-01** | Cleanup-hook SA holds cluster-wide `networkpolicies: list,delete,deletecollection` (`cleanup-hook.yaml:56`) plus `deployments: delete`. The label selector lives only in the Job's `kubectl --selector` argv; **RBAC cannot express label selectors**, so the token can drop *every* NetworkPolicy in the cluster. | T, E | High impact / low likelihood (transient, uninstall-only) | **Accepted.** No clean RBAC fix. Mitigations: `cleanup.enabled=false` if you accept manual cleanup ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md)); the hook and its RBAC are deleted on success. |
+| **F-01** | Cleanup-hook SA holds cluster-wide `networkpolicies: list,delete,deletecollection` (`cleanup-hook.yaml:38`) plus `deployments: delete`. The label selector lives only in the Job's `kubectl --selector` argv; **RBAC cannot express label selectors**, so the token can drop *every* NetworkPolicy in the cluster. | T, E | High impact / low likelihood (transient, uninstall-only) | **Accepted.** No clean RBAC fix. Mitigations: `cleanup.enabled=false` if you accept manual cleanup ([ADR 0036](../adr/0036-helm-pre-delete-hook-cleanup.md)); the hook and its RBAC are deleted on success. |
 | **F-02** | On Kubernetes < 1.30 all three VAPs render nothing. Operator-owned labels, reserved vnet names, and join-label values are unprotected at admission. | S, T | Medium | **Fixed (partially).** `helm install` now warns (`NOTES.txt`). The underlying gap is inherent — VAP is GA only in 1.30. Drift-correction remains as a race-y fallback. |
-| **F-03** | Three default-on `0.0.0.0/0` ingress openings, all tenant-triggerable: LoadBalancer/NodePort Service (`external_allow_controller.go:298`), hostPort pod (`hostport_controller.go:197`), `kube-vnet/apiserver-reachable=true` (`apiserver_reachable_controller.go:246`, narrowable via `--apiserver-source-cidr`). | I, E | Medium | **Accepted** as designed (ADR 0038/0040/0041) — the alternative is breaking every ingress controller by default. **Open** for hardened clusters: if you strip NetworkPolicy rights from tenants, these annotations reintroduce the capability. Set `kube-vnet/external-allow=false` at namespace scope, and audit `kube-vnet/apiserver-reachable`. |
+| **F-03** | Three default-on `0.0.0.0/0` ingress openings, all tenant-triggerable: LoadBalancer/NodePort Service (`external_allow_controller.go:237`), hostPort pod (`hostport_controller.go:178`), `kube-vnet/apiserver-reachable=true` (`apiserver_reachable_controller.go:306`, narrowable via `--apiserver-source-cidr`). | I, E | Medium | **Accepted** as designed (ADR 0038/0040/0041) — the alternative is breaking every ingress controller by default. **Open** for hardened clusters: if you strip NetworkPolicy rights from tenants, these annotations reintroduce the capability. Set `kube-vnet/external-allow=false` at namespace scope, and audit `kube-vnet/apiserver-reachable`. |
 | **F-04** | `kube-vnet/disabled=true` on a Namespace disables all isolation there; needs only `patch namespace`. | E | Medium | **Accepted.** Withhold `patch namespace` from tenants. Assumption A-3. |
 | **F-05** | Delete→restore window on any operator-managed policy. | T | Medium | **Accepted.** `AdminNetworkPolicy` would make the floor RBAC-proof; tracked in [ADR 0019](../adr/0019-baseline-durability.md) / [ADR 0028](../adr/0028-runtime-policy-verification.md). |
-| **F-06** | A vnet's `status.members` lists pod names grouped by namespace (`virtualnetwork_controller.go:439`), and its `Degraded` message formats failures as `<ns>/<pod>:<reason>` (`summarizeInvalid`). Because the chart aggregates vnet `get/list/watch` into the built-in `view` role, **anyone with `view` in the vnet's home namespace reads pod names from foreign namespaces**, without holding pod-read there. | I | Low | **Accepted.** It is not an enumeration primitive: a foreign pod appears only because *its own* namespace put it there (join label, binding, or baseline) — the other side always acts first, so the vnet owner cannot sweep arbitrary namespaces. What leaks is metadata (names), not contents, and `Degraded` is capped at three entries plus a count. Against that, `status.members` is the field's entire purpose: a vnet owner must be able to see who joined their network. Residual risk, stated plainly: pod names disclose more than people expect (StatefulSet ordinals reveal replica counts; names may carry customer or environment identifiers), and the `Degraded` path names pods from namespaces the vnet **denied** (`ReasonNamespaceNotAllowed`) — namespaces with no authorized relationship to it. Operator mitigation if that matters in your cluster: `rbac.aggregate=false`, which makes the chart ship **no** ClusterRoles at all (the flag gates the whole file, including the otherwise-unbound `clustervirtualnetworkbaselines` editor/viewer pair) — you then author vnet RBAC yourself and simply do not fold vnet read into the wide `view` audience. |
+| **F-06** | A vnet's `status.members` lists pod names grouped by namespace (`virtualnetwork_controller.go:467`), and its `Degraded` message formats failures as `<ns>/<pod>:<reason>` (`summarizeInvalid`). Because the chart aggregates vnet `get/list/watch` into the built-in `view` role, **anyone with `view` in the vnet's home namespace reads pod names from foreign namespaces**, without holding pod-read there. | I | Low | **Accepted.** It is not an enumeration primitive: a foreign pod appears only because *its own* namespace put it there (join label, binding, or baseline) — the other side always acts first, so the vnet owner cannot sweep arbitrary namespaces. What leaks is metadata (names), not contents, and `Degraded` is capped at three entries plus a count. Against that, `status.members` is the field's entire purpose: a vnet owner must be able to see who joined their network. Residual risk, stated plainly: pod names disclose more than people expect (StatefulSet ordinals reveal replica counts; names may carry customer or environment identifiers), and the `Degraded` path names pods from namespaces the vnet **denied** (`ReasonNamespaceNotAllowed`) — namespaces with no authorized relationship to it. Operator mitigation if that matters in your cluster: `rbac.aggregate=false`, which makes the chart ship **no** ClusterRoles at all (the flag gates the whole file, including the otherwise-unbound `clustervirtualnetworkbaselines` editor/viewer pair) — you then author vnet RBAC yourself and simply do not fold vnet read into the wide `view` audience. |
 | **F-07** | conntrack `ESTABLISHED` amnesty: tightening isolation does not sever open flows (~5-day default). | T | Medium | **Accepted.** Universal to NetworkPolicy on every CNI ([FAQ](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why)). Remediation: restart pods after tightening. |
 | **F-08** | No `SECURITY.md` → GitHub advertised no reporting path. | R | Low | **Fixed.** See [`/SECURITY.md`](../../SECURITY.md). |
 | **F-09** | DoS surfaces: CVNB edit re-resolves all pods; policy count scales with vnet × namespace fan-out; restore-loop event floods. | D | Low | **Accepted.** Treat the CVNB as a change-controlled object; alert on `KubeVnetPolicyRestoredRepeatedly`. |
 | **F-10** | Operator SA: cluster-wide NetworkPolicy CRUD + `pods: patch`. Compromise = total isolation bypass. | E | High impact / inherent | **Accepted.** Inherent to any NetworkPolicy-generating operator. Minimised: no `secrets`, no `namespaces` write, no pod create/delete. Protect the SA token as you would cluster-admin. |
 | **F-11** | With `webhook.enabled`, the validating webhook is `failurePolicy: Fail`: while the operator is unreachable, pod creation and update in managed namespaces is rejected (`charts/kube-vnet/templates/webhook.yaml`). | D | Medium | **Accepted** ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) — integrity over availability, off by default. `kube-system`, `kube-public`, `kube-node-lease` and the release namespace are exempt so the cluster and the operator can recover. Run ≥ 2 replicas. |
-| **F-12** | With `webhook.enabled`, the system-labels VAP drops its pod rule (`system-labels-vap.yaml:42`), and both webhooks exclude `kube-system`, `kube-public` and `kube-node-lease` (`_helpers.tpl`, `kube-vnet.webhookSelectors`). Pods in those namespaces, when managed, have no admission protection for `kube-vnet.system/*` labels. `kube-public` and `kube-node-lease` are managed by default; `kube-system` once enrolled. | S | Low | **Open.** Same residual as F-02 for those namespaces: a forged stamp lives until the next reconcile, and Gate 2 still denies cross-namespace membership. Writing pods there usually needs cluster-admin-level RBAC. |
+| **F-12** | With `webhook.enabled`, the system-labels VAP dropped its pod rule, and both webhooks exclude `kube-system`, `kube-public` and `kube-node-lease` (`_helpers.tpl`, `kube-vnet.webhookSelectors`). Pods in those namespaces, when managed, have no admission protection for `kube-vnet.system/*` labels. `kube-public` and `kube-node-lease` are managed by default; `kube-system` once enrolled. The same held for a pod labelled with the chart's `app.kubernetes.io/name`, which the webhooks' `objectSelector` skips. | S | Low | **Fixed.** The VAP keeps its pods rule, narrowed by a `matchCondition` to exactly the pods the webhooks skip (`system-labels-vap.yaml`, helper `kube-vnet.webhookExcludedNamespaces`). |
 
 ---
 
@@ -250,11 +250,11 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 A threat model that only lists holes is not honest. These were verified in source:
 
-- **Membership cannot be self-granted across namespaces.** `Permits()` is checked twice, in two controllers, and the second check re-reads live state (`virtualnetwork_controller.go:413-437`). A stamp written while a namespace was permitted does **not** survive revocation of `allowedNamespaces`.
-- **A stamp never lies about a vnet that does not exist.** Existence is verified *before* the home-namespace short-circuit (`permits.go:55-70`).
-- **The resolution race is fail-closed.** Pods without `resolved-generation` are excluded from policy generation (`virtualnetwork_controller.go:399`) — an unresolved pod is isolated, never over-permissive.
+- **Membership cannot be self-granted across namespaces.** `Permits()` is checked twice, in two controllers, and the second check re-reads live state (`virtualnetwork_controller.go:357-376`). A stamp written while a namespace was permitted does **not** survive revocation of `allowedNamespaces`.
+- **A stamp never lies about a vnet that does not exist.** Existence is verified *before* the home-namespace short-circuit (`permits.go:38-49`).
+- **The resolution race is fail-closed.** Pods without `resolved-generation` are excluded from policy generation (`virtualnetwork_controller.go:344`) — an unresolved pod is isolated, never over-permissive.
 - **Operator downtime is fail-closed.** Policies live in the apiserver; the CNI keeps enforcing. Only change-propagation stops.
-- **Ownership cannot be spoofed by a convention label.** `app.kubernetes.io/managed-by` is informational and is never a sweep/delete signal (`policy_generator.go:26`), pinned by a regression test.
+- **Ownership cannot be spoofed by a convention label.** `app.kubernetes.io/managed-by` is informational and is never a sweep/delete signal (`policy_generator.go:25`), pinned by a regression test.
 - **The cluster-wide posture object is not tenant-reachable.** `ClusterVirtualNetworkBaseline` is deliberately excluded from the aggregated `admin`/`edit` roles.
 - **Admission and reconcile agree.** The mutating webhook and the `ResolutionReconciler` call the same `Resolver` (`internal/controller/resolver.go`), so a pod stamped at admission reconciles to the identical label set.
 
