@@ -2,6 +2,8 @@
 
 Status: Accepted
 
+> **Amendment (2026-09-23)**: `e2e.yaml` also runs the suite against a Helm install (`e2e-helm`): Calico with the admission webhook off, and kube-router with the webhook ([ADR 0034](0034-admission-webhook-for-pod-resolution.md)) and network wait ([ADR 0045](0045-network-wait-for-opted-in-pods.md)) on. The kustomize lanes above keep covering both CNIs with the webhook off, so both admission modes run the full suite.
+
 ## Context
 
 The operator needs three different kinds of test signal:

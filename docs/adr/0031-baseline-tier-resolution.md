@@ -1,9 +1,5 @@
 # 0031 — Baseline-tier resolution: replace bindings/CVNB with explicit defaults vs bindings
 
-> **Amendment (ADR 0043, 2026-07-09)**: `virtualNetworkRef.namespace` is now optional and, when set, honored rather than ignored. Omitting it is the recommended form for the system vnets. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
-
-> **Amendment (2026-09-23) — conflicts and rejected overrides are reported as Warning Events on the pod.** The surfaces described below (a `kube-vnet.system/conflict.<vnet>` pod annotation, a `kube_vnet_resolution_conflicts_total` metric, `Conflicts`/`OverrideRejected` conditions on baselines) were never built, and are dropped. Instead the resolution controller emits `ResolutionConflict` (same-tier rules intersected) and `OverrideRejected` (a lower tier tried to change a bare-pinned value) on the affected pod, naming the vnet, the sources, and the result. Events follow the pattern `VirtualNetworkNotJoinable` and `InvalidJoinLabelDirection` already use, land on the pod whose missing membership someone is debugging, and need no status writer for baselines, which have none. Only the reconciler emits: it runs for every pod, including ones the admission webhook stamped. The resolution rules themselves are unchanged.
-
 Status: Accepted
 
 Date: 2026-05-05
@@ -11,6 +7,10 @@ Date: 2026-05-05
 Partially supersedes: [ADR 0030](0030-unified-vnet-membership-with-resolution.md) — the resolution-lattice section.
 
 Updates: [ADR 0026](0026-virtualnetworkbinding-crd.md) — VirtualNetworkBinding now requires a non-empty `podSelector`.
+
+> **Amendment (2026-09-23) — conflicts and rejected overrides are reported as Warning Events on the pod.** The surfaces described below (a `kube-vnet.system/conflict.<vnet>` pod annotation, a `kube_vnet_resolution_conflicts_total` metric, `Conflicts`/`OverrideRejected` conditions on baselines) were never built, and are dropped. Instead the resolution controller emits `ResolutionConflict` (same-tier rules intersected) and `OverrideRejected` (a lower tier tried to change a bare-pinned value) on the affected pod, naming the vnet, the sources and the result. They follow the pattern of `VirtualNetworkNotJoinable` and `InvalidJoinLabelDirection`, land on the pod whose membership someone is debugging, and need no status writer for baselines. Only the reconciler emits them; it runs for every pod, including ones the admission webhook stamped. The resolution rules are unchanged. *(Correction: the code has three scopes, not the four listed under "Decision": bindings and pod labels share `ScopePod`, which matches the sibling-intersection rule below.)*
+
+> **Amendment (2026-07-09)**: `virtualNetworkRef.namespace` is now optional and, when set, honored rather than ignored. Omitting it is the recommended form for the system vnets. See [ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
 ## Context
 

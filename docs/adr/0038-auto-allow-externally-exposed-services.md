@@ -1,8 +1,8 @@
 # ADR 0038 — Auto-allow externally-exposed Services
 
-> **Note (2026-06-26)**: per [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) the policy name was `kube-vnet.external-<svcName>-<8hex>` before becoming the `kube-vnet.ext.svc.<svcName>-<8hex>` shown below. The `kube-vnet.system/source` value shown below changed from `service/<svcName>` to `<svcName>` (label values can't contain `/`, commit 2c798f2) and then to `svc-<svcName>`, symmetric with hostPort's `host-<port>-<proto>`. The new `kube-vnet.system/source-kind: svc|host|apiserver` label is what reconcilers dispatch on. The hostPort case listed under "Out of scope" is handled by [ADR 0040](0040-auto-allow-hostport-pods.md).
-
 **Status**: Accepted (2026-06-26)
+
+> **Note (2026-06-26)**: per [ADR 0039](0039-uniform-kind-prefixed-policy-naming.md) the policy name was `kube-vnet.external-<svcName>-<8hex>` before becoming the `kube-vnet.ext.svc.<svcName>-<8hex>` shown below. The `kube-vnet.system/source` value shown below changed from `service/<svcName>` to `<svcName>` (label values can't contain `/`, commit 2c798f2) and then to `svc-<svcName>`, symmetric with hostPort's `host-<port>-<proto>`. The new `kube-vnet.system/source-kind: svc|host|apiserver` label is what reconcilers dispatch on. The hostPort case listed under "Out of scope" is handled by [ADR 0040](0040-auto-allow-hostport-pods.md).
 
 ## Context
 

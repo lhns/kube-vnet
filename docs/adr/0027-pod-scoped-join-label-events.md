@@ -1,20 +1,16 @@
 # 0027 — Pod-scoped events for join-label diagnostics
 
-> **Amendment (2026-07-20) — the `JoinLabelDiagnosticReconciler` is retired. Supersedes the 2026-07-09 amendment below.**
->
-> Two problems converged. First, a single best-effort Event is unreliable. With the change-based predicate from the 2026-07-09 amendment the controller emits each Warning once, and in envtest ~20–30% of single Events were silently dropped by the client-go event broadcaster. The old predicate only looked reliable because it re-emitted on every pod heartbeat, which is the churn this ADR's cost estimate missed. Second, the coverage was redundant. The `ResolutionReconciler` already emits a pod-scoped `VirtualNetworkNotJoinable` Warning ([ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md)) for the same three conditions, reliably, and its `notJoinableNote` already tells "no such vnet" apart from "exists but doesn't permit you".
->
-> The controller is deleted, removing one cluster-wide pod watch. Its only non-redundant piece, the "use the prefixed form `kube-vnet/net.<homeNS>.<X>`" hint, moved into the `VirtualNetworkNotJoinable` message (`bareJoinLabelHint`). Integration tests no longer assert best-effort Event *delivery*, which was the long-standing source of the flaky `TestIntegration_PodEvent_*` cases. The message is unit-tested; the behavior is covered by the `Resolution_*_NoStamp` integration tests.
->
-> The admission-time VAP below is unaffected. The resolution controller also emits `InvalidJoinLabelDirection` for any `kube-vnet/net.*` value outside the direction enum, so the mistake surfaces without the VAP (Kubernetes < 1.30, or disabled). That includes the removed empty-string alias; the supported opt-out is `none`.
->
-> This amendment originally accepted one gap: the `ResolutionReconciler` did not watch `VirtualNetwork`, so a pod created before its vnet was never stamped. It stayed isolated *indefinitely*, not until the next resync, because the change-based pod predicate filters resync events. A field incident closed it on 2026-07-26 via [ADR 0030](0030-unified-vnet-membership-with-resolution.md)'s amendment, generalised in [ADR 0044](0044-trigger-sets-must-cover-read-sets.md).
-
-> **Amendment (2026-07-09)** *(superseded by the 2026-07-20 amendment above)*: the cost estimate was wrong. `JoinLabelPodPredicate` fired on every update of a pod that *carries* a join label (phase, restarts, readiness, podIP), and `Eventf` has no dedupe, so a misconfigured pod re-emitted its Warning on every heartbeat. The watch became `JoinLabelPodPredicate AND (LabelChanged OR GenerationChanged)`. That removed the accidental re-check when a missing vnet appeared, so the controller gained an explicit `Watches(&VirtualNetwork{})` that enqueues the pods referencing the vnet via the bare key (in the vnet's namespace) and the prefixed key (cluster-wide).
-
-Status: Accepted; the `JoinLabelDiagnosticReconciler` is retired (2026-07-20 amendment above) — pod-scoped Warnings now come from the resolution controller. The admission-time VAP stands, with the allow-list pruned by the 2026-05-05 addendum. `ConflictingDirections` was removed by [ADR 0033](0033-canonical-fq-system-labels.md).
+Status: Accepted; the `JoinLabelDiagnosticReconciler` is retired (amendment below) and pod-scoped Warnings now come from the resolution controller. The admission-time VAP stands, with the allow-list pruned by the 2026-05-05 addendum. `ConflictingDirections` was removed by [ADR 0033](0033-canonical-fq-system-labels.md).
 
 Date: 2026-05-04
+
+> **Amendment (2026-07-09, 2026-07-20) — the `JoinLabelDiagnosticReconciler` is retired.** The cost estimate below was wrong: the pod predicate fired on every heartbeat of a pod carrying a join label, and `Eventf` has no dedupe, so a misconfigured pod re-emitted its Warning each time. Narrowing the watch to label and generation changes (2026-07-09) exposed the next problem: a single best-effort Event is unreliable, and in envtest 20–30% of them were dropped by the client-go event broadcaster. The coverage was also redundant, since the `ResolutionReconciler` already emits a pod-scoped `VirtualNetworkNotJoinable` Warning ([ADR 0043](0043-virtualnetworkref-namespace-inferred-or-honored.md)) for the same three conditions and says whether the vnet is missing or just doesn't admit the pod.
+>
+> The controller was deleted on 2026-07-20, removing one cluster-wide pod watch. Its one non-redundant piece, the hint to use the prefixed form `kube-vnet/net.<homeNS>.<X>`, moved into the `VirtualNetworkNotJoinable` message (`bareJoinLabelHint`). The resolution controller also emits `InvalidJoinLabelDirection` for any `kube-vnet/net.*` value outside the direction enum, so that mistake surfaces without the VAP (Kubernetes < 1.30, or VAPs disabled). Integration tests no longer assert best-effort Event delivery.
+>
+> One gap remained: the `ResolutionReconciler` did not watch `VirtualNetwork`, so a pod created before its vnet stayed unstamped until it was edited. [ADR 0030](0030-unified-vnet-membership-with-resolution.md)'s 2026-07-26 amendment closed it, generalised in [ADR 0044](0044-trigger-sets-must-cover-read-sets.md).
+>
+> The 2026-05-05 addendum's system-labels VAP no longer polices every pod when the admission webhook is enabled; see [ADR 0037](0037-system-prefix-convention-for-operator-owned-keys.md)'s amendment.
 
 ## Context
 

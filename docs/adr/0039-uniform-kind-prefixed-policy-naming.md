@@ -2,6 +2,8 @@
 
 **Status**: Accepted (2026-06-26). [ADR 0041](0041-auto-allow-apiserver-reachable-services.md) adds a third `ext` source kind: `kube-vnet.ext.apiserver.<svcName>-<8hex>`.
 
+> **Amendment (2026-09-23) — correction to "Migration".** The same day, `deleteStale` became the shared `sweepStalePolicies` in `sweep.go`, and every reconciler now sweeps its own kind: baseline by label, Service-source policies by owner reference, hostPort by label. Old-named policies of every kind are removed on the next reconcile, so the "no code-side sweep" caveat below no longer holds.
+
 ## Context
 
 Three kinds of NetworkPolicy are emitted by the operator today (with hostPort under ADR 0040 making a fourth source-subkind):
