@@ -180,6 +180,21 @@ CNI's. Diagnosis and workarounds: [troubleshooting](troubleshooting.md#a-job-or-
 
 ---
 
+## Pitfall 7: kube-router — failed new connections under heavy policy churn
+
+On kube-router, a pod that is already reachable can briefly fail new connections while NetworkPolicies
+change quickly. In one run of the beacon-ordering experiment (1000 extra policies on 20 ports, 20
+changes/s), after their first success the probe pods still saw 59 failed attempts to the vnet
+server and 17 to the network wait beacon. This fits brief drops while kube-router rebuilds its
+whole filter table on each change, but that cause is inferred, not proven.
+
+**What to do.** Clients should retry new connections. The network wait doesn't help here: it only
+covers a pod's startup. To reproduce, run the `e2e-experiment` workflow
+([development guide](../internals/development.md); the ordering results are in
+[ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)).
+
+---
+
 ## Manual isolation probe recipe
 
 If you've checked all of the above and want to confirm a `NetworkPolicy` is actually being enforced. The outsider is expected to be denied only if nothing else grants it same-namespace ingress — i.e. with `ingressIsolationLevel=pod`, or in a namespace whose `VirtualNetworkBaseline` sets the `namespace` and `cluster` vnets to `egress`/`none`:
