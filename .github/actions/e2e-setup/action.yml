@@ -30,7 +30,7 @@ runs:
       shell: bash
       run: |
         set -euxo pipefail
-        kubectl apply -f https://raw.githubusercontent.com/cloudnativelabs/kube-router/master/daemonset/kubeadm-kuberouter.yaml
+        curl -fsSL https://raw.githubusercontent.com/cloudnativelabs/kube-router/v2.11.1/daemonset/kubeadm-kuberouter.yaml | sed 's|image: docker.io/cloudnativelabs/kube-router$|&:v2.11.1|' | kubectl apply -f -
         kubectl rollout status -n kube-system ds/kube-router --timeout=180s
         kubectl wait --for=condition=Ready node --all --timeout=180s
 
