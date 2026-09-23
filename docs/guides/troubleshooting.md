@@ -250,7 +250,9 @@ kubectl logs -n <ns> <pod> -c kube-vnet-network-wait
 
 `max wait ... reached; starting anyway` lists the beacon IPs (one beacon pod per node) that never accepted; `kubectl get pods -n kube-vnet-system -o wide -l app.kubernetes.io/component=network-beacon` maps them to nodes. Look for a node
 whose CNI is stuck, or an egress policy or mesh that blocks the probe to the
-`<release>-network-beacon` pods. On other CNIs the wait is a strong hint rather than a
+`<release>-network-beacon` pods. If it says the beacon Service never resolved, the
+pod could not look up the beacons at all: check that the beacon DaemonSet is running
+and that the pod can reach cluster DNS. On other CNIs the wait is a strong hint rather than a
 guarantee; if the first connection still fails there, use the check below.
 
 **Before diagnosing, establish what a denial looks like on your CNI.** This is the step people
