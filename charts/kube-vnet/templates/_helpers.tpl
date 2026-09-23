@@ -64,6 +64,29 @@ app.kubernetes.io/component: network-beacon
 {{- end -}}
 
 {{/*
+The uninstall cleanup hook (ADR 0036) likewise gets a name of its own, so
+the operator Deployment, its Services and the PodMonitor never select its
+pod.
+*/}}
+{{- define "kube-vnet.cleanupSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kube-vnet.name" . }}-cleanup
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "kube-vnet.cleanupLabels" -}}
+helm.sh/chart: {{ include "kube-vnet.chart" . }}
+{{ include "kube-vnet.cleanupSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: cleanup
+{{- with .Values.commonLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Non-empty unless operator.metricsBindAddress is "0", which controller-runtime
 reads as "no metrics server". toString: `--set operator.metricsBindAddress=0`
 arrives as a number.

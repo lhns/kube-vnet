@@ -22,7 +22,7 @@ metadata:
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   labels:
-    {{- include "kube-vnet.labels" . | nindent 4 }}
+    {{- include "kube-vnet.cleanupLabels" . | nindent 4 }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -33,7 +33,7 @@ metadata:
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   labels:
-    {{- include "kube-vnet.labels" . | nindent 4 }}
+    {{- include "kube-vnet.cleanupLabels" . | nindent 4 }}
 rules:
   - apiGroups: [networking.k8s.io]
     resources: [networkpolicies]
@@ -64,7 +64,7 @@ metadata:
     helm.sh/hook-weight: "-10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   labels:
-    {{- include "kube-vnet.labels" . | nindent 4 }}
+    {{- include "kube-vnet.cleanupLabels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -84,15 +84,14 @@ metadata:
     helm.sh/hook-weight: "0"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
   labels:
-    {{- include "kube-vnet.labels" . | nindent 4 }}
+    {{- include "kube-vnet.cleanupLabels" . | nindent 4 }}
 spec:
   backoffLimit: 1
   ttlSecondsAfterFinished: 60
   template:
     metadata:
       labels:
-        {{- include "kube-vnet.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: cleanup
+        {{- include "kube-vnet.cleanupLabels" . | nindent 8 }}
     spec:
       serviceAccountName: {{ include "kube-vnet.fullname" . }}-cleanup
       restartPolicy: Never
@@ -141,7 +140,8 @@ spec:
           image: {{ $image }}
           imagePullPolicy: {{ $pullPolicy }}
           command: [kubectl]
-          # component=controller: this Job's own pod carries component=cleanup.
+          # The name label already matches only the operator's pods: the network
+          # beacons and this Job's own pod carry names of their own.
           args:
             - wait
             - --for=delete
