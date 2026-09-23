@@ -111,7 +111,7 @@ func TestMain(m *testing.M) {
 	}
 
 	Register(mgr.GetWebhookServer(), Deps{
-		Resolver:         &controller.Resolver{Reader: mgr.GetClient(), NSFilter: nsFilter},
+		Resolver:         &controller.Resolver{Reader: mgr.GetClient()},
 		Reader:           mgr.GetClient(),
 		NSFilter:         nsFilter,
 		Decoder:          admission.NewDecoder(mgr.GetScheme()),

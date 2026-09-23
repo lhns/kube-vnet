@@ -74,7 +74,7 @@ type ResolutionReconciler struct {
 // reconciler writes; the Resolver only reads, so handing it the same client
 // as a client.Reader is safe and keeps one implementation of resolution.
 func (r *ResolutionReconciler) resolver() *Resolver {
-	return &Resolver{Reader: r.Client, NSFilter: r.NSFilter, Recorder: r.Recorder}
+	return &Resolver{Reader: r.Client, Recorder: r.Recorder}
 }
 
 func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

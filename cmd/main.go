@@ -282,8 +282,7 @@ func main() {
 			os.Exit(1)
 		}
 		resolver := &controller.Resolver{
-			Reader:   mgr.GetClient(),
-			NSFilter: nsFilter,
+			Reader: mgr.GetClient(),
 			// No Recorder: admission is not a place to write to the
 			// apiserver. The reconciler emits the same diagnostic Events on
 			// its own pass moments later.

@@ -243,7 +243,7 @@ func newDeps(t *testing.T, c client.Client, disabled ...string) Deps {
 	t.Helper()
 	nsFilter := controller.NewNamespaceFilter(disabled)
 	return Deps{
-		Resolver:         &controller.Resolver{Reader: c, NSFilter: nsFilter},
+		Resolver:         &controller.Resolver{Reader: c},
 		Reader:           c,
 		NSFilter:         nsFilter,
 		Decoder:          admission.NewDecoder(testScheme(t)),
