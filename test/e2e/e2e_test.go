@@ -48,7 +48,7 @@ func TestE2E_DifferentVNets_Isolated(t *testing.T) {
 	waitForPod(t, ns, "server", 90*time.Second)
 	waitForPod(t, ns, "client", 90*time.Second)
 
-	// Give the operator + Calico a moment to install the deny policies.
+	// Give the operator and the CNI a moment to install the deny policies.
 	time.Sleep(5 * time.Second)
 
 	ip := podIP(t, ns, "server")
