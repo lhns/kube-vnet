@@ -230,11 +230,6 @@ func (r *VirtualNetworkReconciler) getNamespace(ctx context.Context, name string
 	return ns, nil
 }
 
-// permits reports whether pods in ns may join vnet (see PermitsForVnet).
-func (r *VirtualNetworkReconciler) permits(ctx context.Context, vnet *vnetv1alpha1.VirtualNetwork, ns string) (bool, error) {
-	return PermitsForVnet(ctx, r.Client, vnet, ns)
-}
-
 // discoverMembers lists pods cluster-wide and partitions them into the
 // generator's MembersByNS shape (namespace → direction → pods). Membership is
 // the canonical system label (SystemLabelKey) stamped by resolution; user
@@ -244,10 +239,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 ) (members map[string]map[Direction][]string, invalid []InvalidJoiner, err error) {
 	members = map[string]map[Direction][]string{}
 	sysKey := SystemLabelKey(vnet.Namespace, vnet.Name)
-
-	userPrefix := DefaultLabelPrefix
-	userBareKey := userPrefix + "net." + vnet.Name
-	userPrefixedKey := userPrefix + "net." + vnet.Namespace + "." + vnet.Name
+	userBareKey := DefaultLabelPrefix + "net." + vnet.Name
+	userPrefixedKey := DefaultLabelPrefix + "net." + vnet.Namespace + "." + vnet.Name
 	clusterVnet := vnet.Name == SystemVnetCluster
 
 	var pods corev1.PodList
@@ -255,33 +248,27 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		return nil, nil, err
 	}
 
-	// Per-NS memo for the managed and permits decisions — namespaces
-	// repeat heavily across the pod list; one Get/selector-match per
-	// distinct NS instead of per pod.
-	nsManaged := map[string]bool{}
-	nsPermitted := map[string]bool{}
-	managedFor := func(nsName string) (bool, error) {
-		if v, seen := nsManaged[nsName]; seen {
-			return v, nil
+	// ineligible returns why pods in ns cannot be members, or "" if they can.
+	// Memoized: namespaces repeat heavily across the pod list.
+	nsReason := map[string]string{}
+	ineligible := func(ns string) (string, error) {
+		if reason, seen := nsReason[ns]; seen {
+			return reason, nil
 		}
-		ns, err := r.getNamespace(ctx, nsName)
+		nsObj, err := r.getNamespace(ctx, ns)
 		if err != nil {
-			return false, err
+			return "", err
 		}
-		v := ns != nil && r.NSFilter.IsManaged(ns)
-		nsManaged[nsName] = v
-		return v, nil
-	}
-	permittedFor := func(nsName string) (bool, error) {
-		if v, seen := nsPermitted[nsName]; seen {
-			return v, nil
+		reason := ""
+		if nsObj == nil || !r.NSFilter.IsManaged(nsObj) {
+			reason = ReasonNamespaceExcluded
+		} else if ok, err := PermitsForVnet(ctx, r.Client, vnet, ns); err != nil {
+			return "", err
+		} else if !ok {
+			reason = ReasonNamespaceNotAllowed
 		}
-		v, err := r.permits(ctx, vnet, nsName)
-		if err != nil {
-			return false, err
-		}
-		nsPermitted[nsName] = v
-		return v, nil
+		nsReason[ns] = reason
+		return reason, nil
 	}
 
 	for i := range pods.Items {
@@ -292,50 +279,27 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		// stays a member even if it also carries a malformed join label.
 		// The bare form names a vnet in the pod's own namespace, except
 		// `cluster`, which is reachable by its bare name from anywhere.
-		userBareVal, hasUserBare := "", false
-		userPrefVal, hasUserPref := "", false
-		if p.Namespace == vnet.Namespace || clusterVnet {
-			userBareVal, hasUserBare = p.Labels[userBareKey]
+		var userVals []string
+		if v, ok := p.Labels[userBareKey]; ok && (p.Namespace == vnet.Namespace || clusterVnet) {
+			userVals = append(userVals, v)
 		}
-		if !clusterVnet {
-			if v, ok := p.Labels[userPrefixedKey]; ok {
-				userPrefVal, hasUserPref = v, true
-			}
+		if v, ok := p.Labels[userPrefixedKey]; ok && !clusterVnet {
+			userVals = append(userVals, v)
 		}
-		badDirection := false
-		if hasUserBare {
-			if _, ok := ParseBareDirection(userBareVal); !ok {
-				badDirection = true
+		if len(userVals) > 0 {
+			reason := ""
+			for _, v := range userVals {
+				if _, ok := ParseBareDirection(v); !ok {
+					reason = ReasonUnknownDirection
+				}
 			}
-		}
-		if hasUserPref && !badDirection {
-			if _, ok := ParseBareDirection(userPrefVal); !ok {
-				badDirection = true
-			}
-		}
-		if badDirection {
-			invalid = append(invalid, InvalidJoiner{
-				PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonUnknownDirection,
-			})
-		} else if hasUserBare || hasUserPref {
-			managed, err := managedFor(p.Namespace)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !managed {
-				invalid = append(invalid, InvalidJoiner{
-					PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceExcluded,
-				})
-			} else if p.Namespace != vnet.Namespace && !clusterVnet {
-				permitted, err := permittedFor(p.Namespace)
-				if err != nil {
+			if reason == "" {
+				if reason, err = ineligible(p.Namespace); err != nil {
 					return nil, nil, err
 				}
-				if !permitted {
-					invalid = append(invalid, InvalidJoiner{
-						PodNamespace: p.Namespace, PodName: p.Name, Reason: ReasonNamespaceNotAllowed,
-					})
-				}
+			}
+			if reason != "" {
+				invalid = append(invalid, InvalidJoiner{PodNamespace: p.Namespace, PodName: p.Name, Reason: reason})
 			}
 		}
 
@@ -343,12 +307,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		if p.Annotations[AnnotationResolvedGeneration] == "" {
 			continue
 		}
-
-		sysVal, hasSys := p.Labels[sysKey]
-		if !hasSys {
-			continue
-		}
-		dir, ok := ParseBareDirection(sysVal)
+		dir, ok := ParseBareDirection(p.Labels[sysKey])
 		if !ok || dir == DirectionNone {
 			continue
 		}
@@ -357,21 +316,10 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		// namespace is no longer granted, but only after its own watch fires.
 		// The membership policy must not trust a stamp the current cluster
 		// state wouldn't grant.
-		managed, err := managedFor(p.Namespace)
-		if err != nil {
+		if reason, err := ineligible(p.Namespace); err != nil {
 			return nil, nil, err
-		}
-		if !managed {
+		} else if reason != "" {
 			continue
-		}
-		if p.Namespace != vnet.Namespace && !clusterVnet {
-			permitted, err := permittedFor(p.Namespace)
-			if err != nil {
-				return nil, nil, err
-			}
-			if !permitted {
-				continue
-			}
 		}
 
 		if members[p.Namespace] == nil {
@@ -709,15 +657,8 @@ func (r *VirtualNetworkReconciler) nsToVnets(ctx context.Context, obj client.Obj
 	var out []reconcile.Request
 	for i := range vnets.Items {
 		v := &vnets.Items[i]
-		admits := v.Namespace == ns
-		if !admits {
-			ok, err := PermitsForVnet(ctx, r.Client, v, ns)
-			if err != nil {
-				continue
-			}
-			admits = ok
-		}
-		if admits {
+		// PermitsForVnet admits the home namespace too.
+		if ok, err := PermitsForVnet(ctx, r.Client, v, ns); err == nil && ok {
 			out = append(out, reconcile.Request{
 				NamespacedName: types.NamespacedName{Namespace: v.Namespace, Name: v.Name},
 			})

@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -15,6 +17,68 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 	"github.com/lhns/kube-vnet/internal/testutil"
 )
+
+// discoverMembers trusts only resolved system stamps from namespaces that are
+// managed and permitted now, and reports user join labels it cannot honor.
+func TestDiscoverMembers_EligibilityAndDiagnostics(t *testing.T) {
+	stamped := func(ns, name, dir string, userLabels map[string]string) *corev1.Pod {
+		p := testutil.Pod(ns, name, userLabels)
+		if p.Labels == nil {
+			p.Labels = map[string]string{}
+		}
+		p.Labels[SystemLabelKey("home", "v")] = dir
+		p.Annotations = map[string]string{AnnotationResolvedGeneration: "1"}
+		return p
+	}
+	prefixed := func(dir string) map[string]string {
+		return map[string]string{DefaultLabelPrefix + "net.home.v": dir}
+	}
+	unresolved := stamped("home", "unresolved", "both", nil)
+	unresolved.Annotations = nil
+
+	r := newReconciler(
+		mkNamespace("home", nil), mkNamespace("allowed", nil), mkNamespace("foreign", nil),
+		testutil.Namespace("off", map[string]string{AnnotationDisabled: "true"}, nil),
+		mkVnet("v", "home", &vnetv1alpha1.NamespaceSelector{Names: []string{"allowed", "off"}}),
+		stamped("home", "member", "both", nil),
+		stamped("home", "opted-out", "none", nil),
+		stamped("allowed", "egress-member", "egress", prefixed("egress")),
+		unresolved,
+		// Stale stamps: the namespace is no longer eligible.
+		stamped("foreign", "stale", "both", prefixed("both")),
+		stamped("off", "stale", "both", prefixed("both")),
+		// A bad user label is reported but does not revoke a valid stamp.
+		stamped("allowed", "typo", "ingress", prefixed("bogus")),
+	)
+	vnet := &vnetv1alpha1.VirtualNetwork{}
+	if err := r.Get(context.Background(), client.ObjectKey{Namespace: "home", Name: "v"}, vnet); err != nil {
+		t.Fatal(err)
+	}
+
+	members, invalid, err := r.discoverMembers(context.Background(), vnet)
+	if err != nil {
+		t.Fatalf("discoverMembers: %v", err)
+	}
+	wantMembers := map[string]map[Direction][]string{
+		"home":    {DirectionBoth: {"member"}},
+		"allowed": {DirectionEgress: {"egress-member"}, DirectionIngress: {"typo"}},
+	}
+	if !reflect.DeepEqual(members, wantMembers) {
+		t.Errorf("members = %v, want %v", members, wantMembers)
+	}
+	gotInvalid := map[string]string{}
+	for _, j := range invalid {
+		gotInvalid[j.PodNamespace+"/"+j.PodName] = j.Reason
+	}
+	wantInvalid := map[string]string{
+		"foreign/stale": ReasonNamespaceNotAllowed,
+		"off/stale":     ReasonNamespaceExcluded,
+		"allowed/typo":  ReasonUnknownDirection,
+	}
+	if !reflect.DeepEqual(gotInvalid, wantInvalid) {
+		t.Errorf("invalid = %v, want %v", gotInvalid, wantInvalid)
+	}
+}
 
 // A vnet whose home namespace is disabled must drop its membership policies.
 // If that delete fails, the reconcile must fail too: returning success leaves
