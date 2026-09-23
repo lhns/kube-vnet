@@ -625,7 +625,7 @@ Look like:
 unable to create new content in namespace Y because it is being terminated"
 ```
 
-Benign. A reconcile fired between `kubectl delete namespace Y` and the namespace finalizer completing, and Kubernetes correctly refused the create. The per-namespace reconcilers (baseline, system vnet, host-port, external-allow, apiserver-reachable) all skip a namespace that carries a `DeletionTimestamp`, so this is rare. A delete event already in flight when the namespace starts terminating can still produce one such line, as can the VirtualNetwork reconciler, which doesn't check and may re-create a membership policy in a terminating member namespace.
+Benign. A reconcile fired between `kubectl delete namespace Y` and the namespace finalizer completing, and Kubernetes correctly refused the create. Every reconciler that creates namespaced objects (baseline, system vnet, VirtualNetwork membership policies, host-port, external-allow, apiserver-reachable) skips a namespace that carries a `DeletionTimestamp`, so this is rare, but a reconcile that read the namespace just before it started terminating can still produce one such line.
 
 If you see this *outside* of a namespace deletion (i.e. the namespace exists and is not being deleted), open an issue with the full log line.
 
