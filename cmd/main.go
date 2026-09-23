@@ -198,6 +198,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: nsFilter,
+		Recorder: mgr.GetEventRecorder("kube-vnet-namespace"),
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up namespace reconciler")
@@ -220,6 +221,8 @@ func main() {
 		Scheme:   mgr.GetScheme(),
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
+		// The wait is injected by the webhook only.
+		NetworkWaitEnabled: webhookEnabled && networkWait != nil,
 	}
 	if err := resReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up resolution reconciler")
@@ -231,6 +234,7 @@ func main() {
 		Scheme:            mgr.GetScheme(),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
+		Recorder:          mgr.GetEventRecorder("kube-vnet-system-vnet"),
 	}
 	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up system vnet reconciler")
@@ -264,6 +268,7 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: nsFilter,
+		Recorder: mgr.GetEventRecorder("kube-vnet-host-port"),
 	}
 	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to set up host-port reconciler")

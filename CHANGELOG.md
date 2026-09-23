@@ -63,6 +63,29 @@ release. Pinning to an exact version is recommended.
   annotation, metric and baseline conditions ADR 0031 described, which were
   never built.
 
+- **Every failure now shows in the namespace of whoever has to act.** Many
+  users can read only their own namespace, and several problems were visible
+  only on a vnet in another namespace or in the operator log:
+  - A membership policy that fails to apply gets an `ApplyFailed` Warning on
+    the policy in its member namespace (even though it doesn't exist), naming
+    only that namespace's failure. The vnet gets one summary per reconcile
+    instead of one Event per failed policy.
+  - Failures that were only logged now get an `ApplyFailed` Warning in the
+    affected namespace and an `apply_errors_total` kind: the baseline (the
+    namespace then has no default-deny; the message says so), the
+    per-namespace `namespace` system vnet (`system_vnet`), and external-allow
+    (`external_allow`, on the Service), apiserver-reachable
+    (`apiserver_reachable`, on the Service) and host-port (`host_port`, on the
+    policy) policies. A host-port apply failure no longer stops the other
+    ports.
+  - `PolicyRestored` is also emitted on the restored policy, for every kind:
+    baseline and auto-allow restores were silent.
+  - A pod that asks for the network wait but starts without it gets a
+    `NetworkWaitSkipped` Warning. The admission warning reaches only the pod's
+    direct creator, which for a Deployment or Job pod is a controller.
+  - A pod with a `kube-vnet/net.*` label in a namespace kube-vnet does not
+    manage gets a `NamespaceNotManaged` Warning.
+
 ### Changed
 
 - **Fewer auto-allow reconciles on pod churn.** The external-allow and
@@ -80,6 +103,9 @@ release. Pinning to an exact version is recommended.
 
 ### Fixed
 
+- **`PolicyRestored` fired when a membership policy was first created**, e.g.
+  for every namespace of a new vnet. It now fires only for a policy the vnet's
+  `status.generatedPolicies` listed.
 - **A membership policy that failed to apply in one namespace no longer
   blocks the others.** The `VirtualNetwork` reconciler stopped at the first
   failed apply (a quota, admission webhook or RBAC rejection), so every

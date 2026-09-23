@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"maps"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -36,6 +38,11 @@ type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
+	// Recorder surfaces apply failures and restores on the policies.
+	// Optional.
+	Recorder events.EventRecorder
+
+	restores policyTracker
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
@@ -57,6 +64,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Name}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
 			// Namespace deletion removes its policies.
+			r.restores.forgetNamespace(req.Name, nil)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -74,6 +82,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Opt-out is Namespace-wide only: the policies are per namespace, not
 	// per pod.
 	if !r.NSFilter.IsManaged(ns) || ExternalAllowOptedOut(ns.Annotations) {
+		r.restores.forgetNamespace(ns.Name, nil)
 		return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, nil, nil)
 	}
 
@@ -82,16 +91,34 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	// A failed apply doesn't stop the loop, and its key stays kept so the
+	// sweep leaves a live policy of that port alone.
 	keep := map[client.ObjectKey]bool{}
+	var applyErrs []error
 	for key := range desiredHostPortKeys(pods.Items) {
 		pol := buildHostPortPolicy(ns.Name, key)
-		if _, err := applyPolicy(ctx, r.Client, r.Client, pol); err != nil {
-			return ctrl.Result{}, fmt.Errorf("apply host-port policy %s: %w", key, err)
-		}
 		keep[client.ObjectKeyFromObject(pol)] = true
+		created, err := applyPolicy(ctx, r.Client, r.Client, pol)
+		if err != nil {
+			applyErrors.WithLabelValues(ApplyErrorHostPort).Inc()
+			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+				"the host-port NetworkPolicy %s could not be applied: %v. Until this is fixed, traffic to hostPort %d/%s "+
+					"on pods in this namespace is blocked.", pol.Name, err, key.port, key.protocol)
+			applyErrs = append(applyErrs, fmt.Errorf("apply host-port policy %s: %w", key, err))
+			r.restores.forget(client.ObjectKeyFromObject(pol))
+			continue
+		}
+		if r.restores.applied(client.ObjectKeyFromObject(pol), created) {
+			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+				"this NetworkPolicy was deleted and has been recreated: kube-vnet lets external traffic reach hostPort %d/%s "+
+					"on pods in this namespace through it. An administrator opts the namespace out with the annotation %s=false.",
+				key.port, key.protocol, AnnotationExternalAllow)
+		}
 	}
+	r.restores.forgetNamespace(ns.Name, keep)
 	// Sweep the policies of (port, protocol) pairs no longer declared.
-	return ctrl.Result{}, sweepStalePolicies(ctx, r.Client, hostPolicies, keep, nil)
+	sweepErr := sweepStalePolicies(ctx, r.Client, hostPolicies, keep, nil)
+	return ctrl.Result{}, errors.Join(append(applyErrs, sweepErr)...)
 }
 
 // desiredHostPortKeys returns the set of distinct (port, protocol) tuples

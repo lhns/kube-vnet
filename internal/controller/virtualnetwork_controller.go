@@ -166,6 +166,12 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// until the retry. The errors are joined and returned after the rest.
 	var applyErrs []error
 	failedNS := map[string]bool{}
+	// A policy created now that the last status listed was deleted by
+	// someone; one not listed is simply new.
+	listed := make(map[client.ObjectKey]bool, len(storedStatus.GeneratedPolicies))
+	for _, ref := range storedStatus.GeneratedPolicies {
+		listed[client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}] = true
+	}
 	for i := range out.Policies {
 		p := &out.Policies[i]
 		desiredKeys[client.ObjectKeyFromObject(p)] = true
@@ -182,17 +188,27 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			restored, err = r.applyPolicyAndDetectRestore(ctx, p)
 		}
 		if err != nil {
-			err = fmt.Errorf("apply %s/%s: %w", p.Namespace, p.Name, err)
 			logger.Error(err, "apply policy failed", "policy", p.Namespace+"/"+p.Name)
 			applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Inc()
-			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventApplyFailed, "Apply", "%v", err)
-			applyErrs = append(applyErrs, err)
+			// On the desired policy, so the Event lands in the member
+			// namespace even when the policy was never created. It names
+			// only this namespace's own failure.
+			eventf(r.Recorder, p, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+				"NetworkPolicy %s for VirtualNetwork %s/%s could not be applied in this namespace: %v. "+
+					"Until this is fixed, member pods here receive no traffic from the vnet's other members.",
+				p.Name, vnet.Namespace, vnet.Name, err)
+			applyErrs = append(applyErrs, fmt.Errorf("apply %s/%s: %w", p.Namespace, p.Name, err))
 			failedNS[p.Namespace] = true
 			continue
 		}
-		if restored {
-			r.Recorder.Eventf(vnet, nil, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+		if restored && listed[client.ObjectKeyFromObject(p)] {
+			eventf(r.Recorder, vnet, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
 				"recreated previously-deleted policy %s/%s", p.Namespace, p.Name)
+			// Also on the policy, in the namespace of whoever deleted it.
+			eventf(r.Recorder, p, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+				"this NetworkPolicy was deleted and has been recreated: kube-vnet manages it for VirtualNetwork %s/%s. "+
+					"To take pods out of the vnet, remove their join labels, bindings or baseline entries instead.",
+				vnet.Namespace, vnet.Name)
 		}
 		policyRefs = append(policyRefs, vnetv1alpha1.PolicyRef{Namespace: p.Namespace, Name: p.Name})
 	}
@@ -216,10 +232,13 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	switch {
 	case len(applyErrs) > 0:
-		setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed,
-			fmt.Sprintf("%d of %s failed to apply: %s", len(applyErrs),
-				pluralize(len(out.Policies), "1 NetworkPolicy", "%d NetworkPolicies"),
-				joinErrorMessages(applyErrs)))
+		msg := fmt.Sprintf("%d of %s failed to apply: %s", len(applyErrs),
+			pluralize(len(out.Policies), "1 NetworkPolicy", "%d NetworkPolicies"),
+			joinErrorMessages(applyErrs))
+		setReady(vnet, metav1.ConditionFalse, ReasonApplyFailed, msg)
+		// One summary per reconcile; each failed namespace has its own
+		// Event on its policy.
+		eventf(r.Recorder, vnet, corev1.EventTypeWarning, EventApplyFailed, "Apply", "%s", msg)
 	case len(out.Policies) == 0:
 		setReady(vnet, metav1.ConditionTrue, ReasonNoMembers, "no pods are joining this VirtualNetwork")
 	default:

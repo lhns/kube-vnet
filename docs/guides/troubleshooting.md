@@ -38,7 +38,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidJoinLabelDirection` instead, and rules that disagree about a vnet get `ResolutionConflict` or `OverrideRejected` ([all reasons](../reference/metrics-and-events.md#kubernetes-events)). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
-> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. Disabled is an explicit opt-out — the operator stays silent there by design.
+> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. A pod there that carries a `kube-vnet/net.*` label gets one `NamespaceNotManaged` Warning instead, saying the label has no effect; pods without one get nothing.
 >
 > Events are **best-effort**. The durable record of a vnet's rejected joiners is always the vnet's own `Degraded`/`InvalidJoiners` condition (`kubectl describe vnet`); reach for that if a pod event didn't land.
 
@@ -585,7 +585,7 @@ The reason explains what to fix.
 | `PoliciesGenerated` | (`Ready=True`) — everything's working. | Nothing to fix. |
 | `InvalidName` | The vnet's name has a dot or other invalid character. | Recreate the vnet with a DNS-1123 label name (lowercase alphanumeric and hyphens, no dots). |
 | `HomeNamespaceExcluded` | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. | Move the vnet to a managed namespace, or remove the namespace from the disabled list / annotation. |
-| `ApplyFailed` | The operator hit an apiserver error trying to apply a `NetworkPolicy`. | `kubectl logs deploy/kube-vnet -n kube-vnet-system \| grep apply` for the error detail. |
+| `ApplyFailed` | The apiserver rejected one or more membership `NetworkPolicy` applies (typically a ResourceQuota or an admission policy in the member namespace). | The condition message has the first three errors. Each failed member namespace also has an `ApplyFailed` Event on the policy: `kubectl get events -n <member-ns> --field-selector reason=ApplyFailed`. Fix the quota or policy there; the operator retries. |
 
 ---
 
@@ -636,7 +636,7 @@ If you see this *outside* of a namespace deletion (i.e. the namespace exists and
 
 ## I see "PolicyRestored" Warning events — is something wrong?
 
-Maybe. The event fires when the operator re-creates a membership `NetworkPolicy` that was absent immediately before its apply call — someone (or something) deleted it and the operator restored it. (Baseline and auto-allow policies are restored too, without an Event.)
+Maybe. The event fires when the operator re-creates a `NetworkPolicy` it had applied before and that was absent immediately before its apply call — someone (or something) deleted it and the operator restored it. It is emitted on the restored policy, in its namespace, for every kind (membership, baseline, auto-allow); a membership restore also shows on the vnet.
 
 Inspect:
 

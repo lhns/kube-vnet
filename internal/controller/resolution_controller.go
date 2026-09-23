@@ -62,6 +62,13 @@ type ResolutionReconciler struct {
 	// Recorder emits the resolution Warning Events (the Reason* constants
 	// below). Optional; nil disables them.
 	Recorder events.EventRecorder
+	// NetworkWaitEnabled is whether the admission webhook injects the
+	// network wait, for the NetworkWaitSkipped Event.
+	NetworkWaitEnabled bool
+
+	// once limits the warnings about a pod's fixed spec and labels to one
+	// per pod.
+	once podOnce
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -83,6 +90,7 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	pod := &corev1.Pod{}
 	if err := r.Get(ctx, req.NamespacedName, pod); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.once.forget(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -102,6 +110,7 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	if !r.NSFilter.IsManaged(ns) {
+		r.warnUnmanaged(pod)
 		return r.stripStampedLabels(ctx, pod)
 	}
 
@@ -120,8 +129,48 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	r.warnNarrowedMembership(pod, res)
+	if w := NetworkWaitWarning(pod, true, r.NetworkWaitEnabled); w != "" {
+		r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
+	} else if r.NetworkWaitEnabled {
+		if w := networkWaitMissing(pod); w != "" {
+			r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
+		}
+	}
 
 	return ctrl.Result{}, nil
+}
+
+// ReasonNamespaceNotManaged is the pod Event for a pod that carries a
+// `kube-vnet/net.*` join label in a namespace kube-vnet does not manage.
+const ReasonNamespaceNotManaged = "NamespaceNotManaged"
+
+// warnUnmanaged tells the owner of a pod in an unmanaged namespace that what
+// the pod asks kube-vnet for has no effect. Only an explicit ask warns, so
+// the many pods of an excluded namespace stay quiet.
+func (r *ResolutionReconciler) warnUnmanaged(pod *corev1.Pod) {
+	var joins []string
+	for k := range pod.Labels {
+		if strings.HasPrefix(k, userJoinPrefix) {
+			joins = append(joins, k)
+		}
+	}
+	if len(joins) > 0 {
+		sort.Strings(joins)
+		r.warnOnce(pod, ReasonNamespaceNotManaged, fmt.Sprintf(
+			"namespace %q is not managed by kube-vnet, so the join label %s has no effect: the pod joins "+
+				"no VirtualNetwork and kube-vnet applies no NetworkPolicy here", pod.Namespace, joins[0]))
+	}
+	if w := NetworkWaitWarning(pod, false, r.NetworkWaitEnabled); w != "" {
+		r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
+	}
+}
+
+// warnOnce emits a Warning on pod the first time reason applies to it.
+func (r *ResolutionReconciler) warnOnce(pod *corev1.Pod, reason, note string) {
+	if r.Recorder == nil || !r.once.first(pod, reason) {
+		return
+	}
+	r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, reason, "Resolve", "%s", note)
 }
 
 // warnNarrowedMembership emits a Warning on the pod for each conflict and

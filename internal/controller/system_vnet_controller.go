@@ -8,6 +8,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -42,6 +43,8 @@ type SystemVnetReconciler struct {
 	Scheme            *runtime.Scheme
 	NSFilter          *NamespaceFilter
 	OperatorNamespace string
+	// Recorder surfaces a failed create on the system vnet. Optional.
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=kube-vnet.lhns.de,resources=virtualnetworks,verbs=get;list;watch;create;update;patch;delete
@@ -94,7 +97,8 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 func (r *SystemVnetReconciler) ensureNamespaceSystemVnet(ctx context.Context, ns string) error {
 	desired := desiredSystemVnet(SystemVnetNamespace, ns, "Per-namespace system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.namespace.")
-	return r.applySystemVnet(ctx, desired)
+	return r.applySystemVnet(ctx, desired,
+		"pods in this namespace that join `namespace` are not members of it until this is fixed")
 }
 
 // deleteNamespaceSystemVnet deletes the per-namespace `namespace` system vnet
@@ -126,7 +130,8 @@ func (r *SystemVnetReconciler) ensureClusterSystemVnet(ctx context.Context) erro
 	}
 	desired := desiredSystemVnet(SystemVnetCluster, r.OperatorNamespace, "Cluster-wide system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.cluster.")
 	desired.Spec.AllowedNamespaces = &vnetv1alpha1.NamespaceSelector{All: true}
-	return r.applySystemVnet(ctx, desired)
+	return r.applySystemVnet(ctx, desired,
+		"pods that join `cluster` are not members of it until this is fixed")
 }
 
 func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.VirtualNetwork {
@@ -149,10 +154,19 @@ func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.Virtua
 	}
 }
 
-func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vnetv1alpha1.VirtualNetwork) error {
+// applySystemVnet applies desired. A failure is counted and surfaced as a
+// Warning on the vnet, in its namespace; impact says what is broken meanwhile.
+func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vnetv1alpha1.VirtualNetwork, impact string) error {
 	desired.SetResourceVersion("")
-	return r.Patch(ctx, desired, client.Apply,
+	err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership)
+	if err != nil {
+		applyErrors.WithLabelValues(ApplyErrorSystemVnet).Inc()
+		eventf(r.Recorder, desired, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+			"the system VirtualNetwork %s/%s could not be created or updated: %v; %s.",
+			desired.Namespace, desired.Name, err, impact)
+	}
+	return err
 }
 
 func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {

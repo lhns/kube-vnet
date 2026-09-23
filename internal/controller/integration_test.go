@@ -607,6 +607,17 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 		_, err := findPolicy(ctx, ns, policyName)
 		return err
 	})
+	// A restore is a policy the status listed; wait for the listing.
+	eventually(t, 10*time.Second, func() error {
+		v := &vnetv1alpha1.VirtualNetwork{}
+		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
+			return err
+		}
+		if len(v.Status.GeneratedPolicies) == 0 {
+			return fmt.Errorf("status.generatedPolicies empty")
+		}
+		return nil
+	})
 
 	// Delete the membership policy. The drift watch should restore it.
 	p := &networkingv1.NetworkPolicy{}
@@ -623,19 +634,21 @@ func TestIntegration_PolicyRestoredEvent(t *testing.T) {
 		return err
 	})
 
-	// And a PolicyRestored event is recorded on the vnet.
-	eventually(t, 10*time.Second, func() error {
-		var events corev1.EventList
-		if err := testClient.List(ctx, &events, client.InNamespace(ns)); err != nil {
-			return err
-		}
-		for _, e := range events.Items {
-			if e.Reason == EventPolicyRestored && e.InvolvedObject.Kind == "VirtualNetwork" {
-				return nil
+	// And a PolicyRestored event is recorded on the vnet and on the policy.
+	for _, kind := range []string{"VirtualNetwork", "NetworkPolicy"} {
+		eventually(t, 10*time.Second, func() error {
+			var events corev1.EventList
+			if err := testClient.List(ctx, &events, client.InNamespace(ns)); err != nil {
+				return err
 			}
-		}
-		return fmt.Errorf("PolicyRestored event not found yet")
-	})
+			for _, e := range events.Items {
+				if e.Reason == EventPolicyRestored && e.InvolvedObject.Kind == kind {
+					return nil
+				}
+			}
+			return fmt.Errorf("PolicyRestored event on the %s not found yet", kind)
+		})
+	}
 }
 
 // TestIntegration_ExcludedNamespace_PodSurfacedInDegraded: a pod in an

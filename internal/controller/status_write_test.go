@@ -161,11 +161,31 @@ func TestEmitTransitionEvents_IndependentOfStatusWrite(t *testing.T) {
 	}
 }
 
-type fakeRecorder struct{ reasons, notes []string }
+// fakeRecorder records each Event's reason, note, type and regarding object.
+type fakeRecorder struct {
+	reasons, notes, types []string
+	regarding             []client.Object
+}
 
-func (f *fakeRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, reason, _, note string, args ...interface{}) {
+func (f *fakeRecorder) Eventf(obj runtime.Object, _ runtime.Object, eventtype, reason, _, note string, args ...interface{}) {
 	f.reasons = append(f.reasons, reason)
 	f.notes = append(f.notes, fmt.Sprintf(note, args...))
+	f.types = append(f.types, eventtype)
+	o, _ := obj.(client.Object)
+	f.regarding = append(f.regarding, o)
+}
+
+// on returns the notes of the reason Events regarding a kind object ns/name.
+func (f *fakeRecorder) on(reason string, kind client.Object, ns, name string) []string {
+	var out []string
+	for i, r := range f.reasons {
+		o := f.regarding[i]
+		if r == reason && o != nil && fmt.Sprintf("%T", o) == fmt.Sprintf("%T", kind) &&
+			o.GetNamespace() == ns && o.GetName() == name {
+			out = append(out, f.notes[i])
+		}
+	}
+	return out
 }
 
 // Reconcile mutates vnet.Status (setReady/setDegraded) before calling

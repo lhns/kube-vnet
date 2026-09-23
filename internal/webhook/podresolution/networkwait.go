@@ -1,20 +1,20 @@
 package podresolution
 
 import (
-	"fmt"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+
+	"github.com/lhns/kube-vnet/internal/controller"
 )
 
-// AnnotationNetworkMaxWait opts a pod into the network wait (ADR 0045): its
-// app is held until every node has applied its NetworkPolicy rules, for at
-// most this Go duration. Absent means no wait.
-const AnnotationNetworkMaxWait = "kube-vnet/network-max-wait"
-
-// NetworkWaitContainerName is the init container injected into opted-in pods.
-const NetworkWaitContainerName = "kube-vnet-network-wait"
+// The annotation and container name live in controller, whose resolution
+// reconciler repeats this webhook's warnings as pod Events.
+const (
+	AnnotationNetworkMaxWait = controller.AnnotationNetworkMaxWait
+	NetworkWaitContainerName = controller.NetworkWaitContainerName
+)
 
 // NetworkWaitConfig enables the network wait. The chart sets both from its
 // own values; the webhook can't otherwise know them.
@@ -31,15 +31,10 @@ func networkWait(pod *corev1.Pod, cfg *NetworkWaitConfig) (*corev1.Container, st
 	if !asked || pod.Spec.HostNetwork {
 		return nil, "" // hostNetwork pods aren't subject to NetworkPolicy
 	}
-	if cfg == nil {
-		return nil, fmt.Sprintf("%s is set, but the network wait is not enabled on this cluster "+
-			"(chart value webhook.networkWait.enabled); the pod starts without waiting", AnnotationNetworkMaxWait)
+	if w := controller.NetworkWaitWarning(pod, true, cfg != nil); w != "" {
+		return nil, w
 	}
-	maxWait, err := time.ParseDuration(value)
-	if err != nil || maxWait <= 0 {
-		return nil, fmt.Sprintf("%s=%q is not a positive duration such as \"30s\"; "+
-			"the pod starts without waiting", AnnotationNetworkMaxWait, value)
-	}
+	maxWait, _ := time.ParseDuration(value) // valid: NetworkWaitWarning checked it
 	for _, c := range pod.Spec.InitContainers {
 		if c.Name == NetworkWaitContainerName {
 			return nil, "" // already injected (webhook reinvocation)
@@ -76,9 +71,5 @@ func networkWait(pod *corev1.Pod, cfg *NetworkWaitConfig) (*corev1.Container, st
 // namespace kube-vnet doesn't manage, where it gets no wait (nor any
 // NetworkPolicy from kube-vnet).
 func unmanagedNetworkWait(pod *corev1.Pod) string {
-	if _, asked := pod.Annotations[AnnotationNetworkMaxWait]; !asked || pod.Spec.HostNetwork {
-		return ""
-	}
-	return fmt.Sprintf("%s is set, but kube-vnet does not manage this namespace; "+
-		"the pod starts without waiting", AnnotationNetworkMaxWait)
+	return controller.NetworkWaitWarning(pod, false, false)
 }

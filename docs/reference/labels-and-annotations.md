@@ -60,9 +60,9 @@ Symptom-first walkthroughs: [troubleshooting § pod events](../guides/troublesho
 | **On** | `Pod` (typically via the pod template) |
 | **Value** | A positive Go duration, e.g. `"30s"`. |
 | **Meaning** | "Hold this pod's app until every node has applied its NetworkPolicy rules, for at most this long." The webhook injects an init container, `kube-vnet-network-wait`, that runs first. When the maximum runs out, the app starts anyway. |
-| **Requires** | `webhook.enabled` and `webhook.networkWait.enabled`. Without them the annotation does nothing. With the webhook on but the wait off, or with an invalid value, the pod starts without waiting and `kubectl` prints an admission warning. |
+| **Requires** | `webhook.enabled` and `webhook.networkWait.enabled`. Without them, or with an invalid value, the pod starts without waiting. The pod then gets one `NetworkWaitSkipped` Warning Event saying why (`kubectl describe pod`); with the webhook on, `kubectl` also prints it as an admission warning, which only the pod's direct creator sees. |
 
-For one-shot clients on kube-router, such as a Job whose first connection must succeed. Only applies at pod creation and in namespaces kube-vnet manages; hostNetwork pods are skipped. In a namespace disabled with the `kube-vnet/disabled` annotation the pod gets an admission warning instead; namespaces the chart excludes (system namespaces and `operator.disabledNamespaces`) never reach the webhook, so there the annotation is silently ignored. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
+For one-shot clients on kube-router, such as a Job whose first connection must succeed. Only applies at pod creation and in namespaces kube-vnet manages; hostNetwork pods are skipped. In a namespace kube-vnet doesn't manage the pod gets a `NetworkWaitSkipped` Event instead (and, where the webhook sees the pod, an admission warning). See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md).
 
 ```yaml
 template:
