@@ -145,7 +145,7 @@ kubectl get networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 kubectl get events -A --field-selector reason=PolicyRestored     # drift-correction activity
 ```
 
-Six Prometheus metrics on `:8080/metrics` + Events on every condition transition: [`docs/reference/metrics-and-events.md`](docs/reference/metrics-and-events.md).
+Six Prometheus metrics on `:8080/metrics` + Events on every VirtualNetwork condition transition: [`docs/reference/metrics-and-events.md`](docs/reference/metrics-and-events.md).
 
 ---
 

@@ -306,7 +306,7 @@ Each VirtualNetwork carries two conditions in `status.conditions`:
 - **`Ready`** — true when the desired NetworkPolicy set has been applied. False when something is preventing reconciliation (apply error, invalid name, home namespace excluded).
 - **`Degraded`** — true when a pod's join label for this vnet can't be honored (unknown direction value, namespace not permitted, or namespace disabled), or with `Ready=False` on an invalid name or excluded home namespace.
 
-Each `VirtualNetworkBinding` carries a `Ready` condition too. All are standard `metav1.Condition`s, so `kubectl wait --for=condition=Ready` works. Transitions also emit Kubernetes Events ([ADR 0012](../adr/0012-status-conditions-ready-and-degraded.md), [ADR 0016](../adr/0016-emit-events-on-condition-transitions.md)). Every reason: [`reference/api.md`](../reference/api.md).
+Each `VirtualNetworkBinding` carries a `Ready` condition too. All are standard `metav1.Condition`s, so `kubectl wait --for=condition=Ready` works. VirtualNetwork transitions also emit Kubernetes Events ([ADR 0012](../adr/0012-status-conditions-ready-and-degraded.md), [ADR 0016](../adr/0016-emit-events-on-condition-transitions.md)). Every reason: [`reference/api.md`](../reference/api.md).
 
 ---
 

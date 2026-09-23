@@ -51,7 +51,7 @@ If you run the binary outside Kubernetes (`make run`), `POD_NAMESPACE` is unset 
 
 ## Helm chart values
 
-Mirror of `charts/kube-vnet/values.yaml`. Pass any of these via `--set <key>=<value>` or a values file.
+Mirror of `charts/kube-vnet/values.yaml`, plus `nameOverride`/`fullnameOverride`, which the templates read but `values.yaml` leaves unset. Pass any of these via `--set <key>=<value>` or a values file.
 
 ### `image.*`
 
@@ -158,7 +158,7 @@ See [`security.md`](../security/security.md#who-can-write-what) for the trust-mo
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `metricsService.enabled` | bool | `false` | Create a `ClusterIP` Service exposing `:8080`. Useful if Prometheus scrapes via Service rather than Pod. |
+| `metricsService.enabled` | bool | `false` | Create a Service (`metricsService.type`, `metricsService.port`) in front of the operator's metrics port. Useful if Prometheus scrapes via Service rather than Pod. |
 | `metricsService.port` | int | `8080` | Service port. |
 | `metricsService.type` | string | `ClusterIP` | Service type. |
 | `podMonitor.enabled` | bool | `false` | Create a `monitoring.coreos.com/v1 PodMonitor` (requires the Prometheus operator). |
