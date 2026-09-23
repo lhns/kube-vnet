@@ -239,8 +239,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 ) (members map[string]map[Direction][]string, invalid []InvalidJoiner, err error) {
 	members = map[string]map[Direction][]string{}
 	sysKey := SystemLabelKey(vnet.Namespace, vnet.Name)
-	userBareKey := DefaultLabelPrefix + "net." + vnet.Name
-	userPrefixedKey := DefaultLabelPrefix + "net." + vnet.Namespace + "." + vnet.Name
+	userBareKey := userJoinPrefix + vnet.Name
+	userPrefixedKey := userJoinPrefix + vnet.Namespace + "." + vnet.Name
 	clusterVnet := vnet.Name == SystemVnetCluster
 
 	var pods corev1.PodList
@@ -529,32 +529,29 @@ func summarizeInvalid(in []InvalidJoiner) string {
 	return strings.Join(parts, ", ")
 }
 
-// HasJoinLabel reports whether obj carries a user `<labelPrefix>net.*` or an
-// operator `kube-vnet.system/net.*` label.
-func HasJoinLabel(obj client.Object, labelPrefix string) bool {
-	if obj == nil {
-		return false
-	}
-	userPrefix := labelPrefix + "net."
-	for k := range obj.GetLabels() {
-		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
-			return true
-		}
-	}
-	return false
+// userJoinPrefix is the prefix of the user join labels, `kube-vnet/net.*`.
+const userJoinPrefix = DefaultLabelPrefix + "net."
+
+// isJoinLabel reports whether k is a user `kube-vnet/net.*` or an operator
+// `kube-vnet.system/net.*` label. The generator selects on the latter and the
+// diagnostics read the former, so a change in either must enqueue.
+func isJoinLabel(k string) bool {
+	return strings.HasPrefix(k, userJoinPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix)
 }
 
-// joinLabelSet extracts the user `<prefix>net.*` and operator
-// `kube-vnet.system/net.*` labels. The generator selects on the latter and
-// the diagnostics read the former, so a change in either must enqueue.
-func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
+// HasJoinLabel reports whether obj carries a join label (isJoinLabel).
+func HasJoinLabel(obj client.Object) bool {
+	return len(joinLabelSet(obj)) > 0
+}
+
+// joinLabelSet extracts obj's join labels (isJoinLabel).
+func joinLabelSet(obj client.Object) map[string]string {
 	out := map[string]string{}
 	if obj == nil {
 		return out
 	}
-	userPrefix := labelPrefix + "net."
 	for k, v := range obj.GetLabels() {
-		if strings.HasPrefix(k, userPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix) {
+		if isJoinLabel(k) {
 			out[k] = v
 		}
 	}
@@ -572,29 +569,16 @@ func joinLabelSet(obj client.Object, labelPrefix string) map[string]string {
 // the InvalidJoiners diagnostic stale until the periodic requeue.
 //
 // Create/Delete/Generic fire for any pod carrying a join label.
-func JoinLabelChangedPredicate(labelPrefix string) predicate.Predicate {
+func JoinLabelChangedPredicate() predicate.Predicate {
 	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object) },
+		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			if joinLabelSetChanged(e.ObjectOld, e.ObjectNew, labelPrefix) {
-				return true
-			}
-			// Resolution finished (or re-ran) for this pod.
-			return resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
+			return !maps.Equal(joinLabelSet(e.ObjectOld), joinLabelSet(e.ObjectNew)) ||
+				resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
 		},
-		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object, labelPrefix) },
+		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object) },
 	}
-}
-
-// joinLabelSetChanged reports whether the join-label set (both the user
-// kube-vnet/net.* and the operator kube-vnet.system/net.* families) differs
-// between two revisions of an object.
-func joinLabelSetChanged(oldObj, newObj client.Object, labelPrefix string) bool {
-	return !maps.Equal(
-		joinLabelSet(oldObj, labelPrefix),
-		joinLabelSet(newObj, labelPrefix),
-	)
 }
 
 func resolvedGeneration(obj client.Object) string {
@@ -608,9 +592,7 @@ func resolvedGeneration(obj client.Object) string {
 // changes, old and new labels), managed NetworkPolicies (drift), bindings and
 // Namespaces.
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	keyPrefix := DefaultLabelPrefix + "net."
-
-	podPredicate := JoinLabelChangedPredicate(DefaultLabelPrefix)
+	podPredicate := JoinLabelChangedPredicate()
 
 	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
 		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue
@@ -620,7 +602,7 @@ func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&vnetv1alpha1.VirtualNetwork{}).
 		Watches(
 			&corev1.Pod{},
-			r.podEventHandler(keyPrefix),
+			r.podEventHandler(),
 			builder.WithPredicates(podPredicate),
 		).
 		Watches(
@@ -670,7 +652,7 @@ func (r *VirtualNetworkReconciler) nsToVnets(ctx context.Context, obj client.Obj
 // podEventHandler enqueues the union of vnets named by a pod's old and new
 // join labels, user (`kube-vnet/net.*`) and operator (`kube-vnet.system/net.*`)
 // alike, so both added and removed memberships are seen.
-func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.EventHandler {
+func (r *VirtualNetworkReconciler) podEventHandler() handler.EventHandler {
 	enqueueOne := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS, suffix string) {
 		// Bare `cluster` names the singleton in the operator namespace, not a
 		// vnet in podNS.
@@ -697,8 +679,8 @@ func (r *VirtualNetworkReconciler) podEventHandler(keyPrefix string) handler.Eve
 	enqueue := func(q workqueue.TypedRateLimitingInterface[reconcile.Request], podNS string, lbls map[string]string) {
 		for k := range lbls {
 			switch {
-			case strings.HasPrefix(k, keyPrefix):
-				enqueueOne(q, podNS, strings.TrimPrefix(k, keyPrefix))
+			case strings.HasPrefix(k, userJoinPrefix):
+				enqueueOne(q, podNS, strings.TrimPrefix(k, userJoinPrefix))
 			case strings.HasPrefix(k, LabelSystemNetPrefix):
 				enqueueOne(q, podNS, strings.TrimPrefix(k, LabelSystemNetPrefix))
 			}

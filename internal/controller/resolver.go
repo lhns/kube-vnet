@@ -282,10 +282,10 @@ func (r *Resolver) bindingRules(ctx context.Context, pod *corev1.Pod) ([]Resolut
 // prefixed (`<homeNS>.<vnet>`); both forms canonicalize to the same FQ
 // VnetKey.
 func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
-	userNetPrefix := DefaultLabelPrefix + "net."
 	var out []ResolutionRule
 	for k, v := range pod.Labels {
-		if !strings.HasPrefix(k, userNetPrefix) {
+		suffix, ok := strings.CutPrefix(k, userJoinPrefix)
+		if !ok {
 			continue
 		}
 		dir, ok := ParseBareDirection(v)
@@ -301,7 +301,6 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			}
 			continue
 		}
-		suffix := strings.TrimPrefix(k, userNetPrefix)
 		out = append(out, ResolutionRule{
 			Vnet:      VnetKey(CanonicalSuffix(suffix, pod.Namespace)),
 			Direction: dir,
