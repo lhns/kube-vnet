@@ -5,20 +5,22 @@ package e2e
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
 
-// Runs in the kube-router entry of the e2e-helm matrix, which installs with
-// webhook.networkWait.enabled (ADR 0045).
+// Runs wherever the network wait is enabled: the kube-router entry of the
+// e2e-helm matrix and the e2e-network-wait lanes (ADR 0045). E2E_CNI names
+// the CNI.
 //
-// The server runs on the control-plane node and the client on the worker, so
-// the rule the client depends on is programmed by a node other than its own.
-// The client's app makes exactly one connection, with no retry: it only
+// The server runs on the control-plane node and the clients on the worker, so
+// the rule a client depends on is programmed by a node other than its own.
+// Each client's app makes exactly one connection, with no retry: it only
 // succeeds if the wait held the app until that remote node had applied the
-// client. Without the annotation the same pod is the race this feature
-// exists for, so its connection result is not asserted.
+// client. Clients without the annotation start at the same time; they are the
+// race the wait exists for, so their result is logged, not asserted.
 func TestNetworkWait_FirstConnectionSucceeds(t *testing.T) {
 	ns := uniqueNS(t, "nwait")
 	ensureNamespace(t, ns, nil)
@@ -40,32 +42,47 @@ func TestNetworkWait_FirstConnectionSucceeds(t *testing.T) {
 	serverIP := podIP(t, ns, "server")
 
 	worker := workerNode(t)
-
-	const maxWait = "60s"
-	applyYAML(t, pinnedPod(ns, "client", fmt.Sprintf(`
+	client := func(name, annotation string) string {
+		return pinnedPod(ns, name, fmt.Sprintf(`
   restartPolicy: Never
   nodeSelector:
     kubernetes.io/hostname: %s
   containers:
     - name: client
       image: %s
-      command: ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://%s/"]`, worker, testImage, serverIP),
-		`kube-vnet/network-max-wait: "`+maxWait+`"`))
+      command: ["wget", "-q", "-T", "5", "-O", "/dev/null", "http://%s/"]`, worker, testImage, serverIP), annotation)
+	}
+	const clients = 5
+	var manifests []string
+	for i := range clients {
+		manifests = append(manifests,
+			client(fmt.Sprintf("wait-%d", i), `kube-vnet/network-max-wait: "60s"`),
+			client(fmt.Sprintf("nowait-%d", i), ""))
+	}
+	applyYAML(t, strings.Join(manifests, "---\n"))
 
-	out, code := kubectl(t, "wait", "-n", ns, "pod/client",
-		"--for=jsonpath={.status.phase}=Succeeded", "--timeout=120s")
-	waitLog, _ := kubectl(t, "logs", "-n", ns, "client", "-c", "kube-vnet-network-wait")
-	if code != 0 {
-		appLog, _ := kubectl(t, "logs", "-n", ns, "client", "-c", "client")
-		t.Fatalf("the client's single connection did not succeed: %s\nwait log:\n%s\nclient log:\n%s",
-			out, waitLog, appLog)
+	unwaited := 0
+	for i := range clients {
+		if finalPhase(t, ns, fmt.Sprintf("nowait-%d", i), 2*time.Minute) == "Succeeded" {
+			unwaited++
+		}
 	}
-	// Succeeded after a timeout would mean the wait didn't do its job and the
-	// connection won the race by luck.
-	if !strings.Contains(waitLog, "beacons accepted after") {
-		t.Fatalf("the wait did not release on its beacons before %s:\n%s", maxWait, waitLog)
+	for i := range clients {
+		name := fmt.Sprintf("wait-%d", i)
+		phase := finalPhase(t, ns, name, 2*time.Minute)
+		waitLog, _ := kubectl(t, "logs", "-n", ns, name, "-c", "kube-vnet-network-wait")
+		t.Logf("%s: %s; wait log:\n%s", name, phase, waitLog)
+		if phase != "Succeeded" {
+			appLog, _ := kubectl(t, "logs", "-n", ns, name, "-c", "client")
+			t.Errorf("%s: the single connection did not succeed (%s); client log:\n%s", name, phase, appLog)
+		}
+		// Succeeded after a timeout would mean the connection won the race by
+		// luck, not because the wait did its job.
+		if !strings.Contains(waitLog, "beacons accepted after") {
+			t.Errorf("%s: the wait did not release on its beacons", name)
+		}
 	}
-	t.Logf("wait log:\n%s", waitLog)
+	t.Logf("on %s, %d of %d clients without the wait connected on the first try", cni(), unwaited, clients)
 }
 
 // Without the annotation, nothing is injected.
@@ -83,14 +100,18 @@ func TestNetworkWait_NotInjectedWithoutAnnotation(t *testing.T) {
 }
 
 // The first test passes whether or not a beacon ever refuses: the beacons
-// usually accept before the wait's first round. This one shows that a beacon
-// is a witness, i.e. that it refuses a source its node's CNI doesn't know.
+// usually accept before the wait's first round. This one shows whether a
+// beacon is a witness, i.e. whether it refuses a source its node's CNI
+// doesn't know as a pod.
 //
-// A hostNetwork pod's source is its node's IP, which kube-router puts in no
-// pod ipset, so the beacon on the other node must refuse it. The beacon on its
-// own node is the control: kube-router accepts anything from a pod's local
-// node, so that connection proves the pod can reach a beacon at all. A normal
-// pod on the same node is accepted by the remote beacon.
+// A hostNetwork pod's source is its node's IP, which no NetworkPolicy peer
+// {namespaceSelector: {}} covers, so the beacon on the other node must deny
+// it: kube-router refuses, Calico and Cilium drop. The beacon on its own node
+// is the control: CNIs let a node reach its local pods, so that connection
+// shows the pod can reach a beacon at all.
+// A normal pod on the same node must be accepted by the remote beacon. All
+// three are observed and logged before anything is asserted, so one run shows
+// how a CNI behaves.
 func TestNetworkWait_BeaconRefusesUnknownSource(t *testing.T) {
 	ns := uniqueNS(t, "nwait")
 	ensureNamespace(t, ns, nil)
@@ -125,25 +146,31 @@ func TestNetworkWait_BeaconRefusesUnknownSource(t *testing.T) {
 		t.Fatalf("want a beacon on %s and one on another node, got local %q remote %q", worker, local, remote)
 	}
 
-	if out, ok := connectWithin(t, ns, "member", remote, time.Minute); !ok {
-		t.Fatalf("the remote beacon never accepted a pod its CNI knows: %s", out)
-	}
-	if out, ok := connectWithin(t, ns, "hostnet", local, 30*time.Second); !ok {
-		t.Fatalf("the hostNetwork pod could not reach its own node's beacon: %s", out)
-	}
+	memberOut, memberOK := connectWithin(t, ns, "member", remote, time.Minute)
+	localOut, localOK := connectWithin(t, ns, "hostnet", local, 30*time.Second)
 	// Both pods have existed for as long as the remote node has known the
-	// member, so the refusal below is not a matter of time.
-	deadline := time.Now().Add(denyProbe)
-	var last string
-	for time.Now().Before(deadline) {
-		out, ok := connect(t, ns, "hostnet", remote)
-		if ok {
-			t.Fatalf("the remote beacon accepted a source no pod owns (%s): it is not a witness", out)
+	// member, so a refusal below is not a matter of time.
+	accepted, refused := 0, map[string]int{}
+	for deadline := time.Now().Add(denyProbe); time.Now().Before(deadline); time.Sleep(2 * time.Second) {
+		if out, ok := connect(t, ns, "hostnet", remote); ok {
+			accepted++
+		} else {
+			refused[out]++
 		}
-		last = out
-		time.Sleep(2 * time.Second)
 	}
-	t.Logf("remote beacon %s refused the hostNetwork pod for %s: %s", remote, denyProbe, last)
+	t.Logf("on %s: member -> remote beacon: %t (%s); hostNetwork -> local beacon: %t (%s); "+
+		"hostNetwork -> remote beacon: accepted %d times, failed %v",
+		cni(), memberOK, memberOut, localOK, localOut, accepted, refused)
+
+	if !memberOK {
+		t.Errorf("the remote beacon never accepted a pod its CNI knows")
+	}
+	if !localOK {
+		t.Errorf("the hostNetwork pod could not reach its own node's beacon")
+	}
+	if accepted > 0 {
+		t.Errorf("the remote beacon accepted a source no pod owns: it is not a witness")
+	}
 }
 
 // pinnedPod is a member of vnet net1 with the given spec body and, optionally,
@@ -210,4 +237,26 @@ func connectWithin(t *testing.T, ns, pod, addr string, timeout time.Duration) (s
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// finalPhase waits until pod has finished and returns its phase, or the last
+// phase seen when timeout passes.
+func finalPhase(t *testing.T, ns, pod string, timeout time.Duration) string {
+	t.Helper()
+	var phase string
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(time.Second) {
+		phase = strings.TrimSpace(kubectlMust(t, "get", "pod", "-n", ns, pod, "-o", "jsonpath={.status.phase}"))
+		if phase == "Succeeded" || phase == "Failed" {
+			break
+		}
+	}
+	return phase
+}
+
+// cni names the CNI the lane installed, for logs and per-CNI skips.
+func cni() string {
+	if c := os.Getenv("E2E_CNI"); c != "" {
+		return c
+	}
+	return "an unnamed CNI"
 }

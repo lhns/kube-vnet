@@ -82,6 +82,7 @@ jobs:
             webhook: true
     env:
       CLUSTER: kube-vnet-e2e-helm-${{ matrix.cni }}
+      E2E_CNI: ${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -347,6 +348,66 @@ jobs:
             exit 1
           fi
           echo "OK: 0 operator-managed NetworkPolicies post-uninstall."
+
+      - name: dump diagnostics on failure
+        if: failure()
+        uses: ./.github/actions/e2e-diagnostics
+        with:
+          cni: ${{ matrix.cni }}
+
+  # The network wait (ADR 0045) on the CNIs other than kube-router, which runs
+  # these tests in its e2e-helm entry. Only the TestNetworkWait tests run here;
+  # E2E_CNI names the CNI in their logs. Results: ADR 0045's amendment.
+  e2e-network-wait:
+    name: e2e-network-wait (${{ matrix.cni }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        cni: [calico, cilium]
+    env:
+      CLUSTER: kube-vnet-e2e-nwait-${{ matrix.cni }}
+      E2E_CNI: ${{ matrix.cni }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26'
+          cache: true
+      - uses: azure/setup-helm@v5
+        with:
+          version: v3.16.3
+
+      - name: create kind cluster (no default CNI)
+        uses: helm/kind-action@v1.15.0
+        with:
+          cluster_name: ${{ env.CLUSTER }}
+          config: test/e2e/kind-config.yaml
+          wait: 60s
+
+      - name: install ${{ matrix.cni }}, build + load the operator image
+        uses: ./.github/actions/e2e-setup
+        with:
+          cni: ${{ matrix.cni }}
+          cluster-name: ${{ env.CLUSTER }}
+
+      - name: deploy operator (helm)
+        run: |
+          set -euxo pipefail
+          helm install kube-vnet charts/kube-vnet \
+            --namespace kube-vnet-system --create-namespace \
+            --set fullnameOverride=kube-vnet-controller \
+            --set operator.clusterBaseline.ingressIsolationLevel=pod \
+            --set webhook.enabled=true \
+            --set webhook.networkWait.enabled=true \
+            --set image.repository=kube-vnet \
+            --set image.tag=e2e \
+            --set image.pullPolicy=Never \
+            --wait --timeout 3m
+
+      - name: run the network wait tests
+        run: go test -tags e2e_webhook ./test/e2e/... -run 'TestNetworkWait' -count=1 -v -timeout 15m
 
       - name: dump diagnostics on failure
         if: failure()
