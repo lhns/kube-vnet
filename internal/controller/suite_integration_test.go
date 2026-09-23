@@ -124,7 +124,6 @@ func TestMain(m *testing.M) {
 	bindingReconciler := &VirtualNetworkBindingReconciler{
 		Client:            mgr.GetClient(),
 		Scheme:            mgr.GetScheme(),
-		Recorder:          mgr.GetEventRecorder("kube-vnet-binding-test"),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
 	}
