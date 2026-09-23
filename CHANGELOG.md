@@ -129,6 +129,15 @@ release. Pinning to an exact version is recommended.
   Membership policies now skip terminating namespaces, as the other
   reconcilers already did. Their pods still count as members until they are
   gone.
+- **`VirtualNetworkBinding` status overclaimed.** `status.attachedPods` and
+  `Ready=True, PodsAttached` listed every pod the selector matched, including
+  pods resolution did not make members (a baseline or pod-label conflict,
+  direction `none`). They now list only pods stamped as members; the
+  condition message counts the rest ("2 of 3 selected pod(s) are members"),
+  and a selector whose pods are all non-members reports the new reason
+  `NoPodsAttached`. A binding to a vnet that is not served now reports
+  `Ready=False`: `HomeNamespaceExcluded` when the vnet's home namespace is
+  disabled or excluded, `VirtualNetworkTerminating` while it is being deleted.
 
 ### Security
 

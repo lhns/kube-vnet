@@ -286,7 +286,7 @@ spec:
     matchExpressions: [ ... ]
 status:
   conditions: [ ... ]            # Ready
-  attachedPods: [<string>, ...]  # pod names selected (in the binding's namespace)
+  attachedPods: [<string>, ...]  # selected pods that are members (in the binding's namespace)
   observedGeneration: <int>
 ```
 
@@ -307,9 +307,12 @@ The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permi
 
 | Status | Reason | Meaning |
 |---|---|---|
-| True | `PodsAttached` | The selector matched at least one pod; those pods are stamped as members. `attachedPods` lists the pod names. |
+| True | `PodsAttached` | At least one selected pod is a member. `attachedPods` lists the members; if some selected pods are not, the message counts them. |
+| True | `NoPodsAttached` | The selector matches pods, but none is a member: resolution overrode the binding (a baseline or pod-label conflict, direction `none`) or has not stamped them yet. Check the pods' events and `kube-vnet.system/net.*` labels. |
 | True | `NoPodsMatch` | The binding is accepted, but the selector currently matches zero pods in the binding's namespace. |
 | False | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. |
+| False | `VirtualNetworkTerminating` | The target vnet is being deleted; its membership policies are gone. |
+| False | `HomeNamespaceExcluded` | The target vnet's home namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`, so the vnet is not served and grants nothing. System vnets are exempt. |
 | False | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
 | False | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. |
 | False | `UnknownDirection` | `spec.direction` is not one of the recognized values. |
@@ -319,7 +322,7 @@ The Go-level reason constants live in `internal/controller/virtualnetworkbinding
 
 ### `attachedPods`
 
-A sorted list of pod names (in the binding's namespace) selected by `spec.podSelector`. Refreshed on every successful reconcile. Useful for catching too-broad selectors.
+A sorted list of the pods (in the binding's namespace) selected by `spec.podSelector` that are members of the target vnet: resolution has stamped them `kube-vnet.system/net.<homeNS>.<vnet>` with a direction other than `none`. A selected pod can still be a non-member, since the binding is one input to resolution. Refreshed on every successful reconcile, including when a pod's stamp changes. Empty while `Ready=False`. Useful for catching too-broad selectors.
 
 ### `observedGeneration`
 

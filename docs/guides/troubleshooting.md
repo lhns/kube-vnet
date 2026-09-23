@@ -554,7 +554,10 @@ Check the `Ready` condition's reason:
 
 | Reason | Meaning | Fix |
 |---|---|---|
-| `PodsAttached` | Working — `attachedPods` lists the pod names. | — |
+| `PodsAttached` | Working — `attachedPods` lists the member pods. If the message says "N of M selected pod(s)", the rest are selected but not members. | Check the other pods' events and `kube-vnet.system/net.*` labels. |
+| `NoPodsAttached` | `Ready=True`; the selector matches pods but none is a member (a baseline or pod-label conflict, direction `none`, or not stamped yet). | Check the pods' events and `kube-vnet.system/net.*` labels. |
+| `HomeNamespaceExcluded` | The target vnet's home namespace is disabled or excluded, so the vnet is not served. | Re-enable the home namespace, or bind to a vnet in a managed namespace. |
+| `VirtualNetworkTerminating` | The target vnet is being deleted. | Recreate the vnet or point the binding elsewhere. |
 | `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
 | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
 | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |

@@ -300,13 +300,21 @@ func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
 	cluster := binding("to-cluster", SystemVnetCluster)
 	paymentsVnet := mkVnet("payments", "webapp", nil)
 	clusterVnet := mkVnet(SystemVnetCluster, opNS, &vnetv1alpha1.NamespaceSelector{All: true})
+	// A system vnet: its home, the operator namespace, is always unmanaged.
+	clusterVnet.Labels = map[string]string{LabelManagedBy: LabelManagedByValue}
 
 	c := fake.NewClientBuilder().
 		WithScheme(schemeForPermits(t)).
 		WithObjects(
 			mkNamespace("webapp", nil), paymentsVnet, clusterVnet, local, cluster,
 			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-				Namespace: "webapp", Name: "web-0", Labels: map[string]string{"app": "web"},
+				Namespace: "webapp", Name: "web-0",
+				Labels: map[string]string{
+					"app":                                   "web",
+					SystemLabelKey("webapp", "payments"):    "both",
+					SystemLabelKey(opNS, SystemVnetCluster): "both",
+				},
+				Annotations: map[string]string{AnnotationResolvedGeneration: "0"},
 			}},
 		).
 		WithStatusSubresource(&vnetv1alpha1.VirtualNetworkBinding{}).
