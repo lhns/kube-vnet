@@ -2,6 +2,8 @@
 
 **Status**: Accepted (2026-07-26)
 
+> **Amendment (2026-09-23) — two rows of the read/trigger table corrected.** `VirtualNetworkReconciler` never read `VirtualNetworkBinding`: it reads only the stamps resolution derives from bindings, and a stamp change is a pod event. Its binding watch was dead weight and has been removed, so the row now lists four inputs, not five. The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` fired on creates only, which missed a backing pod leaving (delete) or moving out of a Service's selector (label change). It now fires on creates, deletes and label changes; the rows say so.
+
 ## Context
 
 Four bugs of one shape surfaced in quick succession. In each, a reconciler decided something by reading state it does not watch, so the decision was never revisited:
@@ -61,14 +63,14 @@ The checklist for future changes. Any read not covered by a trigger is a bug of 
 
 | Controller | Reads | Triggers |
 |---|---|---|
-| `VirtualNetworkReconciler` | VirtualNetwork, Pod, NetworkPolicy, VirtualNetworkBinding, **Namespace** | all five |
+| `VirtualNetworkReconciler` | VirtualNetwork, Pod, NetworkPolicy, **Namespace** | all four |
 | `ResolutionReconciler` | Pod, Namespace (annotation **+ labels**), **VirtualNetwork**, both Baselines, Binding | all six |
 | `VirtualNetworkBindingReconciler` | Binding, VirtualNetwork, **Pod**, **Namespace** | all four |
 | `NamespaceReconciler` | Namespace, NetworkPolicy | both |
 | `SystemVnetReconciler` | Namespace, VirtualNetwork | both |
 | `HostPortReconciler` | Namespace, Pod, NetworkPolicy | all three |
-| `ExternalAllowReconciler` | Service, Namespace, Pod, NetworkPolicy | all four (+30s requeue for pending named ports) |
-| `ApiserverReachableReconciler` | Service, Namespace, Pod, NetworkPolicy, 4 discovery kinds | all (+30s requeue) |
+| `ExternalAllowReconciler` | Service, Namespace, Pod, NetworkPolicy | all four; Pod on create, delete and label change (+30s requeue for pending named ports) |
+| `ApiserverReachableReconciler` | Service, Namespace, Pod, NetworkPolicy, 4 discovery kinds | all; Pod on create, delete and label change (+30s requeue) |
 | `MetricsCollector` | live Lists on a 30s tick | n/a — not a reconciler |
 
 Predicates may narrow *which* changes fire, never *which fields matter*. `GenerationChangedPredicate` on the resolution controller's `VirtualNetwork` watch is legitimate: the CRD has a status subresource, so generation tracks spec only, and without it every membership status write would fan out to pods and recreate the loop `75c14a6` removed.

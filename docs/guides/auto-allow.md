@@ -38,7 +38,7 @@ All three families are **additive and port-scoped**: NetworkPolicy union semanti
 | `type: ClusterIP` (or unset) with non-empty `spec.externalIPs` | yes |
 | plain `ClusterIP`, headless (`clusterIP: None`), `ExternalName`, or no `spec.selector` | no |
 
-**Emitted** — `kube-vnet.ext.svc.<service>-<8hex>` in the Service's namespace: podSelector copied from the Service's selector, ingress `from: ipBlock 0.0.0.0/0` on the Service's **targetPort(s)** (that's the port the packet actually carries after kube-proxy DNAT — allowing the nodePort would match nothing). Named targetPorts are resolved against the backing pods; until a matching pod exists the policy is held back and a `Pending` event is emitted on the Service.
+**Emitted** — `kube-vnet.ext.svc.<service>-<8hex>` in the Service's namespace: podSelector copied from the Service's selector, ingress `from: ipBlock 0.0.0.0/0` on the Service's **targetPort(s)** (that's the port the packet actually carries after kube-proxy DNAT — allowing the nodePort would match nothing). Named targetPorts are resolved against every backing pod, and each port number in use is allowed (pods may map the name to different numbers); until a matching pod exists the policy is held back and a `Pending` event is emitted on the Service.
 
 The policy carries an owner reference to the Service, so deleting the Service cascades the policy away.
 

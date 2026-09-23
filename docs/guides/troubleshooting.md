@@ -177,7 +177,7 @@ Most common case. Walk through these in order:
    kubectl get vnet -n <home-ns> <vnet-name> -o yaml | yq .spec.allowedNamespaces
    ```
 
-   If `allowedNamespaces` is unset, only the home namespace can join. If it's `names: [...]`, your namespace must be in that list (exact match — no globs). If it's `selector: {...}`, your namespace's labels must match.
+   If `allowedNamespaces` is unset, only the home namespace can join. If it's `names: [...]`, your namespace must be in that list (exact match — no globs). If it's `selector: {...}`, your namespace's labels must match; a malformed selector matches no namespaces.
 
    A pod in a non-permitted namespace shows up as `Degraded=True, reason=InvalidJoiners` with `NamespaceNotAllowed` in the per-pod reason.
 
@@ -623,7 +623,7 @@ Look like:
 unable to create new content in namespace Y because it is being terminated"
 ```
 
-Benign. A reconcile fired between `kubectl delete namespace Y` and the namespace finalizer completing, and Kubernetes correctly refused the create. The reconcilers skip namespaces that carry a `DeletionTimestamp`, so this is rare, but a delete event already in flight when the namespace starts terminating can still produce one such line.
+Benign. A reconcile fired between `kubectl delete namespace Y` and the namespace finalizer completing, and Kubernetes correctly refused the create. The per-namespace reconcilers (baseline, system vnet, host-port, external-allow, apiserver-reachable) all skip a namespace that carries a `DeletionTimestamp`, so this is rare. A delete event already in flight when the namespace starts terminating can still produce one such line, as can the VirtualNetwork reconciler, which doesn't check and may re-create a membership policy in a terminating member namespace.
 
 If you see this *outside* of a namespace deletion (i.e. the namespace exists and is not being deleted), open an issue with the full log line.
 
