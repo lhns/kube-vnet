@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -207,5 +208,53 @@ func TestUpdateStatus_WritesWhenConditionsMutatedBeforeCall(t *testing.T) {
 	_ = c.Get(ctx, client.ObjectKey{Namespace: "home", Name: "v"}, &final)
 	if s := conditionStatus(&final, "Degraded"); s != metav1.ConditionTrue {
 		t.Fatalf("persisted Degraded = %v, want True", s)
+	}
+}
+
+// The binding reconciler is enqueued by every pod change in its namespace, so
+// it too must skip writing a status that hasn't changed.
+func TestBindingStatus_NoWriteWhenUnchanged(t *testing.T) {
+	ctx := context.Background()
+	b := &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "webapp", Name: "b"},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: ref("payments", ""),
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}},
+		},
+	}
+	webPod := func(name string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Namespace: "webapp", Name: name, Labels: map[string]string{"app": "web"},
+		}}
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(schemeForPermits(t)).
+		WithObjects(mkNamespace("webapp", nil), mkVnet("payments", "webapp", nil), b, webPod("web-0")).
+		WithStatusSubresource(&vnetv1alpha1.VirtualNetworkBinding{}).
+		Build()
+	r := &VirtualNetworkBindingReconciler{Client: c, NSFilter: NewNamespaceFilter(nil)}
+	key := client.ObjectKeyFromObject(b)
+
+	reconcileRV := func() string {
+		t.Helper()
+		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key}); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		var got vnetv1alpha1.VirtualNetworkBinding
+		if err := c.Get(ctx, key, &got); err != nil {
+			t.Fatalf("get binding: %v", err)
+		}
+		return got.ResourceVersion
+	}
+
+	first := reconcileRV()
+	if again := reconcileRV(); again != first {
+		t.Fatalf("status was rewritten with identical input (rv %s -> %s)", first, again)
+	}
+	if err := c.Create(ctx, webPod("web-1")); err != nil {
+		t.Fatalf("create pod: %v", err)
+	}
+	if changed := reconcileRV(); changed == first {
+		t.Fatal("a new matching pod did not update status.attachedPods")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -59,6 +60,8 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	if !b.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, nil
 	}
+	// The status as fetched, before setBindingReady changes it.
+	stored := b.Status.DeepCopy()
 
 	// Namespace excluded → nothing to do, but reflect that on the binding.
 	bns := &corev1.Namespace{}
@@ -68,7 +71,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	if bns.Name == "" || !r.NSFilter.IsManaged(bns) {
 		setBindingReady(b, metav1.ConditionFalse, ReasonBindingNamespaceExcluded,
 			fmt.Sprintf("namespace %q is excluded by the operator", b.Namespace))
-		return ctrl.Result{}, r.writeStatus(ctx, b, nil)
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}
 
 	// Validate direction.
@@ -79,7 +82,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	if _, ok := ParseBareDirection(dirVal); !ok {
 		setBindingReady(b, metav1.ConditionFalse, ReasonBindingUnknownDirection,
 			fmt.Sprintf("unknown direction %q", dirVal))
-		return ctrl.Result{}, r.writeStatus(ctx, b, nil)
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}
 
 	// Locate target VirtualNetwork.
@@ -89,7 +92,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		if apierrors.IsNotFound(err) {
 			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotFound,
 				fmt.Sprintf("VirtualNetwork %s/%s not found", vnetKey.Namespace, vnetKey.Name))
-			return ctrl.Result{}, r.writeStatus(ctx, b, nil)
+			return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 		}
 		return ctrl.Result{}, err
 	}
@@ -103,14 +106,14 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		setBindingReady(b, metav1.ConditionFalse, ReasonBindingNamespaceNotAllowed,
 			fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q",
 				vnet.Namespace, vnet.Name, b.Namespace))
-		return ctrl.Result{}, r.writeStatus(ctx, b, nil)
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}
 
 	// Evaluate the binding's podSelector against pods in the binding's namespace.
 	sel, err := metav1.LabelSelectorAsSelector(&b.Spec.PodSelector)
 	if err != nil {
 		setBindingReady(b, metav1.ConditionFalse, ReasonBindingInvalidSelector, err.Error())
-		return ctrl.Result{}, r.writeStatus(ctx, b, nil)
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(b.Namespace), client.MatchingLabelsSelector{Selector: sel}); err != nil {
@@ -129,7 +132,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		setBindingReady(b, metav1.ConditionTrue, ReasonBindingPodsAttached,
 			fmt.Sprintf("%d pod(s) attached to %s/%s", len(names), vnet.Namespace, vnet.Name))
 	}
-	if err := r.writeStatus(ctx, b, names); err != nil {
+	if err := r.writeStatus(ctx, b, stored, names); err != nil {
 		logger.Error(err, "status update failed")
 		return ctrl.Result{}, err
 	}
@@ -137,10 +140,16 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 }
 
 func (r *VirtualNetworkBindingReconciler) writeStatus(
-	ctx context.Context, b *vnetv1alpha1.VirtualNetworkBinding, attachedPods []string,
+	ctx context.Context, b *vnetv1alpha1.VirtualNetworkBinding,
+	stored *vnetv1alpha1.VirtualNetworkBindingStatus, attachedPods []string,
 ) error {
 	b.Status.AttachedPods = attachedPods
 	b.Status.ObservedGeneration = b.Generation
+	// Skip no-op writes: every pod change in the namespace re-enqueues the
+	// binding.
+	if equality.Semantic.DeepEqual(stored, &b.Status) {
+		return nil
+	}
 	return r.Status().Update(ctx, b)
 }
 
