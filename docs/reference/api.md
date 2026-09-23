@@ -157,7 +157,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | True | `PoliciesGenerated` | "<N> NetworkPolicies in <M> namespaces" | Reconcile succeeded; at least one policy generated. |
 | False | `InvalidName` | "name <name> is not a DNS-1123 label" | The name fails the runtime validation regex (the CRD's CEL rule should prevent this from being persisted; this is defense-in-depth). |
 | False | `HomeNamespaceExcluded` | "home namespace <ns> is excluded by the operator" | The vnet's home namespace is in `--disabled-namespaces` or has `kube-vnet/disabled=true`. |
-| False | `ApplyFailed` | apiserver error message | A `NetworkPolicy` apply call returned an error. |
+| False | `ApplyFailed` | "<K> of <N> NetworkPolicies failed to apply: <errors>", listing the first three | At least one `NetworkPolicy` apply returned an error; the other namespaces were still applied. |
 
 ### Degraded condition
 
