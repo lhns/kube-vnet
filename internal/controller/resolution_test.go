@@ -71,6 +71,30 @@ func TestResolve_OverrideRejectedWhenClusterBare(t *testing.T) {
 	}
 }
 
+// Restating the pinned value changes nothing, so it is not a rejected
+// override. Reporting it would put a Warning on every pod that carries the
+// same join label the cluster baseline pins.
+func TestResolve_AgreeingWithBarePinIsNotRejected(t *testing.T) {
+	for _, d := range []Direction{DirectionBoth, DirectionDefaultBoth} {
+		res := Resolve([]ResolutionLayer{
+			{
+				Scope: ScopeClusterBaseline,
+				Rules: []ResolutionRule{{Vnet: "cluster", Direction: DirectionBoth, Source: "cb"}},
+			},
+			{
+				Scope: ScopeNamespaceBaseline,
+				Rules: []ResolutionRule{{Vnet: "cluster", Direction: d, Source: "nb"}},
+			},
+		})
+		if got := res.Effective["cluster"]; got != DirectionBoth {
+			t.Errorf("%s: cluster = %q, want both", d, got)
+		}
+		if len(res.OverrideRejected) != 0 {
+			t.Errorf("%s: no override attempted, got rejections %+v", d, res.OverrideRejected)
+		}
+	}
+}
+
 func TestResolve_BindingOverridesNamespaceBaseline(t *testing.T) {
 	res := Resolve([]ResolutionLayer{
 		{

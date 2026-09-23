@@ -249,8 +249,12 @@ func Resolve(layers []ResolutionLayer) ResolutionResult {
 			}
 
 			// Cross-layer: apply this layer's effective value, respecting
-			// upstream bare-pin if any.
+			// upstream bare-pin if any. Restating the pinned value is not an
+			// override.
 			if existing, ok := current[vnet]; ok && !existing.Direction.IsDefault() {
+				if eff.Bare() == existing.Direction {
+					continue
+				}
 				rejected = append(rejected, OverrideRejected{
 					Vnet:           vnet,
 					AttemptedScope: layer.Scope,
