@@ -41,6 +41,28 @@ app.kubernetes.io/name: {{ include "kube-vnet.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/*
+The network wait beacons (ADR 0045) get a name of their own, so the
+operator's selectors never match them.
+*/}}
+{{- define "kube-vnet.networkBeaconSelectorLabels" -}}
+app.kubernetes.io/name: {{ include "kube-vnet.name" . }}-network-beacon
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{- define "kube-vnet.networkBeaconLabels" -}}
+helm.sh/chart: {{ include "kube-vnet.chart" . }}
+{{ include "kube-vnet.networkBeaconSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/component: network-beacon
+{{- with .Values.commonLabels }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
 {{- define "kube-vnet.serviceAccountName" -}}
 {{ include "kube-vnet.fullname" . }}
 {{- end -}}

@@ -52,6 +52,10 @@ spec:
             {{- if .Values.webhook.enabled }}
             - --webhook-enabled
             - --service-account-name={{ include "kube-vnet.serviceAccountName" . }}
+            {{- if .Values.webhook.networkWait.enabled }}
+            - --network-wait-beacons={{ include "kube-vnet.fullname" . }}-network-beacon.{{ .Release.Namespace }}.svc:9444
+            - --network-wait-image={{ include "kube-vnet.image" . }}
+            {{- end }}
             {{- end }}
           env:
             - name: POD_NAMESPACE
