@@ -334,7 +334,7 @@ func labelsMatchSelector(labels, selector map[string]string) bool {
 // externalAllowPolicyName returns the Service-source policy name,
 // `kube-vnet.ext.svc.<svcName>-<8hex>` (ADR 0039).
 func externalAllowPolicyName(svc *corev1.Service) string {
-	return servicePolicyName(PolicySourceKindService, svc)
+	return servicePolicyName(LabelSourceKindService, svc)
 }
 
 // servicePolicyName returns `kube-vnet.ext.<sourceKind>.<svcName>-<8hex>`,
