@@ -3,8 +3,7 @@
 #
 # Usage:  ./test/e2e/up.sh [kube-router|calico]   (default: kube-router)
 #
-# CI uses the helm/kind-action steps in .github/workflows/e2e.yaml directly,
-# but the local-dev path mirrors that flow.
+# CI does the same through helm/kind-action and .github/actions/e2e-setup.
 set -euo pipefail
 
 CNI=${1:-${CNI:-kube-router}}
@@ -70,10 +69,10 @@ kind load docker-image "$IMG" --name "$CLUSTER_NAME"
 
 echo "==> deploying operator"
 mv config/manager/manager.yaml config/manager/manager.yaml.bak
+trap 'mv config/manager/manager.yaml.bak config/manager/manager.yaml 2>/dev/null || true' EXIT
 sed -e "s|ghcr.io/lhns/kube-vnet:latest|${IMG}|" \
     -e 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|' \
     config/manager/manager.yaml.bak > config/manager/manager.yaml
-trap 'mv config/manager/manager.yaml.bak config/manager/manager.yaml 2>/dev/null || true' EXIT
 
 kubectl apply -k config/default
 

@@ -1,0 +1,44 @@
+name: e2e diagnostics
+description: >-
+  Dump the cluster state a failed e2e lane needs for debugging. Every command
+  tolerates failure: not every lane has a helm release, beacons or a cleanup
+  Job.
+
+inputs:
+  cni:
+    description: kube-router or calico
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: dump diagnostics
+      shell: bash
+      env:
+        CNI: ${{ inputs.cni }}
+      run: |
+        echo "===== nodes ====="
+        kubectl describe nodes || true
+        echo "===== events ====="
+        kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
+        echo "===== $CNI logs ====="
+        if [ "$CNI" = calico ]; then
+          kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
+        else
+          kubectl logs -n kube-system ds/kube-router --tail=200 || true
+        fi
+        echo "===== operator logs ====="
+        kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
+        echo "===== network beacons ====="
+        kubectl get pods,endpoints -n kube-vnet-system -l app.kubernetes.io/component=network-beacon -o wide || true
+        echo "===== helm release ====="
+        helm get all kube-vnet -n kube-vnet-system 2>&1 | head -200 || true
+        echo "===== cluster baseline ====="
+        kubectl get clustervirtualnetworkbaseline default -o yaml || true
+        echo "===== virtualnetworks ====="
+        kubectl get vnet -A -o yaml || true
+        echo "===== networkpolicies ====="
+        kubectl get networkpolicy -A -o yaml || true
+        echo "===== cleanup hook Job(s) ====="
+        kubectl get jobs -A -l app.kubernetes.io/component=cleanup -o yaml 2>&1 || true
+        kubectl logs -n kube-vnet-system -l app.kubernetes.io/component=cleanup --tail=200 2>&1 || true

@@ -63,9 +63,10 @@ spec:
                 fieldRef:
                   fieldPath: metadata.namespace
           ports:
-            - containerPort: {{ regexReplaceAll "^:" .Values.operator.metricsBindAddress "" | atoi }}
+            {{- /* The port is whatever follows the last colon: ":8080" and "0.0.0.0:8080" alike. */}}
+            - containerPort: {{ regexReplaceAll ".*:" .Values.operator.metricsBindAddress "" | atoi }}
               name: metrics
-            - containerPort: {{ regexReplaceAll "^:" .Values.operator.healthProbeBindAddress "" | atoi }}
+            - containerPort: {{ regexReplaceAll ".*:" .Values.operator.healthProbeBindAddress "" | atoi }}
               name: health
             {{- if .Values.webhook.enabled }}
             - containerPort: 9443

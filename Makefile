@@ -38,11 +38,11 @@ integration-test: envtest manifests ## Run envtest-backed integration tests
 	go test -tags integration ./internal/... -count=1 -timeout 600s -v
 
 .PHONY: e2e-up
-e2e-up: ## Bootstrap a kind cluster with a CNI + the operator (local dev). CNI defaults to kube-router; pass `calico` for Calico.
+e2e-up: ## Bootstrap a kind cluster with a CNI + the operator (local dev). CNI=calico for Calico; default kube-router.
 	./test/e2e/up.sh
 
 .PHONY: e2e-down
-e2e-down: ## Tear down the local e2e kind cluster
+e2e-down: ## Tear down the local e2e kind cluster (same CNI= as e2e-up)
 	./test/e2e/down.sh
 
 .PHONY: e2e-test

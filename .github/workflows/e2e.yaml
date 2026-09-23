@@ -11,60 +11,17 @@ on:
 # CNI install and image build/load are shared via .github/actions/e2e-setup.
 
 jobs:
-  e2e-kube-router:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
-
-      - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.15.0
-        with:
-          cluster_name: kube-vnet-e2e-kr
-          config: test/e2e/kind-config.yaml
-          wait: 60s
-
-      - name: install kube-router, build + load the operator image
-        uses: ./.github/actions/e2e-setup
-        with:
-          cni: kube-router
-          cluster-name: kube-vnet-e2e-kr
-
-      - name: deploy operator
-        run: |
-          set -euxo pipefail
-          sed -i 's|ghcr.io/lhns/kube-vnet:latest|kube-vnet:e2e|' config/manager/manager.yaml
-          sed -i 's|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|' config/manager/manager.yaml
-          kubectl apply -k config/default
-          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
-            -n kube-vnet-system --timeout=180s
-
-      - name: run e2e tests
-        run: go test -tags e2e ./test/e2e/... -count=1 -v -timeout 15m
-
-      - name: dump diagnostics on failure
-        if: failure()
-        run: |
-          echo "===== nodes ====="
-          kubectl describe nodes || true
-          echo "===== events ====="
-          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
-          echo "===== kube-router logs ====="
-          kubectl logs -n kube-system ds/kube-router --tail=200 || true
-          echo "===== operator logs ====="
-          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
-          echo "===== virtualnetworks ====="
-          kubectl get vnet -A -o yaml || true
-          echo "===== networkpolicies ====="
-          kubectl get networkpolicy -A -o yaml || true
-
-  e2e-calico:
+  # The kustomize-installed operator (config/default), on each CNI.
+  e2e-kustomize:
+    name: e2e-kustomize (${{ matrix.cni }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        cni: [kube-router, calico]
+    env:
+      CLUSTER: kube-vnet-e2e-${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -75,15 +32,15 @@ jobs:
       - name: create kind cluster (no default CNI)
         uses: helm/kind-action@v1.15.0
         with:
-          cluster_name: kube-vnet-e2e-cal
+          cluster_name: ${{ env.CLUSTER }}
           config: test/e2e/kind-config.yaml
           wait: 60s
 
-      - name: install Calico, build + load the operator image
+      - name: install ${{ matrix.cni }}, build + load the operator image
         uses: ./.github/actions/e2e-setup
         with:
-          cni: calico
-          cluster-name: kube-vnet-e2e-cal
+          cni: ${{ matrix.cni }}
+          cluster-name: ${{ env.CLUSTER }}
 
       - name: deploy operator
         run: |
@@ -99,17 +56,9 @@ jobs:
 
       - name: dump diagnostics on failure
         if: failure()
-        run: |
-          echo "===== events ====="
-          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
-          echo "===== calico logs ====="
-          kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
-          echo "===== operator logs ====="
-          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
-          echo "===== virtualnetworks ====="
-          kubectl get vnet -A -o yaml || true
-          echo "===== networkpolicies ====="
-          kubectl get networkpolicy -A -o yaml || true
+        uses: ./.github/actions/e2e-diagnostics
+        with:
+          cni: ${{ matrix.cni }}
 
   # The helm-installed operator, in both modes, running the same full suite
   # and the same install/upgrade/uninstall checks. Installing via helm also
@@ -117,8 +66,8 @@ jobs:
   # and the hand-maintained chart templates.
   #
   # The webhook entry runs on kube-router, the CNI the startup race was
-  # observed on. The kustomize lanes above cover kube-router and Calico with
-  # the webhook off; kustomize has no webhook.
+  # observed on. e2e-kustomize covers both CNIs with the webhook off;
+  # kustomize has no webhook.
   e2e-helm:
     name: e2e-helm (${{ matrix.cni }}, webhook ${{ matrix.webhook && 'on' || 'off' }})
     runs-on: ubuntu-latest
@@ -172,8 +121,6 @@ jobs:
             --set image.tag=e2e \
             --set image.pullPolicy=Never \
             --wait --timeout 3m
-          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
-            -n kube-vnet-system --timeout=180s
 
       - name: assert the webhook is actually installed
         if: matrix.webhook
@@ -194,7 +141,6 @@ jobs:
             echo "FAIL: the system-labels VAP covers all pods while the webhook is enabled."
             exit 1
           fi
-
 
       - name: run e2e tests
         run: go test -tags ${{ matrix.webhook && 'e2e,e2e_webhook' || 'e2e' }} ./test/e2e/... -count=1 -v -timeout 15m
@@ -280,15 +226,15 @@ jobs:
             fi
             sleep 2
           done
-          # Give the CNI a moment to drop in-flight conntrack entries +
-          # apply the new NetworkPolicy verdict to new flows.
-          sleep 5
-          # Now external traffic is blocked again by the baseline +
-          # membership policies. Retry briefly — the failure mode here is
-          # "still 200" or hang; one-shot is enough but a couple of attempts
-          # smooths over CNI propagation jitter.
+          if kubectl get netpol -n ext-allow-e2e \
+            -l kube-vnet.system/role=external-allow --no-headers | grep -q .; then
+            echo "FAIL: external-allow policy survived the opt-out"
+            exit 1
+          fi
+          # The baseline blocks external traffic again once the CNI has
+          # applied the removal; poll until it does.
           http_code=000
-          for i in {1..5}; do
+          for i in {1..10}; do
             http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 3 \
               "http://$NODE_IP:$NODEPORT/" || echo "000")
             [ "$http_code" != "200" ] && break
@@ -375,7 +321,6 @@ jobs:
             exit 1
           fi
 
-
       - name: helm uninstall + assert cleanup
         run: |
           set -euxo pipefail
@@ -385,16 +330,9 @@ jobs:
           # Helm tears down the rest of the release.
           helm uninstall kube-vnet --namespace kube-vnet-system --wait --timeout 3m
 
-          # ASSERT: zero operator-managed NetworkPolicies remain anywhere.
-          # If the hook silently no-op'd (wrong selector, RBAC error swallowed,
-          # selector mismatch with what the operator actually emitted), this
-          # catches it.
-          #
-          # apiserver finalizer processing can lag after the hook's
-          # `kubectl delete --wait=true` returns, so poll for the condition
-          # instead of sleeping a guessed constant and asserting once: a
-          # fixed wait is either longer than it needs to be or, on a loaded
-          # runner, too short, and the too-short case fails a green build.
+          # No operator-managed NetworkPolicy may remain anywhere; this
+          # catches a hook that silently did nothing (wrong selector, RBAC).
+          # Deletion can lag the hook's `kubectl delete --wait=true`, so poll.
           remaining=-1
           for _ in $(seq 1 30); do
             remaining=$(kubectl get networkpolicy -A \
@@ -412,24 +350,9 @@ jobs:
 
       - name: dump diagnostics on failure
         if: failure()
-        run: |
-          echo "===== events ====="
-          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
-          echo "===== calico logs ====="
-          kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
-          echo "===== operator logs ====="
-          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
-          echo "===== network beacons ====="
-          kubectl get pods,endpoints -n kube-vnet-system -l app.kubernetes.io/component=network-beacon -o wide || true
-          echo "===== helm release ====="
-          helm get all kube-vnet -n kube-vnet-system 2>&1 | head -200 || true
-          echo "===== virtualnetworks ====="
-          kubectl get vnet -A -o yaml || true
-          echo "===== networkpolicies ====="
-          kubectl get networkpolicy -A -o yaml || true
-          echo "===== cleanup hook Job(s) ====="
-          kubectl get jobs -A -l app.kubernetes.io/component=cleanup -o yaml 2>&1 || true
-          kubectl logs -n kube-vnet-system -l app.kubernetes.io/component=cleanup --tail=200 2>&1 || true
+        uses: ./.github/actions/e2e-diagnostics
+        with:
+          cni: ${{ matrix.cni }}
 
   # e2e-helm-namespace mirrors e2e-helm but installs with
   # ingressIsolationLevel=namespace and runs the namespace-isolation test
@@ -474,26 +397,12 @@ jobs:
             --set image.tag=e2e \
             --set image.pullPolicy=Never \
             --wait --timeout 3m
-          kubectl wait --for=condition=Available deploy/kube-vnet-controller \
-            -n kube-vnet-system --timeout=180s
 
       - name: run e2e namespace-isolation tests
         run: go test -tags e2e_namespace ./test/e2e/... -count=1 -v -timeout 15m
 
       - name: dump diagnostics on failure
         if: failure()
-        run: |
-          echo "===== events ====="
-          kubectl get events --sort-by='.lastTimestamp' -A | tail -100 || true
-          echo "===== calico logs ====="
-          kubectl logs -n calico-system deploy/calico-kube-controllers --tail=200 || true
-          echo "===== operator logs ====="
-          kubectl logs -n kube-vnet-system deploy/kube-vnet-controller --tail=200 || true
-          echo "===== helm release ====="
-          helm get all kube-vnet -n kube-vnet-system 2>&1 | head -200 || true
-          echo "===== cluster baseline ====="
-          kubectl get clustervirtualnetworkbaseline default -o yaml || true
-          echo "===== virtualnetworks ====="
-          kubectl get vnet -A -o yaml || true
-          echo "===== networkpolicies ====="
-          kubectl get networkpolicy -A -o yaml || true
+        uses: ./.github/actions/e2e-diagnostics
+        with:
+          cni: calico

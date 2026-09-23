@@ -3,7 +3,7 @@ kube-vnet is installed.
 {{- if not (include "kube-vnet.vapSupported" .) }}
 
 WARNING: this cluster is Kubernetes {{ .Capabilities.KubeVersion.Version }}, older than 1.30, so the three
-ValidatingAdmissionPolicies kube-vnet ships were NOT installed. They are the
+ValidatingAdmissionPolicies kube-vnet ships were not installed. They are the
 admission-time boundary that protects:
 
   * operator-owned `kube-vnet.system/*` labels from user tampering
@@ -30,8 +30,8 @@ https://github.com/lhns/kube-vnet/tree/main/config/samples
 On `helm uninstall`, a pre-delete hook stops the controller and then removes
 operator-managed NetworkPolicies (`-l kube-vnet.system/managed-by=kube-vnet`) —
 without it, the deny-all baselines would keep enforcing after the operator is
-gone. CRDs and CRs (with `helm.sh/resource-policy:
-keep`) survive uninstall. To skip the hook (e.g. for a controlled
+gone. CRDs and CRs (with `helm.sh/resource-policy: keep`) survive
+uninstall. To skip the hook (e.g. for a controlled
 migration where you want to preserve the existing policy set):
 
   helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }} --no-hooks
@@ -45,7 +45,7 @@ See ADR 0036 for the full lifecycle.
 
 WARNING: operator.clusterBaseline.ingressIsolationLevel is "pod" — the
 strictest preset. Every managed namespace gets the deny-all ingress
-baseline, and pods receive ingress ONLY via explicit vnet membership
+baseline, and pods receive ingress only via explicit vnet membership
 (label, binding, or baseline membership). Workloads that previously
 relied on Kubernetes default-allow will lose ingress connectivity until
 they are joined to a vnet.
