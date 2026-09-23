@@ -3,6 +3,9 @@ package controller
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
+	"strings"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
@@ -115,7 +118,7 @@ func TestExtractValidatingWebhookRefs(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := extractValidatingWebhookRefs(c.in)
-			if !sliceEqualServiceRef(got, c.want) {
+			if !slices.Equal(got, c.want) {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
@@ -136,7 +139,7 @@ func TestExtractMutatingWebhookRefs(t *testing.T) {
 	}
 	got := extractMutatingWebhookRefs(in)
 	want := []serviceRef{{Namespace: "istio-system", Name: "istiod", Port: 8443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -163,7 +166,7 @@ func TestExtractAPIServiceRefs(t *testing.T) {
 	}
 	got := extractAPIServiceRefs(in)
 	want := []serviceRef{{Namespace: "kube-system", Name: "metrics-server", Port: 443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -195,7 +198,7 @@ func TestExtractCRDConversionRefs(t *testing.T) {
 	}
 	got := extractCRDConversionRefs(withSvc)
 	want := []serviceRef{{Namespace: "kubevirt", Name: "kubevirt-webhook", Port: 443}}
-	if !sliceEqualServiceRef(got, want) {
+	if !slices.Equal(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 
@@ -278,7 +281,7 @@ func TestBuildApiserverReachablePolicy(t *testing.T) {
 	if p.Labels[LabelRole] != LabelRoleExternalAllow {
 		t.Errorf("role label = %q, want external-allow", p.Labels[LabelRole])
 	}
-	if !mapsEqual(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
+	if !maps.Equal(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
 		t.Errorf("podSelector matchLabels mismatch: %v", p.Spec.PodSelector.MatchLabels)
 	}
 	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
@@ -475,7 +478,7 @@ func TestApiserverReachablePolicyName_ShapeAndUniqueness(t *testing.T) {
 	if len(na) > 63 {
 		t.Errorf("policy name %q exceeds K8s 63-char limit", na)
 	}
-	if !startsWith(na, "kube-vnet.ext.apiserver.webhook-") {
+	if !strings.HasPrefix(na, "kube-vnet.ext.apiserver.webhook-") {
 		t.Errorf("policy name shape unexpected: %q", na)
 	}
 }
@@ -568,34 +571,4 @@ func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) 
 	}
 }
 
-// ---- helpers ----
-
 func ptr[T any](v T) *T { return &v }
-
-func sliceEqualServiceRef(a, b []serviceRef) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for k, v := range a {
-		if b[k] != v {
-			return false
-		}
-	}
-	return true
-}
-
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
-}

@@ -1,11 +1,10 @@
 package controller
 
 import (
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"sigs.k8s.io/controller-runtime/pkg/metrics"
 )
@@ -19,23 +18,28 @@ func TestMetrics_Registered(t *testing.T) {
 	reconciliations.WithLabelValues(ResultSuccess).Add(0)
 	applyErrors.WithLabelValues(ApplyErrorMembershipPolicy).Add(0)
 	membersByNetwork.WithLabelValues("__test__/__test__").Set(0)
+	defer membersByNetwork.DeleteLabelValues("__test__/__test__")
 
-	want := []string{
+	families, err := metrics.Registry.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	var got []string
+	for _, f := range families {
+		got = append(got, f.GetName())
+	}
+	for _, name := range []string{
 		"kube_vnet_reconciliations_total",
 		"kube_vnet_reconcile_duration_seconds",
 		"kube_vnet_networks_total",
 		"kube_vnet_managed_policies_total",
 		"kube_vnet_members_total",
 		"kube_vnet_apply_errors_total",
-	}
-	got := metricNamesFromRegistry(metrics.Registry)
-	for _, name := range want {
-		if !contains(got, name) {
+	} {
+		if !slices.Contains(got, name) {
 			t.Errorf("metric %q is not registered", name)
 		}
 	}
-	// Clean up the synthetic series so they don't pollute later tests.
-	membersByNetwork.DeleteLabelValues("__test__/__test__")
 }
 
 func TestMetrics_ReconcileObservation(t *testing.T) {
@@ -49,34 +53,12 @@ func TestMetrics_ReconcileObservation(t *testing.T) {
 
 func TestMetrics_MembersGauge(t *testing.T) {
 	setMembers("platform", "payments", 3)
-	v := testutil.ToFloat64(membersByNetwork.WithLabelValues("platform/payments"))
-	if v != 3 {
+	if v := testutil.ToFloat64(membersByNetwork.WithLabelValues("platform/payments")); v != 3 {
 		t.Errorf("members gauge=%v want 3", v)
 	}
+	// A deleted vnet's series must stop being exported.
 	clearMembers("platform", "payments")
-	// After clear, the series should be gone — DeleteLabelValues returns true if removed.
-}
-
-// metricNamesFromRegistry walks a prometheus.Gatherer and returns the registered
-// metric family names.
-func metricNamesFromRegistry(g prometheus.Gatherer) []string {
-	mf, err := g.Gather()
-	if err != nil {
-		return nil
+	if membersByNetwork.DeleteLabelValues("platform/payments") {
+		t.Error("clearMembers left the series in place")
 	}
-	out := make([]string, 0, len(mf))
-	for _, f := range mf {
-		out = append(out, f.GetName())
-	}
-	return out
 }
-
-func contains(haystack []string, needle string) bool {
-	for _, s := range haystack {
-		if s == needle || strings.HasPrefix(s, needle) {
-			return true
-		}
-	}
-	return false
-}
-
