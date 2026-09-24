@@ -111,6 +111,9 @@ release. Pinning to an exact version is recommended.
   are now skipped; their pods count as members until gone.
 - **`PolicyRestored` fired when a membership policy was first created.** It
   now fires only for a policy the vnet's `status.generatedPolicies` listed.
+- **A deleted host-port, external-allow or apiserver-reachable policy whose
+  first re-apply failed came back without a `PolicyRestored`.** A failed
+  apply no longer resets restore tracking, as for the baseline.
 - **`VirtualNetworkBinding` status was wrong.**
   - Omitting `virtualNetworkRef.namespace` (the recommended form) reported
     `Ready=False, VirtualNetworkNotFound` while the pods were joined, and the

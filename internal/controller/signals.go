@@ -56,7 +56,9 @@ func (t *policyTracker) applied(key client.ObjectKey, created bool) (restored bo
 }
 
 // forget drops key. Call it when the operator itself deletes the policy or
-// stops wanting it, so a later creation is not taken for a restore.
+// stops wanting it, so a later creation is not taken for a restore. Not on a
+// failed apply: the policy is still wanted, and its eventual recreation after
+// a delete is a restore.
 func (t *policyTracker) forget(key client.ObjectKey) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

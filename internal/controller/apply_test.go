@@ -26,6 +26,13 @@ import (
 // makes every Patch in that namespace fail with errInjected.
 func patchCountingClient(t *testing.T, failNS string, objs ...client.Object) (client.Client, *int) {
 	t.Helper()
+	return patchFailingClient(t, func(obj client.Object) bool { return obj.GetNamespace() == failNS }, objs...)
+}
+
+// patchFailingClient is patchCountingClient with Patch failing whenever fail
+// says so.
+func patchFailingClient(t *testing.T, fail func(client.Object) bool, objs ...client.Object) (client.Client, *int) {
+	t.Helper()
 	patches := 0
 	c := fake.NewClientBuilder().
 		WithScheme(testutil.Scheme(t, networkingv1.AddToScheme)).
@@ -35,7 +42,7 @@ func patchCountingClient(t *testing.T, failNS string, objs ...client.Object) (cl
 		WithInterceptorFuncs(interceptor.Funcs{
 			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 				patches++
-				if obj.GetNamespace() == failNS {
+				if fail(obj) {
 					return errInjected
 				}
 				return c.Patch(ctx, obj, patch, opts...)
