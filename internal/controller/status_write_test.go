@@ -224,7 +224,9 @@ func TestBindingStatus_NoWriteWhenUnchanged(t *testing.T) {
 	}
 	webPod := func(name string) *corev1.Pod {
 		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
-			Namespace: "webapp", Name: name, Labels: map[string]string{"app": "web"},
+			Namespace: "webapp", Name: name,
+			Labels:      map[string]string{"app": "web", SystemLabelKey("webapp", "payments"): "both"},
+			Annotations: map[string]string{AnnotationResolvedGeneration: "0"},
 		}}
 	}
 	c := fake.NewClientBuilder().

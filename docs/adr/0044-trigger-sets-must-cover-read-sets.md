@@ -6,6 +6,8 @@
 
 > **Amendment (2026-09-23, later) — the auto-allow Pod trigger narrowed to selector flips.** The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` enqueued every named-`targetPort` Service in the pod's namespace on any create, delete or label change, so each new pod, and the operator's own `kube-vnet.system/*` stamp on it, re-ran every such Service. Container ports are immutable, so a pod can change a Service's named-port resolution only by entering or leaving its selector. The watch now enqueues just the named-port Services whose selector the pod matches (create, delete) or whose match differs between old and new labels (update), using the `labelsMatchSelector` test that `resolveTargetPorts` applies. This narrows which changes fire, not which fields matter: a Service that selects on a `kube-vnet.system` label still flips.
 
+> **Amendment (2026-09-24) — the binding reads its vnet's home namespace and pod stamps.** `VirtualNetworkBindingReconciler` now counts only stamped members in `status.attachedPods` and reports `Ready=False, HomeNamespaceExcluded` when the target vnet's home namespace is unmanaged. The stamps are pod labels, already covered by its unfiltered Pod watch. The home namespace may differ from the binding's own, so the namespace → bindings mapper now also enqueues bindings whose target vnet lives in the changed namespace; the "collapse into one" note below no longer holds for it.
+
 ## Context
 
 Four bugs of one shape surfaced in quick succession. In each, a reconciler decided something by reading state it does not watch, so the decision was never revisited:
@@ -53,7 +55,7 @@ Every mapper is then a single statement of intent:
 | vnet → pods | `podsIn(NamespacesAdmittedBy(vnet))` |
 | namespace → vnets | vnets whose home is that ns, or that admit it |
 | pod → bindings | bindings in the pod's namespace |
-| namespace → bindings | bindings in that namespace |
+| namespace → bindings | bindings in that namespace, or targeting a vnet homed there (2026-09-24) |
 
 The binding mappers collapse into one because a binding only ever selects pods **in its own namespace**, and both of its namespace-derived inputs (`IsManaged`, `nsPermits(vnet, b.Namespace)`) key on that same namespace.
 
@@ -67,7 +69,7 @@ The checklist for future changes. Any read not covered by a trigger is a bug of 
 |---|---|---|
 | `VirtualNetworkReconciler` | VirtualNetwork, Pod, NetworkPolicy, **Namespace** | all four |
 | `ResolutionReconciler` | Pod, Namespace (annotation **+ labels**), **VirtualNetwork**, both Baselines, Binding | all six |
-| `VirtualNetworkBindingReconciler` | Binding, VirtualNetwork, **Pod**, **Namespace** | all four |
+| `VirtualNetworkBindingReconciler` | Binding, VirtualNetwork, **Pod** (labels incl. stamps), **Namespace** (own + vnet home, 2026-09-24) | all four |
 | `NamespaceReconciler` | Namespace, NetworkPolicy | both |
 | `SystemVnetReconciler` | Namespace, VirtualNetwork | both |
 | `HostPortReconciler` | Namespace, Pod, NetworkPolicy | all three |

@@ -207,8 +207,9 @@ func TestNsToVnets(t *testing.T) {
 	}
 }
 
-// A binding only ever selects pods in its own namespace, which is what makes
-// both of its new watches collapse into one trivial mapper.
+// A binding only ever selects pods in its own namespace, so a pod enqueues
+// the bindings there. A namespace additionally enqueues the bindings whose
+// target vnet lives in it: its managed-ness decides whether that vnet is served.
 func TestBindingsInNamespaceOf(t *testing.T) {
 	scheme := fanoutScheme()
 	r := &VirtualNetworkBindingReconciler{
@@ -216,6 +217,10 @@ func TestBindingsInNamespaceOf(t *testing.T) {
 			&vnetv1alpha1.VirtualNetworkBinding{ObjectMeta: metav1.ObjectMeta{Namespace: "webapp", Name: "b1"}},
 			&vnetv1alpha1.VirtualNetworkBinding{ObjectMeta: metav1.ObjectMeta{Namespace: "webapp", Name: "b2"}},
 			&vnetv1alpha1.VirtualNetworkBinding{ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "b3"}},
+			&vnetv1alpha1.VirtualNetworkBinding{
+				ObjectMeta: metav1.ObjectMeta{Namespace: "other", Name: "to-webapp"},
+				Spec:       vnetv1alpha1.VirtualNetworkBindingSpec{VirtualNetworkRef: ref("v", "webapp")},
+			},
 		).Build(),
 		Scheme:   scheme,
 		NSFilter: NewNamespaceFilter(nil),
@@ -228,9 +233,14 @@ func TestBindingsInNamespaceOf(t *testing.T) {
 		}
 	})
 	t.Run("from the namespace itself", func(t *testing.T) {
-		reqs := r.bindingsInNamespaceOf(context.Background(), mkNamespace("webapp", nil))
-		if len(reqs) != 2 {
-			t.Fatalf("got %d bindings, want 2 (cluster-scoped: name is the namespace)", len(reqs))
+		reqs := r.nsToBindings(context.Background(), mkNamespace("webapp", nil))
+		got := make([]string, 0, len(reqs))
+		for _, req := range reqs {
+			got = append(got, req.Namespace+"/"+req.Name)
+		}
+		want := []string{"other/to-webapp", "webapp/b1", "webapp/b2"}
+		if !slices.Equal(sortedNames(got), want) {
+			t.Fatalf("got %v, want %v", sortedNames(got), want)
 		}
 	})
 }

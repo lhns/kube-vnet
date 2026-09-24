@@ -280,3 +280,59 @@ func TestIntegration_Trigger_BindingNamespaceReEnabledRecoversStatus(t *testing.
 		return nil
 	})
 }
+
+// The binding also reads the managed-ness of its target vnet's home
+// namespace, which is not its own: a disabled home leaves the vnet unserved.
+// Disabling and re-enabling that namespace must flip the binding's status
+// both ways without touching the binding.
+func TestIntegration_Trigger_BindingFollowsVnetHomeNamespace(t *testing.T) {
+	setClusterBaseline(t, nil)
+	ctx := context.Background()
+
+	home := uniqueNS(t, "tc-vnb-home")
+	ns := uniqueNS(t, "tc-vnb-bnd")
+	mustCreate(t, makeNamespace(home, nil, nil))
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
+		ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: home},
+		Spec: vnetv1alpha1.VirtualNetworkSpec{
+			AllowedNamespaces: &vnetv1alpha1.NamespaceSelector{Names: []string{ns}},
+		},
+	})
+	mustCreate(t, makePod(ns, "p", map[string]string{"app": "p"}))
+	mustCreate(t, &vnetv1alpha1.VirtualNetworkBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: ns},
+		Spec: vnetv1alpha1.VirtualNetworkBindingSpec{
+			VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "v", Namespace: home},
+			Direction:         "both",
+			PodSelector:       metav1.LabelSelector{MatchLabels: map[string]string{"app": "p"}},
+		},
+	})
+
+	readyReason := func(want string) func() error {
+		return func() error {
+			b := &vnetv1alpha1.VirtualNetworkBinding{}
+			if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "b"}, b); err != nil {
+				return err
+			}
+			if r := conditionReason(b.Status.Conditions, "Ready"); r != want {
+				return fmt.Errorf("reason = %q, want %q (attachedPods %v)", r, want, b.Status.AttachedPods)
+			}
+			return nil
+		}
+	}
+
+	// Attached only once resolution has stamped the pod.
+	eventually(t, 30*time.Second, readyReason(ReasonBindingPodsAttached))
+
+	updateNamespace(t, home, func(n *corev1.Namespace) {
+		if n.Annotations == nil {
+			n.Annotations = map[string]string{}
+		}
+		n.Annotations[AnnotationDisabled] = "true"
+	})
+	eventually(t, 30*time.Second, readyReason(ReasonBindingHomeNamespaceExcluded))
+
+	updateNamespace(t, home, func(n *corev1.Namespace) { delete(n.Annotations, AnnotationDisabled) })
+	eventually(t, 30*time.Second, readyReason(ReasonBindingPodsAttached))
+}

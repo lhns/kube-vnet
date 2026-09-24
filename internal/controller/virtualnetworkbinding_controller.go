@@ -29,6 +29,14 @@ const (
 	ReasonBindingNamespaceExcluded   = "NamespaceExcluded"
 	ReasonBindingUnknownDirection    = "UnknownDirection"
 	ReasonBindingInvalidSelector     = "InvalidSelector"
+	// The selector matches pods, but resolution made none of them a member
+	// (a baseline or pod-label conflict, direction none, ...).
+	ReasonBindingNoPodsAttached = "NoPodsAttached"
+	// The target vnet's home namespace is excluded or disabled, so the vnet
+	// is not served and has no membership policies.
+	ReasonBindingHomeNamespaceExcluded = "HomeNamespaceExcluded"
+	// The target vnet is being deleted; its membership policies are gone.
+	ReasonBindingVNetTerminating = "VirtualNetworkTerminating"
 )
 
 // VirtualNetworkBindingReconciler maintains the binding's own status. The
@@ -96,6 +104,27 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		}
 		return ctrl.Result{}, err
 	}
+	if !vnet.DeletionTimestamp.IsZero() {
+		setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetTerminating,
+			fmt.Sprintf("VirtualNetwork %s/%s is being deleted", vnet.Namespace, vnet.Name))
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+	}
+
+	// The vnet reconciler does not serve a vnet whose home namespace is
+	// unmanaged (system vnets exempt, as there), so no pod is a member of it
+	// whatever resolution stamps. The binding's own namespace was checked above.
+	if vnet.Labels[LabelManagedBy] != LabelManagedByValue && vnet.Namespace != b.Namespace {
+		home := &corev1.Namespace{}
+		if err := r.Get(ctx, client.ObjectKey{Name: vnet.Namespace}, home); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+		if home.Name == "" || !r.NSFilter.IsManaged(home) {
+			setBindingReady(b, metav1.ConditionFalse, ReasonBindingHomeNamespaceExcluded,
+				fmt.Sprintf("VirtualNetwork %s/%s is not served: its home namespace %q is excluded by the operator",
+					vnet.Namespace, vnet.Name, vnet.Namespace))
+			return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		}
+	}
 
 	// Check vnet's allowedNamespaces permits this binding's namespace.
 	allowed, err := PermitsForVnet(ctx, r.Client, vnet, b.Namespace)
@@ -119,18 +148,34 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	if err := r.List(ctx, &pods, client.InNamespace(b.Namespace), client.MatchingLabelsSelector{Selector: sel}); err != nil {
 		return ctrl.Result{}, err
 	}
+	// Only pods resolution made members count as attached: selection is one
+	// input to resolution, which baselines, pod labels or direction none can
+	// override. The test mirrors discoverMembers.
+	stampKey := SystemLabelKey(vnet.Namespace, vnet.Name)
 	names := make([]string, 0, len(pods.Items))
 	for i := range pods.Items {
-		names = append(names, pods.Items[i].Name)
+		if isStampedMember(&pods.Items[i], stampKey) {
+			names = append(names, pods.Items[i].Name)
+		}
 	}
 	sort.Strings(names)
 
-	if len(names) == 0 {
+	selected, attached := len(pods.Items), len(names)
+	switch {
+	case selected == 0:
 		setBindingReady(b, metav1.ConditionTrue, ReasonBindingNoPodsMatch,
 			"binding accepted; no pods currently match the selector")
-	} else {
+	case attached == 0:
+		setBindingReady(b, metav1.ConditionTrue, ReasonBindingNoPodsAttached,
+			fmt.Sprintf("%d pod(s) match the selector, but none is a member of %s/%s; see the pods' events and %s label",
+				selected, vnet.Namespace, vnet.Name, stampKey))
+	case attached < selected:
 		setBindingReady(b, metav1.ConditionTrue, ReasonBindingPodsAttached,
-			fmt.Sprintf("%d pod(s) attached to %s/%s", len(names), vnet.Namespace, vnet.Name))
+			fmt.Sprintf("%d of %d selected pod(s) are members of %s/%s; see the other pods' events and %s label",
+				attached, selected, vnet.Namespace, vnet.Name, stampKey))
+	default:
+		setBindingReady(b, metav1.ConditionTrue, ReasonBindingPodsAttached,
+			fmt.Sprintf("%d pod(s) attached to %s/%s", attached, vnet.Namespace, vnet.Name))
 	}
 	if err := r.writeStatus(ctx, b, stored, names); err != nil {
 		logger.Error(err, "status update failed")
@@ -153,6 +198,17 @@ func (r *VirtualNetworkBindingReconciler) writeStatus(
 	return r.Status().Update(ctx, b)
 }
 
+// isStampedMember reports whether resolution has made pod a member of the vnet
+// whose stamp key is stampKey: resolved, and stamped with a direction other
+// than none.
+func isStampedMember(pod *corev1.Pod, stampKey string) bool {
+	if pod.Annotations[AnnotationResolvedGeneration] == "" {
+		return false
+	}
+	dir, ok := ParseBareDirection(pod.Labels[stampKey])
+	return ok && dir != DirectionNone
+}
+
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {
 	upsertCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
@@ -164,27 +220,25 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(r.vnetToBindings),
 		).
-		// The reconcile also reads pods (status.attachedPods) and the binding's
-		// namespace (IsManaged, and the labels PermitsForVnet may match on);
-		// both key on the binding's own namespace. See ADR 0044.
+		// The reconcile also reads pods (selection and membership stamps, for
+		// status.attachedPods), the binding's namespace (IsManaged, and the
+		// labels PermitsForVnet may match on) and the target vnet's home
+		// namespace (IsManaged). Pod events are unfiltered, so a stamp change
+		// fires. See ADR 0044.
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),
 		).
 		Watches(
 			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.bindingsInNamespaceOf),
+			handler.EnqueueRequestsFromMapFunc(r.nsToBindings),
 		).
 		Complete(r)
 }
 
-// bindingsInNamespaceOf enqueues every binding in the changed object's
-// namespace. For a Pod that is its namespace; for a Namespace, itself.
+// bindingsInNamespaceOf enqueues every binding in the changed pod's namespace.
 func (r *VirtualNetworkBindingReconciler) bindingsInNamespaceOf(ctx context.Context, obj client.Object) []reconcile.Request {
 	ns := obj.GetNamespace()
-	if ns == "" {
-		ns = obj.GetName() // cluster-scoped: the Namespace itself
-	}
 	var bindings vnetv1alpha1.VirtualNetworkBindingList
 	if err := r.List(ctx, &bindings, client.InNamespace(ns)); err != nil {
 		return nil
@@ -194,6 +248,26 @@ func (r *VirtualNetworkBindingReconciler) bindingsInNamespaceOf(ctx context.Cont
 		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
 			Namespace: bindings.Items[i].Namespace, Name: bindings.Items[i].Name,
 		}})
+	}
+	return out
+}
+
+// nsToBindings enqueues the bindings in the changed namespace and those whose
+// target vnet lives there.
+func (r *VirtualNetworkBindingReconciler) nsToBindings(ctx context.Context, obj client.Object) []reconcile.Request {
+	ns := obj.GetName()
+	var bindings vnetv1alpha1.VirtualNetworkBindingList
+	if err := r.List(ctx, &bindings); err != nil {
+		return nil
+	}
+	out := []reconcile.Request{}
+	for i := range bindings.Items {
+		b := &bindings.Items[i]
+		if b.Namespace == ns || bindingTarget(b, r.OperatorNamespace).Namespace == ns {
+			out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
+				Namespace: b.Namespace, Name: b.Name,
+			}})
+		}
 	}
 	return out
 }
