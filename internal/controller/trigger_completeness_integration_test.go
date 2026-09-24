@@ -156,7 +156,7 @@ func TestIntegration_Trigger_HomeNamespaceReEnabledRecoversVnet(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "v"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") != metav1.ConditionTrue {
 			return fmt.Errorf("expected Degraded=True while the home namespace is disabled")
 		}
 		return nil
@@ -172,7 +172,7 @@ func TestIntegration_Trigger_HomeNamespaceReEnabledRecoversVnet(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "v"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") == metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") == metav1.ConditionTrue {
 			return fmt.Errorf("vnet still Degraded after its home namespace was re-enabled")
 		}
 		if _, err := findPolicy(ctx, member, PolicyName("v", home)); err != nil {

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -65,7 +66,7 @@ func TestGenerate_HomeNamespaceOnly(t *testing.T) {
 		t.Errorf("podSelector operator=%v want In", op)
 	}
 	wantValues := []string{"both", "ingress"}
-	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !equalStringSlice(got, wantValues) {
+	if got := p.Spec.PodSelector.MatchExpressions[0].Values; !slices.Equal(got, wantValues) {
 		t.Errorf("podSelector values=%v want %v", got, wantValues)
 	}
 	if len(p.Spec.Ingress) != 1 || len(p.Spec.Egress) != 0 {
@@ -159,7 +160,7 @@ func TestGenerate_DirectionEnum_OneOfEach(t *testing.T) {
 	if out.Policies[0].Name != wantName {
 		t.Errorf("policy name=%q want %q", out.Policies[0].Name, wantName)
 	}
-	if !equalStringSlice(p.podSelectorValues, []string{"both", "ingress"}) {
+	if !slices.Equal(p.podSelectorValues, []string{"both", "ingress"}) {
 		t.Errorf("podSelector values=%v want [both ingress]", p.podSelectorValues)
 	}
 	if !p.hasIngress || p.hasEgress {
@@ -181,7 +182,7 @@ func TestGenerate_DirectionEnum_PeerSelectorsNarrowed(t *testing.T) {
 	}
 	p := out.Policies[0]
 	from := p.Spec.Ingress[0].From[0].PodSelector.MatchExpressions[0]
-	if !equalStringSlice(from.Values, []string{"both", "egress"}) {
+	if !slices.Equal(from.Values, []string{"both", "egress"}) {
 		t.Errorf("ingress.from peer values=%v want [both egress]", from.Values)
 	}
 	if len(p.Spec.Egress) != 0 {
@@ -401,18 +402,6 @@ func summarize(p *networkingv1.NetworkPolicy) *kpolicySummary {
 		}
 	}
 	return s
-}
-
-func equalStringSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
 
 // TestGenerate_ClusterVnet_BareSelectorAndName covers the ADR 0033 Amendment

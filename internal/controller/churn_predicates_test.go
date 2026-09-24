@@ -41,63 +41,21 @@ func TestJoinLabelChangedPredicate_StatusOnlyUpdate_DoesNotFire(t *testing.T) {
 // would silently break stamp-driven policy regeneration.
 func TestJoinLabelChangedPredicate_FiresOnEitherPrefix(t *testing.T) {
 	p := JoinLabelChangedPredicate()
-
+	const user, stamp = "kube-vnet/net.payments", "kube-vnet.system/net.shop.payments"
 	for _, tc := range []struct {
-		name     string
-		oldL     map[string]string
-		newL     map[string]string
-		wantFire bool
+		name       string
+		oldL, newL map[string]string
+		wantFire   bool
 	}{
-		{
-			name:     "user label added",
-			oldL:     map[string]string{"app": "web"},
-			newL:     map[string]string{"app": "web", "kube-vnet/net.payments": "both"},
-			wantFire: true,
-		},
-		{
-			name:     "user label removed",
-			oldL:     map[string]string{"kube-vnet/net.payments": "both"},
-			newL:     map[string]string{},
-			wantFire: true,
-		},
-		{
-			name:     "user label direction changed",
-			oldL:     map[string]string{"kube-vnet/net.payments": "both"},
-			newL:     map[string]string{"kube-vnet/net.payments": "ingress"},
-			wantFire: true,
-		},
-		{
-			// The resolution controller's stamp write; the generator must see it.
-			name:     "system stamp added",
-			oldL:     map[string]string{"kube-vnet/net.payments": "both"},
-			newL:     map[string]string{"kube-vnet/net.payments": "both", "kube-vnet.system/net.shop.payments": "both"},
-			wantFire: true,
-		},
-		{
-			name:     "system stamp value changed",
-			oldL:     map[string]string{"kube-vnet.system/net.shop.payments": "both"},
-			newL:     map[string]string{"kube-vnet.system/net.shop.payments": "ingress"},
-			wantFire: true,
-		},
-		{
-			name:     "system stamp removed",
-			oldL:     map[string]string{"kube-vnet.system/net.shop.payments": "both"},
-			newL:     map[string]string{},
-			wantFire: true,
-		},
-		{
-			// Unrelated label churn must not enqueue.
-			name:     "unrelated label changed",
-			oldL:     map[string]string{"kube-vnet/net.payments": "both", "version": "1"},
-			newL:     map[string]string{"kube-vnet/net.payments": "both", "version": "2"},
-			wantFire: false,
-		},
-		{
-			name:     "no kube-vnet labels at all",
-			oldL:     map[string]string{"app": "web"},
-			newL:     map[string]string{"app": "api"},
-			wantFire: false,
-		},
+		{"user label added", map[string]string{"app": "web"}, map[string]string{"app": "web", user: "both"}, true},
+		{"user label removed", map[string]string{user: "both"}, map[string]string{}, true},
+		{"user label direction changed", map[string]string{user: "both"}, map[string]string{user: "ingress"}, true},
+		// The resolution controller's stamp write; the generator must see it.
+		{"system stamp added", map[string]string{user: "both"}, map[string]string{user: "both", stamp: "both"}, true},
+		{"system stamp value changed", map[string]string{stamp: "both"}, map[string]string{stamp: "ingress"}, true},
+		{"system stamp removed", map[string]string{stamp: "both"}, map[string]string{}, true},
+		{"unrelated label changed", map[string]string{user: "both", "version": "1"}, map[string]string{user: "both", "version": "2"}, false},
+		{"no kube-vnet labels at all", map[string]string{"app": "web"}, map[string]string{"app": "api"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := p.Update(event.UpdateEvent{
@@ -180,37 +138,26 @@ func TestHostPortChangedPredicate(t *testing.T) {
 		}
 		return pod
 	}
+	restarted := mk(8080, corev1.ProtocolTCP)
+	restarted.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 3}}
+	// ADR 0040: hostNetwork pods are out of scope; desiredHostPortKeys skips
+	// them, so both sides derive to the empty set.
+	hostNetOld, hostNetNew := mk(8080, corev1.ProtocolTCP), mk(9090, corev1.ProtocolTCP)
+	hostNetOld.Spec.HostNetwork, hostNetNew.Spec.HostNetwork = true, true
 
-	t.Run("port swap fires", func(t *testing.T) {
-		if !p.Update(event.UpdateEvent{ObjectOld: mk(8080, corev1.ProtocolTCP), ObjectNew: mk(9090, corev1.ProtocolTCP)}) {
-			t.Fatal("8080->9090 must fire; the desired policy changed")
+	for _, tc := range []struct {
+		name     string
+		old, new *corev1.Pod
+		wantFire bool
+	}{
+		{"port swap", mk(8080, corev1.ProtocolTCP), mk(9090, corev1.ProtocolTCP), true},
+		{"protocol swap", mk(53, corev1.ProtocolTCP), mk(53, corev1.ProtocolUDP), true},
+		{"gaining a hostPort", mk(0, ""), mk(8080, corev1.ProtocolTCP), true},
+		{"status-only update", mk(8080, corev1.ProtocolTCP), restarted, false},
+		{"hostNetwork pod", hostNetOld, hostNetNew, false},
+	} {
+		if got := p.Update(event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new}); got != tc.wantFire {
+			t.Errorf("%s: fired=%v, want %v", tc.name, got, tc.wantFire)
 		}
-	})
-	t.Run("protocol swap fires", func(t *testing.T) {
-		if !p.Update(event.UpdateEvent{ObjectOld: mk(53, corev1.ProtocolTCP), ObjectNew: mk(53, corev1.ProtocolUDP)}) {
-			t.Fatal("TCP->UDP on the same port must fire")
-		}
-	})
-	t.Run("gaining a hostPort fires", func(t *testing.T) {
-		if !p.Update(event.UpdateEvent{ObjectOld: mk(0, ""), ObjectNew: mk(8080, corev1.ProtocolTCP)}) {
-			t.Fatal("gaining a hostPort must fire")
-		}
-	})
-	t.Run("status-only update does not fire", func(t *testing.T) {
-		oldPod := mk(8080, corev1.ProtocolTCP)
-		newPod := oldPod.DeepCopy()
-		newPod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 3}}
-		if p.Update(event.UpdateEvent{ObjectOld: oldPod, ObjectNew: newPod}) {
-			t.Fatal("status-only update must not fire")
-		}
-	})
-	t.Run("hostNetwork pod never fires", func(t *testing.T) {
-		// ADR 0040: hostNetwork pods are out of scope; desiredHostPortKeys
-		// skips them, so both sides derive to the empty set.
-		oldPod, newPod := mk(8080, corev1.ProtocolTCP), mk(9090, corev1.ProtocolTCP)
-		oldPod.Spec.HostNetwork, newPod.Spec.HostNetwork = true, true
-		if p.Update(event.UpdateEvent{ObjectOld: oldPod, ObjectNew: newPod}) {
-			t.Fatal("hostNetwork pods are out of scope and must not enqueue")
-		}
-	})
+	}
 }
