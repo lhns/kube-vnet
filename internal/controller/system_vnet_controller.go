@@ -161,8 +161,7 @@ func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vne
 	err := r.Patch(ctx, desired, client.Apply,
 		client.FieldOwner(FieldManager), client.ForceOwnership)
 	if err != nil {
-		applyErrors.WithLabelValues(ApplyErrorSystemVnet).Inc()
-		eventf(r.Recorder, desired, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+		applyFailed(r.Recorder, desired, ApplyErrorSystemVnet,
 			"the system VirtualNetwork %s/%s could not be created or updated: %v; %s.",
 			desired.Namespace, desired.Name, err, impact)
 	}

@@ -100,8 +100,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		keep[client.ObjectKeyFromObject(pol)] = true
 		created, err := applyPolicy(ctx, r.Client, r.Client, pol)
 		if err != nil {
-			applyErrors.WithLabelValues(ApplyErrorHostPort).Inc()
-			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+			applyFailed(r.Recorder, pol, ApplyErrorHostPort,
 				"the host-port NetworkPolicy %s could not be applied: %v. Until this is fixed, traffic to hostPort %d/%s "+
 					"on pods in this namespace is blocked.", pol.Name, err, key.port, key.protocol)
 			applyErrs = append(applyErrs, fmt.Errorf("apply host-port policy %s: %w", key, err))
@@ -109,7 +108,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			continue
 		}
 		if r.restores.applied(client.ObjectKeyFromObject(pol), created) {
-			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+			policyRestored(r.Recorder, pol,
 				"this NetworkPolicy was deleted and has been recreated: kube-vnet lets external traffic reach hostPort %d/%s "+
 					"on pods in this namespace through it. An administrator opts the namespace out with the annotation %s=false.",
 				key.port, key.protocol, AnnotationExternalAllow)

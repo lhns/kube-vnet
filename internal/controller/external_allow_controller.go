@@ -67,66 +67,38 @@ var errNamedPortUnresolvable = errors.New("named targetPort unresolvable: no bac
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 
 func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	applied := false
-	defer svcSourcePolicies.forgetUnless(&applied, &r.restores, req.Namespace, req.Name)
-	svc := &corev1.Service{}
-	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
-		if apierrors.IsNotFound(err) {
-			r.pending.forget(req.NamespacedName)
-			return ctrl.Result{}, svcSourcePolicies.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
-		}
-		return ctrl.Result{}, err
-	}
-	waiting := false
-	defer svcSourcePolicies.endPending(&waiting, &r.pending, svc)
+	return svcSourcePolicies.reconcile(ctx, req,
+		serviceReconciler{r.Client, r.Scheme, r.NSFilter, r.Recorder, &r.restores, &r.pending}, r.desired)
+}
 
-	ns := &corev1.Namespace{}
-	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	// NamespaceLifecycle admission rejects creates in a terminating namespace.
-	if ns.DeletionTimestamp != nil {
-		return ctrl.Result{}, nil
-	}
-
-	if !r.NSFilter.IsManaged(ns) ||
-		ExternalAllowOptedOut(ns.Annotations) ||
-		ExternalAllowOptedOut(svc.Annotations) {
-		return ctrl.Result{}, svcSourcePolicies.sweep(ctx, r.Client, svc, "")
-	}
-
+// desired returns the Service's policy, or nil if it isn't externally exposed
+// or has no selector to mirror.
+func (r *ExternalAllowReconciler) desired(ctx context.Context, svc *corev1.Service) (*networkingv1.NetworkPolicy, error) {
 	// Pods resolve named targetPorts.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
-		return ctrl.Result{}, err
+		return nil, err
 	}
-
 	desired, err := buildExternalAllowPolicy(svc, pods.Items)
-	if err != nil {
-		if errors.Is(err, errNamedPortUnresolvable) {
-			waiting = true
-			svcSourcePolicies.startPending(r.Recorder, &r.pending, svc)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-		}
-		return ctrl.Result{}, err
+	// An exposed Service without a selector (manually-managed Endpoints) gets
+	// an Event, since its missing policy is otherwise unexplained.
+	if desired == nil && err == nil && isExternallyExposed(svc) && len(svc.Spec.Selector) == 0 {
+		eventf(r.Recorder, svc, corev1.EventTypeWarning, ReasonServiceHasNoSelector, "Reconcile",
+			"the Service is exposed externally but has no spec.selector, so kube-vnet cannot tell which pods to "+
+				"open to external clients; they stay blocked by the namespace baseline. Add a selector, or write "+
+				"a NetworkPolicy for the pods behind the Service's Endpoints.")
 	}
-	if desired == nil {
-		// Not externally exposed, or no selector to mirror. An exposed
-		// Service without a selector (manually-managed Endpoints) gets an
-		// Event, since its missing policy is otherwise unexplained.
-		if isExternallyExposed(svc) && len(svc.Spec.Selector) == 0 {
-			eventf(r.Recorder, svc, corev1.EventTypeWarning, ReasonServiceHasNoSelector, "Reconcile",
-				"the Service is exposed externally but has no spec.selector, so kube-vnet cannot tell which pods to "+
-					"open to external clients; they stay blocked by the namespace baseline. Add a selector, or write "+
-					"a NetworkPolicy for the pods behind the Service's Endpoints.")
-		}
-		return ctrl.Result{}, svcSourcePolicies.sweep(ctx, r.Client, svc, "")
-	}
-	applied, err = svcSourcePolicies.applyAndReport(ctx, r.Client, r.Scheme, r.Recorder, &r.restores, svc, desired)
-	return ctrl.Result{}, err
+	return desired, err
+}
+
+// serviceReconciler is what serviceSource.reconcile needs of its reconciler.
+type serviceReconciler struct {
+	client.Client
+	scheme   *runtime.Scheme
+	nsFilter *NamespaceFilter
+	rec      events.EventRecorder
+	restores *policyTracker
+	pending  *onceSet
 }
 
 // serviceSource is one kind of Service-owned external-allow policy. The
@@ -183,73 +155,101 @@ func (s serviceSource) policy(svc *corev1.Service, name, cidr string, ports []ne
 		maps.Clone(svc.Spec.Selector), cidr, ports)
 }
 
-// applyAndReport applies desired with svc as controller owner, so GC deletes
-// it with the Service even while the operator is down, then sweeps svc's
-// other policies of this source (stale or legacy names). It reports the
-// outcome where the Service's owner looks: an apply failure as a Warning on
-// the Service (and in apply_errors_total), a restore on the recreated
-// policy. applied reports that desired is live.
-func (s serviceSource) applyAndReport(ctx context.Context, c client.Client, scheme *runtime.Scheme, rec events.EventRecorder,
-	restores *policyTracker, svc *corev1.Service, desired *networkingv1.NetworkPolicy,
-) (applied bool, err error) {
-	if err := controllerutil.SetControllerReference(svc, desired, scheme); err != nil {
-		return false, err
+// reconcile is the Reconcile of both Service-owned policy reconcilers.
+// desired returns the Service's policy, nil for none, or
+// errNamedPortUnresolvable while a named targetPort has no backing pod.
+func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r serviceReconciler,
+	desired func(context.Context, *corev1.Service) (*networkingv1.NetworkPolicy, error),
+) (ctrl.Result, error) {
+	// A reconcile that leaves the policy unapplied (swept, or failed) must not
+	// make its next creation look like a restore.
+	applied := false
+	defer func() {
+		if !applied {
+			r.restores.forget(client.ObjectKey{Namespace: req.Namespace, Name: servicePolicyName(s.kind, req.Namespace, req.Name)})
+		}
+	}()
+	svc := &corev1.Service{}
+	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			r.pending.forget(req.NamespacedName)
+			return ctrl.Result{}, s.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
+		}
+		return ctrl.Result{}, err
 	}
-	created, err := applyPolicy(ctx, c, c, desired)
+	// Any outcome but another wait ends the current one, so the next is reported.
+	waiting := false
+	defer func() {
+		if !waiting {
+			r.pending.clear(svc, ReasonNamedPortUnresolved)
+		}
+	}()
+
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+	// NamespaceLifecycle admission rejects creates in a terminating namespace.
+	if ns.DeletionTimestamp != nil {
+		return ctrl.Result{}, nil
+	}
+	if !r.nsFilter.IsManaged(ns) || ExternalAllowOptedOut(ns.Annotations) || ExternalAllowOptedOut(svc.Annotations) {
+		return ctrl.Result{}, s.sweep(ctx, r.Client, svc, "")
+	}
+
+	policy, err := desired(ctx, svc)
+	if errors.Is(err, errNamedPortUnresolvable) {
+		waiting = true
+		if r.pending.first(svc, ReasonNamedPortUnresolved) {
+			eventf(r.rec, svc, corev1.EventTypeNormal, ReasonNamedPortUnresolved, "Reconcile",
+				"the %s policy waits for a running pod behind this Service that declares its named targetPort; "+
+					"until then %s cannot reach that port. Normal while pods start; if it lasts, compare the "+
+					"Service's targetPort names with the pods' containerPort names.", s.what, s.who)
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 	if err != nil {
-		applyErrors.WithLabelValues(s.errorKind).Inc()
-		eventf(rec, svc, corev1.EventTypeWarning, EventApplyFailed, "Apply",
-			"the %s NetworkPolicy %s could not be applied: %v. Until this is fixed, %s cannot reach this Service's pods.",
-			s.what, desired.Name, err, s.who)
-		return false, err
+		return ctrl.Result{}, err
 	}
-	if restores.applied(client.ObjectKeyFromObject(desired), created) {
-		eventf(rec, desired, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+	if policy == nil {
+		return ctrl.Result{}, s.sweep(ctx, r.Client, svc, "")
+	}
+
+	// The Service as controller owner lets GC delete the policy with it, even
+	// while the operator is down.
+	if err := controllerutil.SetControllerReference(svc, policy, r.scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	created, err := applyPolicy(ctx, r.Client, r.Client, policy)
+	if err != nil {
+		applyFailed(r.rec, svc, s.errorKind,
+			"the %s NetworkPolicy %s could not be applied: %v. Until this is fixed, %s cannot reach this Service's pods.",
+			s.what, policy.Name, err, s.who)
+		return ctrl.Result{}, err
+	}
+	applied = true
+	if r.restores.applied(client.ObjectKeyFromObject(policy), created) {
+		policyRestored(r.rec, policy,
 			"this NetworkPolicy was deleted and has been recreated: kube-vnet lets %s reach Service %s through it. "+
 				"To opt the Service out, annotate it %s=false.", s.who, svc.Name, AnnotationExternalAllow)
 	}
-	return true, s.sweep(ctx, c, svc, desired.Name)
-}
-
-// startPending reports, once per wait, that svc's policy waits for a pod
-// declaring its named targetPort.
-func (s serviceSource) startPending(rec events.EventRecorder, pending *onceSet, svc *corev1.Service) {
-	if !pending.first(svc, ReasonNamedPortUnresolved) {
-		return
-	}
-	eventf(rec, svc, corev1.EventTypeNormal, ReasonNamedPortUnresolved, "Reconcile",
-		"the %s policy waits for a running pod behind this Service that declares its named targetPort; "+
-			"until then %s cannot reach that port. Normal while pods start; if it lasts, compare the "+
-			"Service's targetPort names with the pods' containerPort names.", s.what, s.who)
-}
-
-// endPending ends svc's wait unless *waiting, so the next one is reported.
-func (s serviceSource) endPending(waiting *bool, pending *onceSet, svc *corev1.Service) {
-	if !*waiting {
-		pending.clear(svc, ReasonNamedPortUnresolved)
-	}
-}
-
-// forgetUnless drops the Service's policy from restores unless *applied: a
-// reconcile that swept the policy (or failed) must not make its next
-// creation look like a restore.
-func (s serviceSource) forgetUnless(applied *bool, restores *policyTracker, ns, name string) {
-	if *applied {
-		return
-	}
-	restores.forget(client.ObjectKey{Namespace: ns, Name: servicePolicyName(s.kind, &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-	})})
+	// Sweeps this source's other policies of svc: stale or legacy names.
+	return ctrl.Result{}, s.sweep(ctx, r.Client, svc, policy.Name)
 }
 
 // sweep deletes svc's policies of this source except the one named keep
-// ("" keeps none).
+// ("" keeps none). Ownership is the controller owner reference, which
+// survives label-scheme changes, so legacy policies are cleaned up too.
 func (s serviceSource) sweep(ctx context.Context, c client.Client, svc *corev1.Service, keep string) error {
-	return sweepStalePoliciesByOwner(ctx, c,
+	return sweepStalePolicies(ctx, c,
 		inNamespacePolicyLabels(svc.Namespace, s.sweepLabels),
-		"Service", svc.Name, svc.UID,
 		map[client.ObjectKey]bool{{Namespace: svc.Namespace, Name: keep}: true},
-		s.skip,
+		func(p *networkingv1.NetworkPolicy) bool {
+			return !hasControllerOwner(p, "Service", svc.Name, svc.UID) || (s.skip != nil && s.skip(p))
+		},
 	)
 }
 
@@ -411,22 +411,19 @@ func labelsMatchSelector(labels, selector map[string]string) bool {
 // externalAllowPolicyName returns the Service-source policy name,
 // `kube-vnet.ext.svc.<svcName>-<8hex>` (ADR 0039).
 func externalAllowPolicyName(svc *corev1.Service) string {
-	return servicePolicyName(LabelSourceKindService, svc)
+	return servicePolicyName(LabelSourceKindService, svc.Namespace, svc.Name)
 }
 
 // servicePolicyName returns `kube-vnet.ext.<sourceKind>.<svcName>-<8hex>`,
 // truncating the Service name to stay within the 63-char name limit. The hash
 // is over <ns>/<name>, so truncated names stay unique.
-func servicePolicyName(sourceKind string, svc *corev1.Service) string {
+func servicePolicyName(sourceKind, ns, name string) string {
 	prefix := "kube-vnet." + PolicyKindExternal + "." + sourceKind + "."
 	const hashLen = 8
 	const maxNameLen = 63
 	maxBase := maxNameLen - len(prefix) - 1 - hashLen
-	base := svc.Name
-	if len(base) > maxBase {
-		base = base[:maxBase]
-	}
-	h := sha256.Sum256([]byte(svc.Namespace + "/" + svc.Name))
+	base := name[:min(len(name), maxBase)]
+	h := sha256.Sum256([]byte(ns + "/" + name))
 	return prefix + base + "-" + hex.EncodeToString(h[:])[:hashLen]
 }
 

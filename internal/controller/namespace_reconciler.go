@@ -64,15 +64,14 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	created, err := applyPolicy(ctx, r.Client, r.Client, desired)
 	if err != nil {
 		logger.Error(err, "apply baseline failed")
-		applyErrors.WithLabelValues(ApplyErrorBaseline).Inc()
-		eventf(r.Recorder, desired, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+		applyFailed(r.Recorder, desired, ApplyErrorBaseline,
 			"the baseline NetworkPolicy %s could not be applied: %v. While this persists the namespace has "+
 				"no kube-vnet default-deny: its pods accept traffic from anywhere (fail-open). Check "+
 				"ResourceQuotas and admission policies on NetworkPolicies in this namespace.", desired.Name, err)
 		return ctrl.Result{}, err
 	}
 	if r.restores.applied(client.ObjectKeyFromObject(desired), created) {
-		eventf(r.Recorder, desired, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+		policyRestored(r.Recorder, desired,
 			"this NetworkPolicy was deleted and has been recreated: it is the namespace's kube-vnet default-deny "+
 				"baseline. An administrator opts a namespace out with the annotation kube-vnet/disabled=true.")
 	}

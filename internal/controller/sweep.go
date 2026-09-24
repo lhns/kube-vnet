@@ -91,48 +91,6 @@ func sweepStalePolicies(
 	return nil
 }
 
-// sweepStalePoliciesByOwner is sweepStalePolicies with ownership decided by
-// the controller owner reference (ownerKind, ownerName, ownerUID) instead of
-// labels: only matching policies whose controller owner is that object, and
-// that are not in keep, are deleted. Owner references survive label-scheme
-// changes, so legacy policies are still cleaned up. Use it where every
-// policy has a per-resource owner (Service-source policies).
-//
-// skip, when non-nil, exempts individual policies. Two reconcilers set the
-// same Service as owner (ExternalAllow and ApiserverReachable); a sweep that
-// cannot narrow its List to one source kind uses skip to leave the other's
-// policies alone.
-func sweepStalePoliciesByOwner(
-	ctx context.Context,
-	c client.Client,
-	listOpts []client.ListOption,
-	ownerKind, ownerName string, ownerUID types.UID,
-	keep map[client.ObjectKey]bool,
-	skip func(*networkingv1.NetworkPolicy) bool,
-) error {
-	var existing networkingv1.NetworkPolicyList
-	if err := c.List(ctx, &existing, listOpts...); err != nil {
-		return err
-	}
-	for i := range existing.Items {
-		p := &existing.Items[i]
-		if !hasControllerOwner(p, ownerKind, ownerName, ownerUID) {
-			continue
-		}
-		if skip != nil && skip(p) {
-			continue
-		}
-		key := client.ObjectKey{Namespace: p.Namespace, Name: p.Name}
-		if keep[key] {
-			continue
-		}
-		if err := c.Delete(ctx, p); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-	}
-	return nil
-}
-
 // hasControllerOwner reports whether obj has a controller owner reference
 // matching kind, name and uid. Non-controller owner references don't count.
 // A policy of a deleted-and-recreated Service fails the UID match; owner-ref
