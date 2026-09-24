@@ -188,7 +188,7 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 | Threat | Actor | Control | Residual | Status |
 |---|---|---|---|---|
-| `kubectl delete networkpolicy kube-vnet.base` | A2 | Drift correction re-applies (`NamespaceReconciler`); no Event for baseline restores | **Traffic flows during the delete→restore window** (seconds). Defeated entirely if the operator is also stopped | **F-05** (Accepted; `AdminNetworkPolicy` is the real fix — [ADR 0019](../adr/0019-baseline-durability.md)) |
+| `kubectl delete networkpolicy kube-vnet.base` | A2 | Drift correction re-applies (`NamespaceReconciler`) and emits `PolicyRestored` on the baseline | **Traffic flows during the delete→restore window** (seconds). Defeated entirely if the operator is also stopped | **F-05** (Accepted; `AdminNetworkPolicy` is the real fix — [ADR 0019](../adr/0019-baseline-durability.md)) |
 | Edit `ClusterVirtualNetworkBaseline` to loosen every namespace at once | A3 | Deliberately **not** aggregated into `admin`/`edit`/`view` — a cluster-admin must bind it explicitly (`rbac-aggregated.yaml`) | Requires cluster-scoped grant | Accepted |
 | Tighten a vnet, but established connections keep flowing | A1 | None available. NetworkPolicy is evaluated at SYN time only; conntrack `ESTABLISHED` entries are never re-evaluated (default timeout ~5 days, [FAQ](../faq.md#i-tightened-isolation-but-existing-cross-namespace-connections-still-work-why)) | Real gap between "policy applied" and "policy effective"; remediation is a pod restart | **F-07** (Accepted, universal to NetworkPolicy) |
 | Write a vnet's or binding's `/status` to fake `Ready` or `status.members` | A1 | The chart's end-user roles grant no `/status` verbs (`rbac-aggregated.yaml`); only the operator SA writes status | None. Status gates no traffic, so a forgery could only have misled humans and alerts | **F-14** (Fixed) |
@@ -198,7 +198,7 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 
 | Threat | Actor | Control | Residual | Status |
 |---|---|---|---|---|
-| Delete a policy, deny having done so | A2 | kube-vnet **detects** deleted membership policies (`PolicyRestored` Warning event, `metrics-and-events.md`; baseline restores are silent) but does not **attribute** — the event names the policy, not the principal | Attribution requires the Kubernetes audit log. kube-vnet cannot and should not duplicate it | Accepted (document: enable audit logging) |
+| Delete a policy, deny having done so | A2 | kube-vnet **detects** deleted policies it had applied (`PolicyRestored` Warning event on the policy, `metrics-and-events.md`; not across an operator restart) but does not **attribute** — the event names the policy, not the principal | Attribution requires the Kubernetes audit log. kube-vnet cannot and should not duplicate it | Accepted (document: enable audit logging) |
 | No published vulnerability-reporting path | — | — | GitHub surfaced no `SECURITY.md` | **F-08** — fixed, see `/SECURITY.md` |
 
 ### I — Information disclosure
@@ -214,7 +214,7 @@ Severity is *residual* — after the listed control. **Accepted** = a deliberate
 |---|---|---|---|---|
 | Edit `ClusterVirtualNetworkBaseline` → every pod in the cluster re-resolves | A3 | — | Inherent: it is a cluster-wide posture object | **F-09** (Accepted; treat CVNB edits as change-controlled) |
 | Policy explosion: policies scale with (vnets × member namespaces) | A1/A2 | Naming is deterministic and swept; no unbounded growth per pod | apiserver/etcd load grows with vnet fan-out | F-09 |
-| Event flood from a delete/restore loop | A2 | Detectable for membership policies via `PolicyRestored` Events, once Events are forwarded ([`metrics-and-events.md`](../reference/metrics-and-events.md#forward-events-to-your-aggregator)) | Noise, not outage | F-09 |
+| Event flood from a delete/restore loop | A2 | Detectable via `PolicyRestored` Events, once Events are forwarded ([`metrics-and-events.md`](../reference/metrics-and-events.md#forward-events-to-your-aggregator)) | Noise, not outage | F-09 |
 | Stop the operator | A3 | **Existing policies persist and keep being enforced** — the enforcement state lives in the apiserver, not the operator. New pods go unstamped, i.e. isolated | Fail-**closed**. Only change-propagation stops — unless `webhook.enabled`: then pod creation and update in managed namespaces is rejected until the operator is back | Accepted (strength); **F-11** with the webhook |
 | Hold opted-in pods: flood or block the beacons, or a node's CNI stalls | A1/A2 | The wait is bounded by the pod's own `kube-vnet/network-max-wait` and always exits 0; beacons hold no state | A pod starts at most its maximum late, as it would have without the wait. The image pull of the injected container is **not** bounded | **F-13** |
 

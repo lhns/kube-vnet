@@ -43,6 +43,8 @@ type ExternalAllowReconciler struct {
 	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
 	Recorder events.EventRecorder
+
+	restores policyTracker
 }
 
 // errNamedPortUnresolvable signals that the Service references a named
@@ -53,6 +55,8 @@ var errNamedPortUnresolvable = errors.New("named targetPort unresolvable: no bac
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
 
 func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	applied := false
+	defer svcSourcePolicies.forgetUnless(&applied, &r.restores, req.Namespace, req.Name)
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -104,7 +108,8 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 		return ctrl.Result{}, svcSourcePolicies.sweep(ctx, r.Client, svc, "")
 	}
-	return ctrl.Result{}, svcSourcePolicies.apply(ctx, r.Client, r.Scheme, svc, desired)
+	applied, err = svcSourcePolicies.applyAndReport(ctx, r.Client, r.Scheme, r.Recorder, &r.restores, svc, desired)
+	return ctrl.Result{}, err
 }
 
 // serviceSource is one kind of Service-owned external-allow policy. The
@@ -113,6 +118,9 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 type serviceSource struct {
 	kind   string // LabelSourceKind value
 	prefix string // SourceLabelValue prefix
+	// errorKind is the apply_errors_total kind. For Events, what names the
+	// policy and who the peer it lets in.
+	errorKind, what, who string
 	// sweepLabels narrows the owner-ref sweep's List; skip, if set, spares
 	// policies that List cannot exclude.
 	sweepLabels map[string]string
@@ -125,6 +133,9 @@ type serviceSource struct {
 var svcSourcePolicies = serviceSource{
 	kind:        LabelSourceKindService,
 	prefix:      "svc-",
+	errorKind:   ApplyErrorExternalAllow,
+	what:        "external-allow",
+	who:         "external clients",
 	sweepLabels: map[string]string{LabelRole: LabelRoleExternalAllow},
 	skip:        claimedByOtherSourceKind,
 }
@@ -132,6 +143,9 @@ var svcSourcePolicies = serviceSource{
 var apiserverPolicies = serviceSource{
 	kind:        LabelSourceKindApiserver,
 	prefix:      "apiserver-",
+	errorKind:   ApplyErrorApiserverReachable,
+	what:        "apiserver-reachable",
+	who:         "the kube-apiserver",
 	sweepLabels: map[string]string{LabelRole: LabelRoleExternalAllow, LabelSourceKind: LabelSourceKindApiserver},
 }
 
@@ -152,17 +166,44 @@ func (s serviceSource) policy(svc *corev1.Service, name, cidr string, ports []ne
 		maps.Clone(svc.Spec.Selector), cidr, ports)
 }
 
-// apply applies desired with svc as controller owner, so GC deletes it with
-// the Service even while the operator is down, then sweeps svc's other
-// policies of this source (stale or legacy names).
-func (s serviceSource) apply(ctx context.Context, c client.Client, scheme *runtime.Scheme, svc *corev1.Service, desired *networkingv1.NetworkPolicy) error {
+// applyAndReport applies desired with svc as controller owner, so GC deletes
+// it with the Service even while the operator is down, then sweeps svc's
+// other policies of this source (stale or legacy names). It reports the
+// outcome where the Service's owner looks: an apply failure as a Warning on
+// the Service (and in apply_errors_total), a restore on the recreated
+// policy. applied reports that desired is live.
+func (s serviceSource) applyAndReport(ctx context.Context, c client.Client, scheme *runtime.Scheme, rec events.EventRecorder,
+	restores *policyTracker, svc *corev1.Service, desired *networkingv1.NetworkPolicy,
+) (applied bool, err error) {
 	if err := controllerutil.SetControllerReference(svc, desired, scheme); err != nil {
-		return err
+		return false, err
 	}
-	if _, err := applyPolicy(ctx, c, c, desired); err != nil {
-		return err
+	created, err := applyPolicy(ctx, c, c, desired)
+	if err != nil {
+		applyErrors.WithLabelValues(s.errorKind).Inc()
+		eventf(rec, svc, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+			"the %s NetworkPolicy %s could not be applied: %v. Until this is fixed, %s cannot reach this Service's pods.",
+			s.what, desired.Name, err, s.who)
+		return false, err
 	}
-	return s.sweep(ctx, c, svc, desired.Name)
+	if restores.applied(client.ObjectKeyFromObject(desired), created) {
+		eventf(rec, desired, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+			"this NetworkPolicy was deleted and has been recreated: kube-vnet lets %s reach Service %s through it. "+
+				"To opt the Service out, annotate it %s=false.", s.who, svc.Name, AnnotationExternalAllow)
+	}
+	return true, s.sweep(ctx, c, svc, desired.Name)
+}
+
+// forgetUnless drops the Service's policy from restores unless *applied: a
+// reconcile that swept the policy (or failed) must not make its next
+// creation look like a restore.
+func (s serviceSource) forgetUnless(applied *bool, restores *policyTracker, ns, name string) {
+	if *applied {
+		return
+	}
+	restores.forget(client.ObjectKey{Namespace: ns, Name: servicePolicyName(s.kind, &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+	})})
 }
 
 // sweep deletes svc's policies of this source except the one named keep

@@ -4,6 +4,8 @@ Status: Accepted
 
 > **Amendment (2026-09-23)**: since [ADR 0023](0023-decoupled-disabled-and-ingress-isolation.md) the baseline is owned by `NamespaceReconciler`, not the vnet reconciler. Drift correction still holds — its `NetworkPolicy` watch re-enqueues the namespace and the baseline is re-applied — but that path emits no event. `PolicyRestored` (via `policyToVNet` and the uncached read) now covers membership policies only. The baseline is also named `kube-vnet.base` ([ADR 0039](0039-uniform-kind-prefixed-policy-naming.md)).
 
+> **Amendment (2026-09-24)**: every restore emits `PolicyRestored` again, now on the restored policy itself, so it lands in the namespace of whoever deleted it; a membership restore also stays on the vnet. The baseline and auto-allow reconcilers tell a restore from a first creation by remembering in memory which policies they applied, so a deletion during an operator restart is restored without an Event. A membership restore is one the vnet's `status.generatedPolicies` listed.
+
 ## Context
 
 The `kube-vnet-default-deny` baseline (ADR 0006) is the policy that makes membership semantics meaningful — without it, pods that *aren't* members of a VirtualNetwork still reach members because Kubernetes' default is allow-all.

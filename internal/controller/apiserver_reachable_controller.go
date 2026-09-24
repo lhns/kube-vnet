@@ -52,6 +52,8 @@ type ApiserverReachableReconciler struct {
 	// SourceCIDR is the emitted policy's `from: ipBlock`. Empty means
 	// `0.0.0.0/0`; admins can narrow it to their control-plane subnet.
 	SourceCIDR string
+
+	restores policyTracker
 }
 
 // serviceRef identifies a Service port the apiserver reaches. Refs are not
@@ -68,6 +70,8 @@ type serviceRef struct {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	applied := false
+	defer apiserverPolicies.forgetUnless(&applied, &r.restores, req.Namespace, req.Name)
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -126,7 +130,8 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{}, apiserverPolicies.apply(ctx, r.Client, r.Scheme, svc, desired)
+	applied, err = apiserverPolicies.applyAndReport(ctx, r.Client, r.Scheme, r.Recorder, &r.restores, svc, desired)
+	return ctrl.Result{}, err
 }
 
 // collectReferencedPorts walks all four discovery resource kinds and the

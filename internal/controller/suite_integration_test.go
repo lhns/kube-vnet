@@ -99,6 +99,7 @@ func TestMain(m *testing.M) {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
+		Recorder: mgr.GetEventRecorder("kube-vnet-namespace-test"),
 	}
 	if err := nsReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup namespace reconciler: %v\n", err)
@@ -135,6 +136,7 @@ func TestMain(m *testing.M) {
 		Scheme:            mgr.GetScheme(),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
+		Recorder:          mgr.GetEventRecorder("kube-vnet-system-vnet-test"),
 	}
 	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup system vnet reconciler: %v\n", err)
@@ -158,6 +160,7 @@ func TestMain(m *testing.M) {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
+		Recorder: mgr.GetEventRecorder("kube-vnet-host-port-test"),
 	}
 	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "setup host-port reconciler: %v\n", err)

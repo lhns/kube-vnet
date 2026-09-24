@@ -16,8 +16,12 @@ import (
 
 // Apply error kinds — values for the "kind" label on applyErrors.
 const (
-	ApplyErrorMembershipPolicy = "membership_policy"
-	ApplyErrorBaseline         = "baseline"
+	ApplyErrorMembershipPolicy   = "membership_policy"
+	ApplyErrorBaseline           = "baseline"
+	ApplyErrorSystemVnet         = "system_vnet"
+	ApplyErrorExternalAllow      = "external_allow"
+	ApplyErrorApiserverReachable = "apiserver_reachable"
+	ApplyErrorHostPort           = "host_port"
 )
 
 // Reconcile result label values for reconciliations.
@@ -57,7 +61,7 @@ var (
 
 	applyErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "kube_vnet_apply_errors_total",
-		Help: "Total NetworkPolicy apply errors by kind (membership_policy|baseline).",
+		Help: "Total apply errors by kind (membership_policy|baseline|system_vnet|external_allow|apiserver_reachable|host_port).",
 	}, []string{"kind"})
 )
 

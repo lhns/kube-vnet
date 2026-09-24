@@ -91,8 +91,8 @@ topk(5, kube_vnet_members_total)
 | | |
 |---|---|
 | **Type** | Counter |
-| **Labels** | `kind` ∈ `membership_policy` \| `baseline` |
-| **Description** | Total apply errors by policy kind. Increments when an SSA `Patch` returns an error. |
+| **Labels** | `kind` ∈ `membership_policy` \| `baseline` \| `system_vnet` \| `external_allow` \| `apiserver_reachable` \| `host_port` |
+| **Description** | Total apply errors by object kind. Increments when an SSA `Patch` returns an error. `system_vnet` counts failed creates of the `namespace` and `cluster` system vnets; the others count `NetworkPolicy` applies. Each failure also emits an `ApplyFailed` Event in the affected namespace. |
 | **When it changes** | At the failure site of each apply call. |
 
 Sample query — recent apply errors:
@@ -157,16 +157,23 @@ Every reason the operator emits:
 | `NotReady` | Warning | VirtualNetwork | `kube-vnet` | `Ready` condition transitions to False. |
 | `Degraded` | Warning | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to True. |
 | `Recovered` | Normal | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to False. |
-| `ApplyFailed` | Warning | VirtualNetwork | `kube-vnet` | A membership `NetworkPolicy` apply returned an error. Fires at the failure site, once per failed policy, independent of condition transitions; the message names the policy and the apiserver error. The other namespaces are still applied. |
-| `PolicyRestored` | Warning | VirtualNetwork | `kube-vnet` | The operator re-created a membership `NetworkPolicy` that was absent immediately before its apply, i.e. an out-of-band deletion was reverted. See [ADR 0019](../adr/0019-baseline-durability.md). |
+| `ApplyFailed` | Warning | VirtualNetwork, and the membership `NetworkPolicy` in each failed namespace | `kube-vnet` | Membership `NetworkPolicy` applies returned errors. The vnet gets one summary per reconcile (the `Ready` message: a count and the first three errors). Each failed member namespace gets its own Event on the policy that could not be applied, so it lands in that namespace even though the policy doesn't exist; it names only that namespace's policy and error. The other namespaces are still applied. |
+| `ApplyFailed` | Warning | the baseline `NetworkPolicy` `kube-vnet.base` | `kube-vnet-namespace` | The baseline could not be applied. The namespace has **no default-deny** while this lasts (fail-open). |
+| `ApplyFailed` | Warning | the `namespace` (or `cluster`) system VirtualNetwork | `kube-vnet-system-vnet` | The system vnet could not be created or updated, so pods joining it are not members. |
+| `ApplyFailed` | Warning | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | The Service's external-allow or apiserver-reachable policy could not be applied, so external clients or the apiserver can't reach its pods. |
+| `ApplyFailed` | Warning | the host-port `NetworkPolicy` | `kube-vnet-host-port` | A host-port policy could not be applied, so that hostPort is blocked. The other ports are still applied. |
+| `PolicyRestored` | Warning | VirtualNetwork and the restored membership `NetworkPolicy` | `kube-vnet` | The operator re-created a membership `NetworkPolicy` that the vnet's `status.generatedPolicies` listed and that was absent immediately before its apply, i.e. an out-of-band deletion was reverted. The Event on the policy lands in the namespace of whoever deleted it. See [ADR 0019](../adr/0019-baseline-durability.md). |
+| `PolicyRestored` | Warning | the restored baseline, external-allow, apiserver-reachable or host-port `NetworkPolicy` | `kube-vnet-namespace` / `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` / `kube-vnet-host-port` | The operator re-created a policy it had applied before. The operator remembers what it applied in memory, so a policy deleted while the operator was down is re-created without an Event. |
 | `VirtualNetworkNotJoinable` | Warning | the Pod, `VirtualNetworkBinding`, `VirtualNetworkBaseline` or `ClusterVirtualNetworkBaseline` that declared the membership | `kube-vnet-resolution` | A referenced vnet can't be joined: it doesn't exist at the resolved namespace (a bare `kube-vnet/net.<X>` label with no local vnet `<X>` gets a hint to use the prefixed form), or its `spec.allowedNamespaces` doesn't permit the pod's namespace. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md). |
 | `ResolutionConflict` | Warning | Pod | `kube-vnet-resolution` | Rules in the same tier (e.g. a binding and a pod label) gave different directions for one vnet. They are intersected; the message names the sources and the result, and says so when the pod ends up not a member. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
 | `OverrideRejected` | Warning | Pod | `kube-vnet-resolution` | A lower tier tried to change a direction an upper tier pinned with a bare value (e.g. a pod label against a cluster baseline's `both`). The pinned value stays; use a `default-*` value upstream to allow overrides. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
 | `InvalidJoinLabelDirection` | Warning | Pod | `kube-vnet-resolution` | A `kube-vnet/net.*` label has a value other than `both`, `ingress`, `egress`, `none`. The label is ignored until fixed. Mostly relevant where the join-label `ValidatingAdmissionPolicy` is absent (Kubernetes < 1.30). |
 | `Pending` | Warning | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | An auto-allow policy is held back because a named `targetPort` has no backing pod with a matching `containerPort` name yet. Retried every 30s. |
 | `Skipped` | Normal | Service | `kube-vnet-external-allow` | An externally exposed Service has no `spec.selector`, so no `ext.svc` policy can be derived. |
+| `NetworkWaitSkipped` | Warning | Pod | `kube-vnet-resolution` | The pod has `kube-vnet/network-max-wait` but starts without the wait: the value is not a positive duration, the wait is not enabled, the namespace is not managed, or the webhook did not inject the init container. Same text as the webhook's admission warning, which only the pod's direct creator sees (for a Deployment or Job pod, a controller). Once per pod. |
+| `NamespaceNotManaged` | Warning | Pod | `kube-vnet-resolution` | The pod carries a `kube-vnet/net.*` join label in a namespace kube-vnet does not manage, so the label has no effect. Once per pod; pods there without a join label get nothing. |
 
-The operator does not emit Events for pods in disabled namespaces. There are no binding events: a `VirtualNetworkBinding` reports its state only through its `Ready` condition ([reasons](api.md#ready-condition-1)).
+In a disabled namespace the operator emits only `NamespaceNotManaged` and `NetworkWaitSkipped`, for pods that explicitly ask for something. `VirtualNetworkNotJoinable` is the one Event on a `VirtualNetworkBinding`; its other state is in its `Ready` condition ([reasons](api.md#ready-condition-1)).
 
 Status-condition reasons for all CRDs are in [`api.md`](api.md); the constants are the `Reason*` blocks in `internal/controller/virtualnetwork_controller.go` and `virtualnetworkbinding_controller.go`.
 

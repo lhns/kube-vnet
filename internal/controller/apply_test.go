@@ -197,14 +197,61 @@ func TestReconcile_ApplyFailureDoesNotStarveLaterNamespaces(t *testing.T) {
 	if len(got.Status.GeneratedPolicies) != 2 {
 		t.Errorf("status.generatedPolicies = %v, want the two applied", got.Status.GeneratedPolicies)
 	}
-	failed := 0
-	for _, reason := range rec.reasons {
-		if reason == EventApplyFailed {
-			failed++
+	// One summary on the vnet, and one in the failed namespace on its
+	// (never created) policy, naming only that namespace's failure.
+	if got := rec.on(EventApplyFailed, vnet, "a", "v"); len(got) != 1 || !strings.Contains(got[0], "1 of 3") {
+		t.Errorf("vnet ApplyFailed events = %q, want one summary", got)
+	}
+	inB := rec.on(EventApplyFailed, &networkingv1.NetworkPolicy{}, "b", PolicyName("v", "a"))
+	if len(inB) != 1 || !strings.Contains(inB[0], "VirtualNetwork a/v") || !strings.Contains(inB[0], errInjected.Error()) {
+		t.Errorf("member-namespace ApplyFailed events = %q, want one naming the vnet and the error", inB)
+	}
+	for _, ns := range []string{"a", "c"} {
+		if got := rec.on(EventApplyFailed, &networkingv1.NetworkPolicy{}, ns, PolicyName("v", "a")); len(got) != 0 {
+			t.Errorf("namespace %s applied fine but got ApplyFailed %q", ns, got)
 		}
 	}
-	if failed != 1 {
-		t.Errorf("ApplyFailed events = %d, want 1 (reasons %v)", failed, rec.reasons)
+	// First creations are not restores.
+	for _, r := range rec.reasons {
+		if r == EventPolicyRestored {
+			t.Errorf("PolicyRestored on first creation (reasons %v)", rec.reasons)
+		}
+	}
+}
+
+// A membership policy that the last status listed and that is now missing
+// was deleted: the restore is reported on the vnet and on the policy.
+func TestReconcile_PolicyRestoredOnVnetAndPolicy(t *testing.T) {
+	pod := testutil.Pod("b", "p", map[string]string{SystemLabelKey("a", "v"): "both"})
+	pod.Annotations = map[string]string{AnnotationResolvedGeneration: "1"}
+	vnet := testutil.VirtualNetwork("v", "a", &vnetv1alpha1.NamespaceSelector{Names: []string{"b"}})
+	c, _ := patchCountingClient(t, "", mkNamespace("a", nil), mkNamespace("b", nil), vnet, pod)
+	rec := &fakeRecorder{}
+	r := &VirtualNetworkReconciler{Client: c, NSFilter: NewNamespaceFilter(nil), Recorder: rec}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(vnet)}
+	ctx := context.Background()
+
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	policy := &networkingv1.NetworkPolicy{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: "b", Name: PolicyName("v", "a")}, policy); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.on(EventPolicyRestored, policy, "b", policy.Name)) != 0 {
+		t.Fatal("first creation reported as a restore")
+	}
+	if err := c.Delete(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.on(EventPolicyRestored, vnet, "a", "v"); len(got) != 1 {
+		t.Errorf("vnet PolicyRestored = %q, want 1", got)
+	}
+	if got := rec.on(EventPolicyRestored, policy, "b", policy.Name); len(got) != 1 || !strings.Contains(got[0], "a/v") {
+		t.Errorf("policy PolicyRestored = %q, want 1 naming the vnet", got)
 	}
 }
 
