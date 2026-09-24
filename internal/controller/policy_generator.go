@@ -42,52 +42,26 @@ const (
 	LabelRoleMembership = "membership"
 	// LabelRoleBaseline marks the namespace default-deny baseline.
 	LabelRoleBaseline = "baseline"
-	// LabelRoleExternalAllow marks NetworkPolicies emitted by the
-	// ExternalAllowReconciler (ADR 0038) for externally-exposed Services
-	// (type=LoadBalancer/NodePort, or type=ClusterIP with externalIPs set).
-	// They allow `from: ipBlock 0.0.0.0/0` on the Service's targetPort(s),
-	// composing additively with membership/baseline policies so external
-	// traffic reaches the pod while pod-to-pod isolation is preserved.
+	// LabelRoleExternalAllow marks the additive allow-from-an-ipBlock
+	// policies: Service-source (ADR 0038), host-port (ADR 0040) and
+	// apiserver-reachable (ADR 0041).
 	LabelRoleExternalAllow = "external-allow"
-	// LabelSystemHostPortPrefix is the prefix on operator-stamped pod labels
-	// that mark a pod as exposing a hostPort. Per ADR 0040 the format is
-	// `kube-vnet.system/host-port.<port>.<protocol>=true` (one label per
-	// distinct (port, protocol) the pod declares). The HostPortReconciler
-	// emits a per-(NS, port, protocol) NetworkPolicy whose podSelector
-	// matches this label, allowing `ipBlock: 0.0.0.0/0` on that port.
+	// LabelSystemHostPortPrefix prefixes the pod stamps
+	// `kube-vnet.system/host-port.<port>.<protocol>=true` that the host-port
+	// policies select (ADR 0040).
 	LabelSystemHostPortPrefix = "kube-vnet.system/host-port."
-	// LabelSource is the operator-owned reference back to the identity that
-	// caused this external-allow policy to be emitted. Per ADR 0039 it's
-	// symmetrically kind-prefixed across all source kinds:
-	//
-	//   svc-<service-name>            — Service-source (LB/NodePort/ClusterIP+externalIPs, ADR 0038)
-	//   host-<port>-<protocol>        — host-source (hostPort, ADR 0040)
-	//   apiserver-<service-name>      — apiserver-source (webhook/APIService backends, ADR 0041)
-	//
-	// Bare name (no slashes — label values forbid `/`). The companion
-	// LabelSourceKind label carries the kind explicitly so reconcilers
-	// dispatch on the kind label, not on parsing the source value.
+	// LabelSource names what an external-allow policy was emitted for (ADR
+	// 0039): `svc-<service>`, `host-<port>-<protocol>` or
+	// `apiserver-<service>`. Reconcilers dispatch on LabelSourceKind, never
+	// on parsing this.
 	LabelSource = "kube-vnet.system/source"
-
-	// LabelSourceKind disambiguates the LabelSource value's namespace.
-	// Per ADR 0039 / 0040 / 0041:
-	//
-	//   svc                          — Service-source (ExternalAllowReconciler owns it)
-	//   host                         — host-source (HostPortReconciler owns it)
-	//   apiserver                    — apiserver-source (ApiserverReachableReconciler owns it)
-	//
-	// Reconcilers filter their cleanup tail-step by this label so they
-	// only sweep policies they actually own; a Service literally named
-	// `host-8080-tcp` (pathological but legal) won't be mistakenly
-	// claimed by the HostPortReconciler. Where a sweep can't narrow its
-	// List filter to one kind (the ExternalAllow legacy-migration sweep),
-	// the claimedByOtherSourceKind predicate does the per-item exemption.
+	// LabelSourceKind is the source kind of an external-allow policy, so
+	// each reconciler sweeps only its own (a Service named `host-8080-tcp`
+	// is not a host-port source).
 	LabelSourceKind = "kube-vnet.system/source-kind"
 
-	// LabelSourceKindService / LabelSourceKindHost / LabelSourceKindApiserver
-	// are the values for LabelSourceKind, and also the third segment of
-	// external-allow policy names (`kube-vnet.ext.svc.*` /
-	// `kube-vnet.ext.host.*` / `kube-vnet.ext.apiserver.*`).
+	// Values of LabelSourceKind, and the third segment of external-allow
+	// policy names (`kube-vnet.ext.<kind>.*`).
 	LabelSourceKindService   = "svc"
 	LabelSourceKindHost      = "host"
 	LabelSourceKindApiserver = "apiserver"
@@ -103,10 +77,8 @@ const (
 	// FieldManager is the server-side-apply field manager name used by the operator.
 	FieldManager = "kube-vnet"
 
-	// Policy name kind prefixes per ADR 0039. Every operator-emitted
-	// NetworkPolicy carries one of these as the second dot-segment of its
-	// name, making the kind visible at a glance instead of implicit in
-	// segment count. Format: `kube-vnet.<kind>.<identity>-<8hex>`.
+	// Policy name kinds, the second segment of
+	// `kube-vnet.<kind>.<identity>-<8hex>` (ADR 0039).
 	PolicyKindMembership = "mem"
 	PolicyKindExternal   = "ext"
 )
@@ -141,23 +113,10 @@ const (
 // ParseDirection parses a label value into a Direction. Returns ok=false for
 // any value other than the eight Direction constants.
 func ParseDirection(value string) (Direction, bool) {
-	switch value {
-	case "both":
-		return DirectionBoth, true
-	case "ingress":
-		return DirectionIngress, true
-	case "egress":
-		return DirectionEgress, true
-	case "none":
-		return DirectionNone, true
-	case "default-both":
-		return DirectionDefaultBoth, true
-	case "default-ingress":
-		return DirectionDefaultIngress, true
-	case "default-egress":
-		return DirectionDefaultEgress, true
-	case "default-none":
-		return DirectionDefaultNone, true
+	switch d := Direction(value); d {
+	case DirectionBoth, DirectionIngress, DirectionEgress, DirectionNone,
+		DirectionDefaultBoth, DirectionDefaultIngress, DirectionDefaultEgress, DirectionDefaultNone:
+		return d, true
 	}
 	return DirectionNone, false
 }
@@ -184,19 +143,10 @@ func (d Direction) IsDefault() bool {
 }
 
 // Bare strips the default-* prefix, returning the bare equivalent. Bare
-// values pass through unchanged. The final emitted direction (label stamped
-// onto pods) is always bare; the default-* prefix is consumed during
-// resolution to compute override-permission.
+// values pass through unchanged.
 func (d Direction) Bare() Direction {
-	switch d {
-	case DirectionDefaultBoth:
-		return DirectionBoth
-	case DirectionDefaultIngress:
-		return DirectionIngress
-	case DirectionDefaultEgress:
-		return DirectionEgress
-	case DirectionDefaultNone:
-		return DirectionNone
+	if d.IsDefault() {
+		return d[len("default-"):]
 	}
 	return d
 }
@@ -254,14 +204,9 @@ func PolicyName(vnet, homeNS string) string {
 }
 
 // policyHash returns an 8-hex-char identity hash for collision-safe naming.
-// Inputs are joined with `\x00` — forbidden in DNS-1123 labels and Kubernetes
-// resource names — so distinct (parts...) tuples always produce distinct
-// pre-hash strings.
-//
-// This is an *identity* hash (inputs are class + identifying fields), not a
-// content hash of the rendered NetworkPolicy spec. Names stay stable across
-// membership churn so the reconciler's server-side apply patches the existing
-// object instead of churning delete+create.
+// Inputs are joined with `\x00`, which no name contains, so distinct tuples
+// hash distinct strings. It hashes identity, not content, so names stay
+// stable across membership churn and applies patch rather than recreate.
 func policyHash(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:4])

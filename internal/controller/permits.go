@@ -135,9 +135,9 @@ func splitVnetKey(k VnetKey) (homeNS, vnetName string, ok bool) {
 	if s == SystemVnetCluster {
 		return "", SystemVnetCluster, true
 	}
-	parts := strings.SplitN(s, ".", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	homeNS, vnetName, ok = strings.Cut(s, ".")
+	if !ok || homeNS == "" || vnetName == "" {
 		return "", "", false
 	}
-	return parts[0], parts[1], true
+	return homeNS, vnetName, true
 }
