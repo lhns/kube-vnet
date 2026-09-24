@@ -70,53 +70,35 @@ func (r *Resolver) DesiredLabels(ctx context.Context, pod *corev1.Pod) (map[stri
 }
 
 func (r *Resolver) buildLayers(ctx context.Context, pod *corev1.Pod) ([]ResolutionLayer, error) {
+	tiers := []struct {
+		scope ResolutionScope
+		rules func() ([]ResolutionRule, error)
+	}{
+		{ScopeClusterBaseline, func() ([]ResolutionRule, error) { return r.clusterBaselineRules(ctx, pod) }},
+		{ScopeNamespaceBaseline, func() ([]ResolutionRule, error) { return r.namespaceBaselineRules(ctx, pod) }},
+		// Bindings and pod labels share the pod tier, intersecting on conflict.
+		{ScopePod, func() ([]ResolutionRule, error) {
+			rules, err := r.bindingRules(ctx, pod)
+			if err != nil {
+				return nil, err
+			}
+			return append(rules, r.podLabelRules(pod)...), nil
+		}},
+	}
 	var layers []ResolutionLayer
-
-	// Every rule set goes through filterPermittedRules, so only vnets the
-	// pod's namespace may join are stamped (ADR 0043).
-
-	// 1. Cluster baseline: the ClusterVirtualNetworkBaseline singleton named
-	// `default`.
-	clusterRules, err := r.clusterBaselineRules(ctx, pod)
-	if err != nil {
-		return nil, err
+	for _, tier := range tiers {
+		rules, err := tier.rules()
+		if err != nil {
+			return nil, err
+		}
+		// Only vnets the pod's namespace may join are stamped (ADR 0043).
+		if rules, err = r.filterPermittedRules(ctx, rules, pod.Namespace); err != nil {
+			return nil, err
+		}
+		if len(rules) > 0 {
+			layers = append(layers, ResolutionLayer{Scope: tier.scope, Rules: rules})
+		}
 	}
-	clusterRules, err = r.filterPermittedRules(ctx, clusterRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(clusterRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeClusterBaseline, Rules: clusterRules})
-	}
-
-	// 2. Namespace baseline (ScopeNamespaceBaseline).
-	nsBaselineRules, err := r.namespaceBaselineRules(ctx, pod)
-	if err != nil {
-		return nil, err
-	}
-	nsBaselineRules, err = r.filterPermittedRules(ctx, nsBaselineRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(nsBaselineRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopeNamespaceBaseline, Rules: nsBaselineRules})
-	}
-
-	// 3. Pod tier (ScopePod): VirtualNetworkBindings + pod labels merged into
-	// a single layer. Within-layer intersection applies on conflict.
-	bindRules, err := r.bindingRules(ctx, pod)
-	if err != nil {
-		return nil, err
-	}
-	podRules := append(bindRules, r.podLabelRules(pod)...)
-	podRules, err = r.filterPermittedRules(ctx, podRules, pod.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if len(podRules) > 0 {
-		layers = append(layers, ResolutionLayer{Scope: ScopePod, Rules: podRules})
-	}
-
 	return layers, nil
 }
 
@@ -180,29 +162,12 @@ func (r *Resolver) filterPermittedRules(ctx context.Context, rules []ResolutionR
 func (r *Resolver) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
 	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Name: "default"}, cb); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, client.IgnoreNotFound(err)
 	}
-	out := make([]ResolutionRule, 0, len(cb.Spec.Memberships))
-	for _, m := range cb.Spec.Memberships {
-		dir, ok := ParseDirection(m.Direction)
-		if !ok {
-			continue
-		}
-		out = append(out, ResolutionRule{
-			Vnet:      canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    "ClusterVirtualNetworkBaseline/default",
-			Ref:       m.VirtualNetworkRef,
-			// The pod, not the baseline: an Event on a cluster-scoped
-			// object lands in `default`, where it would name this
-			// namespace to anyone who can read `default`.
-			Owner: pod,
-		})
-	}
-	return out, nil
+	// Owned by the pod, not the baseline: an Event on a cluster-scoped object
+	// lands in `default`, where it would name this namespace to anyone who
+	// can read `default`.
+	return baselineRules(cb.Spec.Memberships, pod.Namespace, "ClusterVirtualNetworkBaseline/default", pod), nil
 }
 
 // namespaceBaselineRules reads the singleton VirtualNetworkBaseline named
@@ -211,26 +176,27 @@ func (r *Resolver) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) ([
 func (r *Resolver) namespaceBaselineRules(ctx context.Context, pod *corev1.Pod) ([]ResolutionRule, error) {
 	nb := &vnetv1alpha1.VirtualNetworkBaseline{}
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: pod.Namespace, Name: "default"}, nb); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
+		return nil, client.IgnoreNotFound(err)
 	}
-	out := make([]ResolutionRule, 0, len(nb.Spec.Memberships))
-	for _, m := range nb.Spec.Memberships {
-		dir, ok := ParseDirection(m.Direction)
-		if !ok {
-			continue
+	return baselineRules(nb.Spec.Memberships, pod.Namespace, "VirtualNetworkBaseline/"+pod.Namespace+"/default", nb), nil
+}
+
+// baselineRules turns a baseline's memberships into rules, skipping invalid
+// directions.
+func baselineRules(ms []vnetv1alpha1.BaselineMembership, podNS, source string, owner client.Object) []ResolutionRule {
+	out := make([]ResolutionRule, 0, len(ms))
+	for _, m := range ms {
+		if dir, ok := ParseDirection(m.Direction); ok {
+			out = append(out, ResolutionRule{
+				Vnet:      canonicalVnetKey(m.VirtualNetworkRef, podNS),
+				Direction: dir,
+				Source:    source,
+				Ref:       m.VirtualNetworkRef,
+				Owner:     owner,
+			})
 		}
-		out = append(out, ResolutionRule{
-			Vnet:      canonicalVnetKey(m.VirtualNetworkRef, pod.Namespace),
-			Direction: dir,
-			Source:    "VirtualNetworkBaseline/" + pod.Namespace + "/default",
-			Ref:       m.VirtualNetworkRef,
-			Owner:     nb,
-		})
 	}
-	return out, nil
+	return out
 }
 
 // bindingRules reads VirtualNetworkBindings in the pod's namespace that

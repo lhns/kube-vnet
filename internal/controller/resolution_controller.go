@@ -129,12 +129,12 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	r.warnNarrowedMembership(pod, res)
-	if w := NetworkWaitWarning(pod, true, r.NetworkWaitEnabled); w != "" {
+	w := NetworkWaitWarning(pod, true, r.NetworkWaitEnabled)
+	if w == "" && r.NetworkWaitEnabled {
+		w = networkWaitMissing(pod)
+	}
+	if w != "" {
 		r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
-	} else if r.NetworkWaitEnabled {
-		if w := networkWaitMissing(pod); w != "" {
-			r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
-		}
 	}
 
 	return ctrl.Result{}, nil
@@ -333,11 +333,11 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&vnetv1alpha1.VirtualNetworkBaseline{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceBaselineToPods),
+			handler.EnqueueRequestsFromMapFunc(r.podsInObjectNamespace),
 		).
 		Watches(
 			&vnetv1alpha1.VirtualNetworkBinding{},
-			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
+			handler.EnqueueRequestsFromMapFunc(r.podsInObjectNamespace),
 		).
 		// Resolution reads two namespace properties: the `kube-vnet/disabled`
 		// annotation and the labels `allowedNamespaces.selector` matches on.
@@ -401,15 +401,9 @@ func (r *ResolutionReconciler) clusterBaselineToPods(ctx context.Context, _ clie
 	return r.podsIn(ctx, "")
 }
 
-// namespaceBaselineToPods fans a VirtualNetworkBaseline event to every pod in
-// the baseline's namespace.
-func (r *ResolutionReconciler) namespaceBaselineToPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.podsIn(ctx, obj.GetNamespace())
-}
-
-// vnbToPods maps a VirtualNetworkBinding event to all pods in the binding's
-// namespace — a binding only ever selects pods there.
-func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+// podsInObjectNamespace fans a VirtualNetworkBaseline or VirtualNetworkBinding
+// event to every pod in its namespace, the only pods either applies to.
+func (r *ResolutionReconciler) podsInObjectNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.podsIn(ctx, obj.GetNamespace())
 }
 
