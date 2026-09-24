@@ -248,17 +248,80 @@ func TestResolution_NetworkWaitSkippedOncePerPod(t *testing.T) {
 
 // A join label in an unmanaged namespace has no effect; its pod is told once.
 // Pods there without one stay quiet.
-func TestResolution_NamespaceNotManagedWarnsOnJoinLabel(t *testing.T) {
+func TestResolution_NamespaceExcludedWarnsOnJoinLabel(t *testing.T) {
 	rec := reconcilePod(t, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Labels: map[string]string{"kube-vnet/net.web": "both"},
 	}}, false, false)
-	got := rec.on(ReasonNamespaceNotManaged, &corev1.Pod{}, "app", "p")
+	got := rec.on(ReasonNamespaceExcluded, &corev1.Pod{}, "app", "p")
 	if len(got) != 1 || !strings.Contains(got[0], "kube-vnet/net.web") {
-		t.Fatalf("want one NamespaceNotManaged naming the label, got %q", got)
+		t.Fatalf("want one NamespaceExcluded naming the label, got %q", got)
 	}
 
 	rec = reconcilePod(t, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "x"}}}, false, false)
 	if len(rec.reasons) != 0 {
 		t.Fatalf("pod without a join label warned: %v", rec.notes)
+	}
+}
+
+// A named targetPort without a backing pod is expected while pods start and
+// retries every 30s: a Normal Event when the wait starts, not on each retry,
+// and again after the port resolved and was lost.
+func TestExternalAllow_NamedPortUnresolvedOnTransition(t *testing.T) {
+	ctx := context.Background()
+	svc := exposedService()
+	svc.Spec.Ports[0].TargetPort = intstr.FromString("http")
+	c, _ := patchCountingClient(t, "", mkNamespace("app", nil), svc)
+	rec := &fakeRecorder{}
+	r := &ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: rec}
+	waits := func() []string { return rec.on(ReasonNamedPortUnresolved, &corev1.Service{}, "app", "web") }
+	reconcile := func() {
+		t.Helper()
+		if err := reconcileName(t, r.Reconcile, "app", "web"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reconcile()
+	reconcile()
+	if got := waits(); len(got) != 1 {
+		t.Fatalf("two retries of one wait: %d Events, want 1", len(got))
+	}
+	for i, reason := range rec.reasons {
+		if reason == ReasonNamedPortUnresolved && rec.types[i] != corev1.EventTypeNormal {
+			t.Fatalf("%s is %s, want Normal", reason, rec.types[i])
+		}
+	}
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "web-0", Labels: map[string]string{"app": "web"}},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{
+			Name: "c", Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+		}}},
+	}
+	if err := c.Create(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if err := c.Delete(ctx, pod); err != nil {
+		t.Fatal(err)
+	}
+	reconcile()
+	if got := waits(); len(got) != 2 {
+		t.Fatalf("a new wait after the port resolved: %d Events in total, want 2", len(got))
+	}
+}
+
+// An exposed Service without a selector stays blocked until its owner acts.
+func TestExternalAllow_ServiceHasNoSelectorWarns(t *testing.T) {
+	svc := exposedService()
+	svc.Spec.Selector = nil
+	c, _ := patchCountingClient(t, "", mkNamespace("app", nil), svc)
+	rec := &fakeRecorder{}
+	r := &ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: rec}
+	if err := reconcileName(t, r.Reconcile, "app", "web"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.reasons) != 1 || rec.reasons[0] != ReasonServiceHasNoSelector || rec.types[0] != corev1.EventTypeWarning {
+		t.Fatalf("want one Warning %s, got %v %v", ReasonServiceHasNoSelector, rec.types, rec.reasons)
 	}
 }

@@ -68,7 +68,7 @@ type ResolutionReconciler struct {
 
 	// once limits the warnings about a pod's fixed spec and labels to one
 	// per pod.
-	once podOnce
+	once onceSet
 }
 
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;patch;update
@@ -140,10 +140,6 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-// ReasonNamespaceNotManaged is the pod Event for a pod that carries a
-// `kube-vnet/net.*` join label in a namespace kube-vnet does not manage.
-const ReasonNamespaceNotManaged = "NamespaceNotManaged"
-
 // warnUnmanaged tells the owner of a pod in an unmanaged namespace that what
 // the pod asks kube-vnet for has no effect. Only an explicit ask warns, so
 // the many pods of an excluded namespace stay quiet.
@@ -156,7 +152,7 @@ func (r *ResolutionReconciler) warnUnmanaged(pod *corev1.Pod) {
 	}
 	if len(joins) > 0 {
 		sort.Strings(joins)
-		r.warnOnce(pod, ReasonNamespaceNotManaged, fmt.Sprintf(
+		r.warnOnce(pod, ReasonNamespaceExcluded, fmt.Sprintf(
 			"namespace %q is not managed by kube-vnet, so the join label %s has no effect: the pod joins "+
 				"no VirtualNetwork and kube-vnet applies no NetworkPolicy here", pod.Namespace, joins[0]))
 	}
@@ -187,14 +183,14 @@ func (r *ResolutionReconciler) warnNarrowedMembership(pod *corev1.Pod, res Resol
 		}
 		sort.Strings(parts)
 		r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, ReasonResolutionConflict, "Resolve",
-			"rules in the %s tier disagree on %q (%s) and intersect to %q%s",
-			c.Scope, c.Vnet, strings.Join(parts, ", "), c.Effective, notAMember(c.Effective))
+			"VirtualNetwork %s: %s disagree, so the pod gets their intersection, %q%s",
+			c.Vnet.Display(), strings.Join(parts, ", "), c.Effective, notAMember(c.Effective))
 	}
 	for _, o := range res.OverrideRejected {
 		r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning, ReasonOverrideRejected, "Resolve",
-			"the %s tier tried to set %q to %q, but the %s tier pins it to %q; "+
-				"use a default-* value there to allow overrides",
-			o.AttemptedScope, o.Vnet, o.AttemptedDir, o.BlockingScope, o.BlockingDir)
+			"VirtualNetwork %s: %s asks for %q, but %s pins it to %q, which applies. "+
+				"To allow overrides, use a default-* value there.",
+			o.Vnet.Display(), o.AttemptedScope.describe(), o.AttemptedDir, o.BlockingScope.describe(), o.BlockingDir)
 	}
 }
 
@@ -212,13 +208,6 @@ func notAMember(d Direction) string {
 // it must never branch on vnet kind. Only the human-readable note is
 // enriched, by notJoinableHint.
 const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
-
-// ReasonInvalidJoinLabelDirection is the Event reason emitted on a Pod whose
-// `kube-vnet/net.*` join label has a direction other than both, ingress,
-// egress or none. It surfaces the typo where the direction-value VAP is absent
-// (Kubernetes < 1.30, or disabled). The vnet owner sees the same pod as an
-// UnknownDirection invalid joiner, but only if the named vnet exists.
-const ReasonInvalidJoinLabelDirection = "InvalidJoinLabelDirection"
 
 // Event reasons for the two ways resolution silently narrows a pod's
 // membership (ADR 0031). Both results are correct and fail closed; without

@@ -164,7 +164,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | Status | Reason | Message gist | When it fires |
 |---|---|---|---|
 | False | `NoIssues` | "" | Reconcile clean; no issues observed. |
-| True | `InvalidJoiners` | "<N> invalid joiners: <ns>/<pod>:<reason>, …" (first three, then "(+N more)") | A pod in a namespace this vnet admits carries a `kube-vnet/net.*` join label for it that can't be honored. Per-pod reasons: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (pod's namespace is disabled). Pods in namespaces the vnet doesn't admit are left out, so no tenant can degrade someone else's vnet or put names in its status; they get a `VirtualNetworkNotJoinable` Event instead. Advisory: a pod that is a member through another source (binding, baseline) keeps that membership. |
+| True | `InvalidJoiners` | "<N> invalid joiners: <ns>/<pod>:<reason>, …" (first three, then "(+N more)") | A pod in a namespace this vnet admits carries a `kube-vnet/net.*` join label for it that can't be honored. Per-pod reasons: `InvalidDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (pod's namespace is disabled). Pods in namespaces the vnet doesn't admit are left out, so no tenant can degrade someone else's vnet or put names in its status; they get a `VirtualNetworkNotJoinable` Event instead. Advisory: a pod that is a member through another source (binding, baseline) keeps that membership. |
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
 
@@ -394,11 +394,11 @@ This baseline itself inherits from the [`ClusterVirtualNetworkBaseline`](#cluste
 
 ## status
 
-The API declares `status.conditions` and `status.observedGeneration`, but no controller writes baseline status yet: duplicate entries are intersected fail-closed and rejected overrides are dropped without a condition. The `READY` printer column is therefore empty.
+The API declares `status.conditions` and `status.observedGeneration`, but no controller writes baseline status yet: duplicate entries are intersected fail-closed and rejected overrides are dropped without a condition, so `kubectl get` shows no `READY` column. The pods the baseline applies to carry the diagnostics as Events (`VirtualNetworkNotJoinable`, `ResolutionConflict`, `OverrideRejected`).
 
 ## Printer columns
 
-`kubectl get vnbl` shows `Ready` and `Age`.
+`kubectl get vnbl` shows `Name` and `Age`.
 
 ## Lifecycle
 
@@ -453,7 +453,7 @@ Same as `VirtualNetworkBaseline`: declared, not yet written by any controller.
 
 ## Printer columns
 
-`kubectl get cvnbl` shows `Ready` and `Age`.
+`kubectl get cvnbl` shows `Name` and `Age`.
 
 ## Lifecycle
 

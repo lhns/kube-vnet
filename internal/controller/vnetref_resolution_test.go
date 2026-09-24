@@ -178,7 +178,7 @@ func TestNotJoinableHint(t *testing.T) {
 }
 
 // podLabelRules must surface a malformed direction value on the pod itself
-// (InvalidJoinLabelDirection), independent of the admission VAP — that is the
+// (InvalidDirection), independent of the admission VAP — that is the
 // only pod-owner-facing signal on clusters without the VAP. Valid values
 // (including none) produce a rule and no warning.
 func TestPodLabelRules_WarnsOnInvalidDirection(t *testing.T) {
@@ -205,7 +205,7 @@ func TestPodLabelRules_WarnsOnInvalidDirection(t *testing.T) {
 	}
 	warns := 0
 	for _, reason := range rec.reasons {
-		if reason == ReasonInvalidJoinLabelDirection {
+		if reason == ReasonInvalidDirection {
 			warns++
 		} else {
 			t.Fatalf("unexpected event reason %q", reason)
@@ -213,7 +213,7 @@ func TestPodLabelRules_WarnsOnInvalidDirection(t *testing.T) {
 	}
 	if warns != 3 {
 		t.Fatalf("expected 3 %s events (orders, legacy, blank), got %d",
-			ReasonInvalidJoinLabelDirection, warns)
+			ReasonInvalidDirection, warns)
 	}
 }
 

@@ -796,7 +796,7 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 }
 
 // TestIntegration_DirectionEnum_UnknownValue_Degraded: a typo in the direction
-// value surfaces as InvalidJoiner with reason UnknownDirection.
+// value surfaces as InvalidJoiner with reason InvalidDirection.
 func TestIntegration_DirectionEnum_UnknownValue_Degraded(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "unknown")
@@ -915,7 +915,7 @@ func TestIntegration_Baseline_DisabledAnnotationRemovesBaseline(t *testing.T) {
 
 // TestIntegration_EmptyDirection_NoMember: `kube-vnet/net.X: ""` is a removed
 // legacy alias, not a direction (ADR 0030), so the pod is not a member. The
-// InvalidJoinLabelDirection Warning it also produces is covered by unit tests.
+// InvalidDirection Warning it also produces is covered by unit tests.
 func TestIntegration_EmptyDirection_NoMember(t *testing.T) {
 	ctx := context.Background()
 	ns := uniqueNS(t, "pe-empty")

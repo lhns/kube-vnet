@@ -38,7 +38,7 @@ spec:
         variables.podLabels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           variables.podLabels[k] in variables.validValues)
-      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty values are no longer accepted. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 # Source: kube-vnet/templates/validating-admission-policy.yaml
 apiVersion: admissionregistration.k8s.io/v1

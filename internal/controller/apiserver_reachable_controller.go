@@ -54,6 +54,7 @@ type ApiserverReachableReconciler struct {
 	SourceCIDR string
 
 	restores policyTracker
+	pending  onceSet
 }
 
 // serviceRef identifies a Service port the apiserver reaches. Refs are not
@@ -75,10 +76,13 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.pending.forget(req.NamespacedName)
 			return ctrl.Result{}, apiserverPolicies.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
+	waiting := false
+	defer apiserverPolicies.endPending(&waiting, &r.pending, svc)
 
 	ns := &corev1.Namespace{}
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
@@ -124,8 +128,8 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 	desired, err := buildApiserverReachablePolicy(svc, pods.Items, ports, r.SourceCIDR)
 	if err != nil {
 		if errors.Is(err, errNamedPortUnresolvable) {
-			r.Recorder.Eventf(svc, nil, corev1.EventTypeWarning, "Pending", "Reconcile",
-				"apiserver-reachable policy pending: a named targetPort has no backing pod with the matching containerPort name")
+			waiting = true
+			apiserverPolicies.startPending(r.Recorder, &r.pending, svc)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err

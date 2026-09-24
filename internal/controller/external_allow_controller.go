@@ -45,7 +45,19 @@ type ExternalAllowReconciler struct {
 	Recorder events.EventRecorder
 
 	restores policyTracker
+	pending  onceSet
 }
+
+// Event reasons on Services, from both Service-owned policy reconcilers.
+const (
+	// ReasonNamedPortUnresolved (Normal): a named targetPort has no backing
+	// pod that declares it yet, expected while pods start. Emitted when the
+	// wait starts, not on every retry.
+	ReasonNamedPortUnresolved = "NamedPortUnresolved"
+	// ReasonServiceHasNoSelector (Warning): an exposed Service has no
+	// selector, so no policy can select its pods and they stay blocked.
+	ReasonServiceHasNoSelector = "ServiceHasNoSelector"
+)
 
 // errNamedPortUnresolvable signals that the Service references a named
 // targetPort that no backing pod currently exposes. The reconciler treats
@@ -60,10 +72,13 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
+			r.pending.forget(req.NamespacedName)
 			return ctrl.Result{}, svcSourcePolicies.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
 		}
 		return ctrl.Result{}, err
 	}
+	waiting := false
+	defer svcSourcePolicies.endPending(&waiting, &r.pending, svc)
 
 	ns := &corev1.Namespace{}
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
@@ -92,8 +107,8 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	desired, err := buildExternalAllowPolicy(svc, pods.Items)
 	if err != nil {
 		if errors.Is(err, errNamedPortUnresolvable) {
-			r.Recorder.Eventf(svc, nil, corev1.EventTypeWarning, "Pending", "Reconcile",
-				"external-allow policy pending: a named targetPort has no backing pod yet")
+			waiting = true
+			svcSourcePolicies.startPending(r.Recorder, &r.pending, svc)
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 		return ctrl.Result{}, err
@@ -103,8 +118,10 @@ func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// Service without a selector (manually-managed Endpoints) gets an
 		// Event, since its missing policy is otherwise unexplained.
 		if isExternallyExposed(svc) && len(svc.Spec.Selector) == 0 {
-			r.Recorder.Eventf(svc, nil, corev1.EventTypeNormal, "Skipped", "Reconcile",
-				"external-allow skipped: Service has no spec.selector (manually-managed Endpoints); cannot derive a podSelector. Add a selector or write your own NetworkPolicy.")
+			eventf(r.Recorder, svc, corev1.EventTypeWarning, ReasonServiceHasNoSelector, "Reconcile",
+				"the Service is exposed externally but has no spec.selector, so kube-vnet cannot tell which pods to "+
+					"open to external clients; they stay blocked by the namespace baseline. Add a selector, or write "+
+					"a NetworkPolicy for the pods behind the Service's Endpoints.")
 		}
 		return ctrl.Result{}, svcSourcePolicies.sweep(ctx, r.Client, svc, "")
 	}
@@ -192,6 +209,25 @@ func (s serviceSource) applyAndReport(ctx context.Context, c client.Client, sche
 				"To opt the Service out, annotate it %s=false.", s.who, svc.Name, AnnotationExternalAllow)
 	}
 	return true, s.sweep(ctx, c, svc, desired.Name)
+}
+
+// startPending reports, once per wait, that svc's policy waits for a pod
+// declaring its named targetPort.
+func (s serviceSource) startPending(rec events.EventRecorder, pending *onceSet, svc *corev1.Service) {
+	if !pending.first(svc, ReasonNamedPortUnresolved) {
+		return
+	}
+	eventf(rec, svc, corev1.EventTypeNormal, ReasonNamedPortUnresolved, "Reconcile",
+		"the %s policy waits for a running pod behind this Service that declares its named targetPort; "+
+			"until then %s cannot reach that port. Normal while pods start; if it lasts, compare the "+
+			"Service's targetPort names with the pods' containerPort names.", s.what, s.who)
+}
+
+// endPending ends svc's wait unless *waiting, so the next one is reported.
+func (s serviceSource) endPending(waiting *bool, pending *onceSet, svc *corev1.Service) {
+	if !*waiting {
+		pending.clear(svc, ReasonNamedPortUnresolved)
+	}
 }
 
 // forgetUnless drops the Service's policy from restores unless *applied: a

@@ -3,7 +3,6 @@ package controller
 import (
 	"sync"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -62,37 +61,45 @@ func (t *policyTracker) forgetNamespace(ns string, keep map[client.ObjectKey]boo
 	}
 }
 
-// podOnce remembers which one-off pod warnings were emitted, so a warning
-// about a pod's fixed spec or labels is recorded once per pod rather than on
-// every reconcile. Keyed by name, checked against the UID, so a recreated
-// pod of the same name is warned again.
-type podOnce struct {
+// onceSet remembers which Events were emitted per object, so a state that
+// persists across reconciles (a pod's fixed spec, a Service waiting on a
+// named port) is reported when it starts rather than on every reconcile.
+// Keyed by name, checked against the UID, so a recreated object of the same
+// name is reported again.
+type onceSet struct {
 	mu   sync.Mutex
 	seen map[types.NamespacedName]map[string]types.UID
 }
 
-// first reports whether reason has not yet been recorded for pod, and marks it.
-func (o *podOnce) first(pod *corev1.Pod, reason string) bool {
+// first reports whether reason has not yet been recorded for obj, and marks it.
+func (o *onceSet) first(obj client.Object, reason string) bool {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.seen == nil {
 		o.seen = map[types.NamespacedName]map[string]types.UID{}
 	}
-	nn := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+	nn := client.ObjectKeyFromObject(obj)
 	byReason := o.seen[nn]
 	if byReason == nil {
 		byReason = map[string]types.UID{}
 		o.seen[nn] = byReason
 	}
-	if uid, ok := byReason[reason]; ok && uid == pod.UID {
+	if uid, ok := byReason[reason]; ok && uid == obj.GetUID() {
 		return false
 	}
-	byReason[reason] = pod.UID
+	byReason[reason] = obj.GetUID()
 	return true
 }
 
-// forget drops everything recorded for the pod nn (it is gone).
-func (o *podOnce) forget(nn types.NamespacedName) {
+// clear drops reason for obj: the state ended, so its next start is reported.
+func (o *onceSet) clear(obj client.Object, reason string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.seen[client.ObjectKeyFromObject(obj)], reason)
+}
+
+// forget drops everything recorded for the object nn (it is gone).
+func (o *onceSet) forget(nn types.NamespacedName) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.seen, nn)
