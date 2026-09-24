@@ -4,7 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	networkingv1 "k8s.io/api/networking/v1"
@@ -347,20 +347,16 @@ func Generate(in GenerateInput) GenerateOutput {
 
 	// Member namespaces: any NS that has at least one pod with non-empty
 	// direction-bucket. Sorted for deterministic output.
-	nsSet := map[string]struct{}{}
+	var memberNamespaces []string
 	for ns, byDir := range in.MembersByNS {
 		for _, pods := range byDir {
 			if len(pods) > 0 {
-				nsSet[ns] = struct{}{}
+				memberNamespaces = append(memberNamespaces, ns)
 				break
 			}
 		}
 	}
-	memberNamespaces := make([]string, 0, len(nsSet))
-	for ns := range nsSet {
-		memberNamespaces = append(memberNamespaces, ns)
-	}
-	sort.Strings(memberNamespaces)
+	slices.Sort(memberNamespaces)
 
 	out := GenerateOutput{}
 	if len(memberNamespaces) == 0 {
@@ -432,8 +428,8 @@ func Generate(in GenerateInput) GenerateOutput {
 				Kind:               "VirtualNetwork",
 				Name:               vnet.Name,
 				UID:                vnet.UID,
-				Controller:         ptrTrue(),
-				BlockOwnerDeletion: ptrTrue(),
+				Controller:         new(true),
+				BlockOwnerDeletion: new(true),
 			}}
 		}
 		policies = append(policies, policy)
@@ -441,5 +437,3 @@ func Generate(in GenerateInput) GenerateOutput {
 	out.Policies = policies
 	return out
 }
-
-func ptrTrue() *bool { b := true; return &b }

@@ -31,7 +31,7 @@ func TestServiceRefs(t *testing.T) {
 		for _, ref := range refs {
 			cc := admissionregistrationv1.WebhookClientConfig{Service: ref}
 			if ref == nil {
-				cc.URL = ptr("https://external.example.com/validate")
+				cc.URL = new("https://external.example.com/validate")
 			}
 			cfg.Webhooks = append(cfg.Webhooks, admissionregistrationv1.ValidatingWebhook{ClientConfig: cc})
 		}
@@ -51,26 +51,26 @@ func TestServiceRefs(t *testing.T) {
 		in   runtime.Object
 		want []serviceRef
 	}{
-		{"validating", validating(svcRef(ptr[int32](8443))), []serviceRef{ref(8443)}},
+		{"validating", validating(svcRef(new(int32(8443)))), []serviceRef{ref(8443)}},
 		{"validating_port_defaulted_to_443", validating(svcRef(nil)), []serviceRef{ref(443)}},
 		{"validating_url_only_skipped", validating(nil), nil},
 		// One ref per webhook entry; the callers dedup.
-		{"validating_same_service_twice", validating(svcRef(ptr[int32](443)), svcRef(ptr[int32](443))), []serviceRef{ref(443), ref(443)}},
-		{"validating_different_ports", validating(svcRef(ptr[int32](443)), svcRef(ptr[int32](8443))), []serviceRef{ref(443), ref(8443)}},
+		{"validating_same_service_twice", validating(svcRef(new(int32(443))), svcRef(new(int32(443)))), []serviceRef{ref(443), ref(443)}},
+		{"validating_different_ports", validating(svcRef(new(int32(443))), svcRef(new(int32(8443)))), []serviceRef{ref(443), ref(8443)}},
 		{"mutating", &admissionregistrationv1.MutatingWebhookConfiguration{Webhooks: []admissionregistrationv1.MutatingWebhook{
-			{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: svcRef(ptr[int32](8443))}},
-			{ClientConfig: admissionregistrationv1.WebhookClientConfig{URL: ptr("https://x")}},
+			{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: svcRef(new(int32(8443)))}},
+			{ClientConfig: admissionregistrationv1.WebhookClientConfig{URL: new("https://x")}},
 		}}, []serviceRef{ref(8443)}},
 		{"apiservice", &apiregistrationv1.APIService{Spec: apiregistrationv1.APIServiceSpec{
-			Service: &apiregistrationv1.ServiceReference{Namespace: "ns", Name: "svc", Port: ptr[int32](443)},
+			Service: &apiregistrationv1.ServiceReference{Namespace: "ns", Name: "svc", Port: new(int32(443))},
 		}}, []serviceRef{ref(443)}},
 		{"apiservice_local", &apiregistrationv1.APIService{}, nil},
 		{"crd_conversion_webhook", crd(apiextensionsv1.WebhookConverter, &apiextensionsv1.WebhookClientConfig{
-			Service: &apiextensionsv1.ServiceReference{Namespace: "ns", Name: "svc", Port: ptr[int32](443)},
+			Service: &apiextensionsv1.ServiceReference{Namespace: "ns", Name: "svc", Port: new(int32(443))},
 		}), []serviceRef{ref(443)}},
 		{"crd_no_conversion", &apiextensionsv1.CustomResourceDefinition{}, nil},
 		{"crd_strategy_none", crd(apiextensionsv1.NoneConverter, nil), nil},
-		{"crd_url_only", crd(apiextensionsv1.WebhookConverter, &apiextensionsv1.WebhookClientConfig{URL: ptr("https://x")}), nil},
+		{"crd_url_only", crd(apiextensionsv1.WebhookConverter, &apiextensionsv1.WebhookClientConfig{URL: new("https://x")}), nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -82,11 +82,11 @@ func TestServiceRefs(t *testing.T) {
 }
 
 func TestDiscoveryToServices_Dedups(t *testing.T) {
-	port := ptr[int32](443)
+	port := new(int32(443))
 	cfg := &admissionregistrationv1.ValidatingWebhookConfiguration{Webhooks: []admissionregistrationv1.ValidatingWebhook{
 		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "a", Port: port}}},
 		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "b", Port: port}}},
-		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "a", Port: ptr[int32](8443)}}},
+		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "a", Port: new(int32(8443))}}},
 	}}
 	got := discoveryToServices(context.Background(), cfg)
 	if len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" {
@@ -424,5 +424,3 @@ func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) 
 		t.Errorf("applied %d policies into a terminating namespace", len(got))
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

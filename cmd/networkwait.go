@@ -4,10 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/signal"
-	"sort"
+	"slices"
 	"syscall"
 	"time"
 
@@ -45,7 +46,7 @@ func runNetworkWait(args []string) int {
 	}
 
 	res := networkwait.Wait(context.Background(), networkwait.Config{Host: host, Port: port, MaxWait: *maxWait})
-	for _, ip := range sortedKeys(res.Accepted) {
+	for _, ip := range slices.Sorted(maps.Keys(res.Accepted)) {
 		fmt.Printf("network-wait: beacon %s accepted after %v\n", ip, res.Accepted[ip].Round(time.Millisecond))
 	}
 	fmt.Println(waitOutcome(res, host, *maxWait))
@@ -81,13 +82,4 @@ func runNetworkBeacon(args []string) int {
 		return 1
 	}
 	return 0
-}
-
-func sortedKeys(m map[string]time.Duration) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -16,98 +16,66 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestSyncManagedLabels_AddsAndRemoves(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-			"kube-vnet.system/net.old":             "both",    // managed, will be removed
-			"kube-vnet.system/net.payments":        "ingress", // managed, will be updated
-			"kube-vnet.system/host-port.stale.tcp": "true",    // managed (different prefix), will be removed
-			"app":                                  "demo",    // unmanaged, untouched
-		}},
-	}
-	isManaged := func(k string) bool {
-		return strings.HasPrefix(k, "kube-vnet.system/net.") ||
-			strings.HasPrefix(k, "kube-vnet.system/host-port.")
-	}
-	desired := map[string]string{
-		"kube-vnet.system/net.payments":     "both",   // update
-		"kube-vnet.system/net.new":          "egress", // add
-		"kube-vnet.system/host-port.80.tcp": "true",   // add (different prefix family)
-	}
-	changed := syncManagedLabels(pod, isManaged, desired)
-	if !changed {
-		t.Error("expected changed=true")
-	}
-	want := map[string]string{
-		"app":                               "demo",
-		"kube-vnet.system/net.payments":     "both",
-		"kube-vnet.system/net.new":          "egress",
-		"kube-vnet.system/host-port.80.tcp": "true",
-	}
-	for k, v := range want {
-		if pod.Labels[k] != v {
-			t.Errorf("label %q = %q, want %q", k, pod.Labels[k], v)
-		}
-	}
-	if _, ok := pod.Labels["kube-vnet.system/net.old"]; ok {
-		t.Error("kube-vnet.system/net.old should have been removed")
-	}
-	if _, ok := pod.Labels["kube-vnet.system/host-port.stale.tcp"]; ok {
-		t.Error("stale host-port label should have been removed")
-	}
-	if len(pod.Labels) != len(want) {
-		t.Errorf("label set size = %d, want %d (%v)", len(pod.Labels), len(want), pod.Labels)
-	}
-}
-
-func TestSyncManagedLabels_NoOp(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-		"kube-vnet.system/net.x": "both",
-		"unmanaged":              "y",
-	}}}
+func TestSyncManagedLabels(t *testing.T) {
 	isManaged := func(k string) bool { return strings.HasPrefix(k, "kube-vnet.system/") }
-	desired := map[string]string{"kube-vnet.system/net.x": "both"}
-	if changed := syncManagedLabels(pod, isManaged, desired); changed {
-		t.Error("expected changed=false for no-op call")
+	cases := []struct {
+		name        string
+		labels      map[string]string
+		desired     map[string]string
+		want        map[string]string
+		wantChanged bool
+	}{
+		{
+			name: "adds_updates_removes",
+			labels: map[string]string{
+				"kube-vnet.system/net.old":             "both",    // removed
+				"kube-vnet.system/net.payments":        "ingress", // updated
+				"kube-vnet.system/host-port.stale.tcp": "true",    // removed
+				"app":                                  "demo",    // unmanaged, untouched
+			},
+			desired: map[string]string{
+				"kube-vnet.system/net.payments":     "both",
+				"kube-vnet.system/net.new":          "egress",
+				"kube-vnet.system/host-port.80.tcp": "true",
+			},
+			want: map[string]string{
+				"app":                               "demo",
+				"kube-vnet.system/net.payments":     "both",
+				"kube-vnet.system/net.new":          "egress",
+				"kube-vnet.system/host-port.80.tcp": "true",
+			},
+			wantChanged: true,
+		},
+		{
+			name:    "no_op",
+			labels:  map[string]string{"kube-vnet.system/net.x": "both", "unmanaged": "y"},
+			desired: map[string]string{"kube-vnet.system/net.x": "both"},
+			want:    map[string]string{"kube-vnet.system/net.x": "both", "unmanaged": "y"},
+		},
+		{
+			name:        "remove_all",
+			labels:      map[string]string{"kube-vnet.system/net.a": "both", "kube-vnet.system/net.b": "ingress", "app": "demo"},
+			want:        map[string]string{"app": "demo"},
+			wantChanged: true,
+		},
+		{name: "nil_labels_nothing_desired"},
+		{
+			name:        "nil_labels_then_add",
+			desired:     map[string]string{"kube-vnet.system/net.x": "both"},
+			want:        map[string]string{"kube-vnet.system/net.x": "both"},
+			wantChanged: true,
+		},
 	}
-}
-
-func TestSyncManagedLabels_RemoveAll(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-		"kube-vnet.system/net.a": "both",
-		"kube-vnet.system/net.b": "ingress",
-		"app":                    "demo",
-	}}}
-	isManaged := func(k string) bool { return strings.HasPrefix(k, "kube-vnet.system/") }
-	// Empty desired → remove all managed labels.
-	if changed := syncManagedLabels(pod, isManaged, nil); !changed {
-		t.Error("expected changed=true")
-	}
-	if len(pod.Labels) != 1 || pod.Labels["app"] != "demo" {
-		t.Errorf("expected only app=demo to remain, got %v", pod.Labels)
-	}
-}
-
-func TestSyncManagedLabels_NilLabelsNoDesired(t *testing.T) {
-	pod := &corev1.Pod{}
-	isManaged := func(k string) bool { return true }
-	if changed := syncManagedLabels(pod, isManaged, nil); changed {
-		t.Error("expected changed=false for nil labels + nil desired")
-	}
-	if pod.Labels != nil {
-		t.Error("nil labels should stay nil")
-	}
-}
-
-func TestSyncManagedLabels_NilLabelsThenAdd(t *testing.T) {
-	pod := &corev1.Pod{}
-	isManaged := func(k string) bool { return true }
-	desired := map[string]string{"kube-vnet.system/net.x": "both"}
-	if changed := syncManagedLabels(pod, isManaged, desired); !changed {
-		t.Error("expected changed=true")
-	}
-	if pod.Labels["kube-vnet.system/net.x"] != "both" {
-		t.Errorf("expected label added, got %v", pod.Labels)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: c.labels}}
+			if changed := syncManagedLabels(pod, isManaged, c.desired); changed != c.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, c.wantChanged)
+			}
+			if !maps.Equal(pod.Labels, c.want) || (c.want == nil) != (pod.Labels == nil) {
+				t.Errorf("labels = %v, want %v", pod.Labels, c.want)
+			}
+		})
 	}
 }
 
@@ -116,8 +84,6 @@ func TestSyncManagedLabels_NilLabelsThenAdd(t *testing.T) {
 func TestHasControllerOwner(t *testing.T) {
 	uidA := types.UID("uid-a")
 	uidB := types.UID("uid-b")
-	truePtr := true
-	falsePtr := false
 	mk := func(refs ...metav1.OwnerReference) client.Object {
 		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{OwnerReferences: refs}}
 	}
@@ -127,15 +93,15 @@ func TestHasControllerOwner(t *testing.T) {
 		want bool
 	}{
 		{"no_owner_refs", mk(), false},
-		{"matching_controller", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &truePtr}), true},
-		{"mismatched_uid", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidB, Controller: &truePtr}), false},
-		{"mismatched_name", mk(metav1.OwnerReference{Kind: "Service", Name: "other", UID: uidA, Controller: &truePtr}), false},
-		{"mismatched_kind", mk(metav1.OwnerReference{Kind: "Pod", Name: "web", UID: uidA, Controller: &truePtr}), false},
-		{"controller_false", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &falsePtr}), false},
+		{"matching_controller", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(true)}), true},
+		{"mismatched_uid", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidB, Controller: new(true)}), false},
+		{"mismatched_name", mk(metav1.OwnerReference{Kind: "Service", Name: "other", UID: uidA, Controller: new(true)}), false},
+		{"mismatched_kind", mk(metav1.OwnerReference{Kind: "Pod", Name: "web", UID: uidA, Controller: new(true)}), false},
+		{"controller_false", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(false)}), false},
 		{"controller_nil", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: nil}), false},
 		{"multiple_refs_one_matches", mk(
-			metav1.OwnerReference{Kind: "Pod", Name: "decoy", UID: uidB, Controller: &truePtr},
-			metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &truePtr},
+			metav1.OwnerReference{Kind: "Pod", Name: "decoy", UID: uidB, Controller: new(true)},
+			metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(true)},
 		), true},
 	}
 	for _, c := range cases {
@@ -181,8 +147,8 @@ func sweepWeb(t *testing.T, keep string, objs ...client.Object) []string {
 }
 
 func TestServiceSourceSweep(t *testing.T) {
-	webRef := &metav1.OwnerReference{APIVersion: "v1", Kind: "Service", Name: "web", UID: "svc-web-uid", Controller: ptr(true)}
-	otherRef := &metav1.OwnerReference{Kind: "Service", Name: "other", UID: "other-uid", Controller: ptr(true)}
+	webRef := &metav1.OwnerReference{APIVersion: "v1", Kind: "Service", Name: "web", UID: "svc-web-uid", Controller: new(true)}
+	otherRef := &metav1.OwnerReference{Kind: "Service", Name: "other", UID: "other-uid", Controller: new(true)}
 	managed := map[string]string{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow}
 	withKind := func(kind string) map[string]string {
 		l := maps.Clone(managed)

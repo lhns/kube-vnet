@@ -112,27 +112,18 @@ func hasControllerOwner(obj client.Object, kind, name string, uid types.UID) boo
 // reports whether one is needed.
 func syncManagedLabels(obj client.Object, isManaged func(string) bool, desired map[string]string) (changed bool) {
 	labels := obj.GetLabels()
-	if labels == nil {
-		if len(desired) == 0 {
-			return false
-		}
-		labels = map[string]string{}
-		obj.SetLabels(labels)
-	}
-	// Remove managed labels not in desired.
-	for k := range labels {
-		if !isManaged(k) {
-			continue
-		}
-		if _, keep := desired[k]; keep {
-			continue
-		}
-		delete(labels, k)
-		changed = true
-	}
-	// Add/update desired labels.
+	n := len(labels)
+	maps.DeleteFunc(labels, func(k, _ string) bool {
+		_, keep := desired[k]
+		return isManaged(k) && !keep
+	})
+	changed = len(labels) != n
 	for k, v := range desired {
 		if cur, ok := labels[k]; !ok || cur != v {
+			if labels == nil {
+				labels = map[string]string{}
+				obj.SetLabels(labels)
+			}
 			labels[k] = v
 			changed = true
 		}
