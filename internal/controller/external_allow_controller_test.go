@@ -13,12 +13,10 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"k8s.io/client-go/util/workqueue"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -40,269 +38,139 @@ func svc(name, namespace string) *corev1.Service {
 	}
 }
 
-func TestBuildExternalAllowPolicy_LoadBalancer_NumericPort(t *testing.T) {
-	s := svc("traefik", "traefik")
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+func TestBuildExternalAllowPolicy_Shape(t *testing.T) {
+	pol, err := buildExternalAllowPolicy(svc("traefik", "traefik"), nil)
+	if err != nil || pol == nil {
+		t.Fatalf("got (%v, %v), want a policy", pol, err)
 	}
-	if pol == nil {
-		t.Fatal("expected policy, got nil")
-	}
-	if pol.Labels[LabelManagedBy] != LabelManagedByValue {
-		t.Errorf("missing managed-by label: %v", pol.Labels)
-	}
-	if pol.Labels[LabelRole] != LabelRoleExternalAllow {
-		t.Errorf("wrong role label: %q", pol.Labels[LabelRole])
-	}
-	if pol.Labels[LabelSource] != "svc-traefik" {
-		t.Errorf("wrong source label: %q", pol.Labels[LabelSource])
-	}
-	if pol.Labels[LabelSourceKind] != LabelSourceKindService {
-		t.Errorf("wrong source-kind label: %q", pol.Labels[LabelSourceKind])
+	for k, want := range map[string]string{
+		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+		LabelSource: "svc-traefik", LabelSourceKind: LabelSourceKindService,
+	} {
+		if pol.Labels[k] != want {
+			t.Errorf("label %s = %q, want %q", k, pol.Labels[k], want)
+		}
 	}
 	if got := pol.Spec.PodSelector.MatchLabels["app"]; got != "traefik" {
 		t.Errorf("podSelector.matchLabels[app] = %q, want traefik", got)
 	}
 	if len(pol.Spec.Ingress) != 1 || len(pol.Spec.Ingress[0].From) != 1 ||
-		pol.Spec.Ingress[0].From[0].IPBlock == nil {
-		t.Fatalf("expected one from-rule with ipBlock, got %+v", pol.Spec.Ingress)
-	}
-	if pol.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("ipBlock cidr = %q, want 0.0.0.0/0", pol.Spec.Ingress[0].From[0].IPBlock.CIDR)
-	}
-	if len(pol.Spec.Ingress[0].Ports) != 1 {
-		t.Fatalf("expected one port, got %d", len(pol.Spec.Ingress[0].Ports))
-	}
-	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 80 {
-		t.Errorf("port = %d, want 80", got)
+		pol.Spec.Ingress[0].From[0].IPBlock == nil || pol.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
+		t.Fatalf("want one from-rule with ipBlock 0.0.0.0/0, got %+v", pol.Spec.Ingress)
 	}
 	if len(pol.Spec.PolicyTypes) != 1 || pol.Spec.PolicyTypes[0] != "Ingress" {
 		t.Errorf("policyTypes = %v, want [Ingress]", pol.Spec.PolicyTypes)
 	}
 }
 
-func TestBuildExternalAllowPolicy_NodePort_TargetPortToPodSide(t *testing.T) {
-	// Allowed port must be the pod-side targetPort, not the Service Port or
-	// the nodePort. By the time external traffic reaches the pod, kube-proxy
-	// has DNAT'd node:nodePort → pod:targetPort.
-	s := svc("api", "api")
-	s.Spec.Type = corev1.ServiceTypeNodePort
-	s.Spec.Ports = []corev1.ServicePort{{
-		Port:       80,
-		TargetPort: intstr.FromInt32(8080),
-		NodePort:   32100,
-		Protocol:   corev1.ProtocolTCP,
-	}}
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
-		t.Errorf("port = %d, want 8080 (targetPort, not 80=port or 32100=nodePort)", got)
-	}
-}
-
-func TestBuildExternalAllowPolicy_NodePort_NamedPort_PodPresent(t *testing.T) {
-	s := svc("api", "api")
-	s.Spec.Type = corev1.ServiceTypeNodePort
-	s.Spec.Ports = []corev1.ServicePort{{
-		Port: 80, TargetPort: intstr.FromString("http-port"),
-	}}
-	pods := []corev1.Pod{{
-		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "api"}},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Ports: []corev1.ContainerPort{{Name: "http-port", ContainerPort: 8443}},
-			}},
-		},
-	}}
-	pol, err := buildExternalAllowPolicy(s, pods)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
-		t.Errorf("named port resolved to %d, want 8443", got)
-	}
-}
-
-// Backing pods may map one port name to different numbers, e.g. mid-rollout
-// after a containerPort change; the Service routes to each pod's own number,
-// so every one must be allowed, whatever order the pods are listed in.
-func TestBuildExternalAllowPolicy_NamedPort_PodsDisagree_AllowsEach(t *testing.T) {
-	s := svc("api", "api")
-	s.Spec.Ports = []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromString("http")}}
-	pod := func(port int32) corev1.Pod {
+func TestBuildExternalAllowPolicy_Ports(t *testing.T) {
+	pod := func(portName string, port int32) corev1.Pod {
 		return corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "api"}},
 			Spec: corev1.PodSpec{Containers: []corev1.Container{{
-				Ports: []corev1.ContainerPort{{Name: "http", ContainerPort: port}},
+				Ports: []corev1.ContainerPort{{Name: portName, ContainerPort: port}},
 			}}},
 		}
 	}
-	for _, pods := range [][]corev1.Pod{
-		{pod(8080), pod(9090), pod(8080)},
-		{pod(9090), pod(8080)},
-	} {
-		pol, err := buildExternalAllowPolicy(s, pods)
-		if err != nil {
-			t.Fatalf("unexpected err: %v", err)
+	withPorts := func(ports ...corev1.ServicePort) func(*corev1.Service) {
+		return func(s *corev1.Service) { s.Spec.Ports = ports }
+	}
+	named := func(name string) corev1.ServicePort {
+		return corev1.ServicePort{Name: name, Port: 80, TargetPort: intstr.FromString(name)}
+	}
+	cases := []struct {
+		name           string
+		mutate         func(*corev1.Service)
+		pods           []corev1.Pod
+		want           []int // the policy's ports; nil means no policy
+		wantUnresolved bool
+	}{
+		{name: "load_balancer", want: []int{80}},
+		// The pod-side targetPort, not the Service port or the nodePort:
+		// kube-proxy DNATs to pod:targetPort before the policy applies.
+		{name: "node_port_allows_target_port", mutate: func(s *corev1.Service) {
+			s.Spec.Type = corev1.ServiceTypeNodePort
+			s.Spec.Ports = []corev1.ServicePort{{Port: 80, TargetPort: intstr.FromInt32(8080), NodePort: 32100, Protocol: corev1.ProtocolTCP}}
+		}, want: []int{8080}},
+		{name: "named_port_resolved_from_pod", mutate: withPorts(named("http-port")),
+			pods: []corev1.Pod{pod("http-port", 8443)}, want: []int{8443}},
+		// Pods may map one name to different numbers mid-rollout; the Service
+		// routes to each pod's own, so each is allowed, in any listing order.
+		{name: "named_port_pods_disagree", mutate: withPorts(named("http")),
+			pods: []corev1.Pod{pod("http", 8080), pod("http", 9090), pod("http", 8080)}, want: []int{8080, 9090}},
+		{name: "named_port_pods_disagree_reordered", mutate: withPorts(named("http")),
+			pods: []corev1.Pod{pod("http", 9090), pod("http", 8080)}, want: []int{8080, 9090}},
+		{name: "named_port_no_pod_yet", mutate: withPorts(named("http")), wantUnresolved: true},
+		// One unresolvable port fails the whole Service rather than emitting a
+		// partial policy.
+		{name: "one_unresolvable_of_several", mutate: withPorts(
+			corev1.ServicePort{Name: "http", Port: 80, TargetPort: intstr.FromInt32(80)}, named("metrics"),
+		), wantUnresolved: true},
+		{name: "duplicate_target_port_once", mutate: withPorts(
+			corev1.ServicePort{Name: "a", Port: 80, TargetPort: intstr.FromInt32(8080)},
+			corev1.ServicePort{Name: "b", Port: 8080},
+		), want: []int{8080}},
+		{name: "multi_port", mutate: withPorts(
+			corev1.ServicePort{Name: "http", Port: 80, TargetPort: intstr.FromInt32(80)},
+			corev1.ServicePort{Name: "https", Port: 443, TargetPort: intstr.FromInt32(443)},
+		), want: []int{80, 443}},
+		{name: "target_port_unset_defaults_to_port", mutate: withPorts(corev1.ServicePort{Name: "http", Port: 8080}), want: []int{8080}},
+		{name: "cluster_ip_with_external_ips", mutate: func(s *corev1.Service) {
+			s.Spec.Type = corev1.ServiceTypeClusterIP
+			s.Spec.ExternalIPs = []string{"10.0.0.1"}
+		}, want: []int{80}},
+		{name: "cluster_ip_plain", mutate: func(s *corev1.Service) { s.Spec.Type = corev1.ServiceTypeClusterIP }},
+		{name: "headless", mutate: func(s *corev1.Service) { s.Spec.ClusterIP = corev1.ClusterIPNone }},
+		{name: "external_name", mutate: func(s *corev1.Service) {
+			s.Spec.Type = corev1.ServiceTypeExternalName
+			s.Spec.ExternalName = "elsewhere.example.com"
+		}},
+		{name: "no_selector", mutate: func(s *corev1.Service) { s.Spec.Selector = nil }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := svc("api", "api")
+			if c.mutate != nil {
+				c.mutate(s)
+			}
+			pol, err := buildExternalAllowPolicy(s, c.pods)
+			if c.wantUnresolved {
+				if !errors.Is(err, errNamedPortUnresolvable) {
+					t.Fatalf("err = %v, want errNamedPortUnresolvable", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			var got []int
+			if pol != nil {
+				for _, p := range pol.Spec.Ingress[0].Ports {
+					got = append(got, p.Port.IntValue())
+				}
+				if got == nil {
+					got = []int{}
+				}
+			}
+			if !slices.Equal(got, c.want) || (got == nil) != (c.want == nil) {
+				t.Errorf("ports = %v, want %v (nil: no policy)", got, c.want)
+			}
+		})
+	}
+}
+
+func TestServicePolicyName(t *testing.T) {
+	long := "this-is-a-very-long-service-name-that-exceeds-the-K8s-name-limit"
+	for _, kind := range []string{LabelSourceKindService, LabelSourceKindApiserver} {
+		name := servicePolicyName(kind, "ns", long)
+		if len(name) > 63 || !strings.HasPrefix(name, "kube-vnet.ext."+kind+".this-is") {
+			t.Errorf("%s: name %q is over 63 characters or misshapen", kind, name)
 		}
-		var got []int
-		for _, p := range pol.Spec.Ingress[0].Ports {
-			got = append(got, p.Port.IntValue())
+		// The hash covers the full namespace/name, so truncation and a
+		// shared name in another namespace don't collide.
+		if name == servicePolicyName(kind, "ns", long+"-2") || name == servicePolicyName(kind, "other", long) {
+			t.Errorf("%s: name collision for %q", kind, name)
 		}
-		if !slices.Equal(got, []int{8080, 9090}) {
-			t.Errorf("ports = %v, want [8080 9090]", got)
-		}
-	}
-}
-
-func TestBuildExternalAllowPolicy_DuplicateTargetPort_EmittedOnce(t *testing.T) {
-	s := svc("api", "api")
-	s.Spec.Ports = []corev1.ServicePort{
-		{Name: "a", Port: 80, TargetPort: intstr.FromInt32(8080)},
-		{Name: "b", Port: 8080},
-	}
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := len(pol.Spec.Ingress[0].Ports); got != 1 {
-		t.Errorf("got %d ports, want 1: %+v", got, pol.Spec.Ingress[0].Ports)
-	}
-}
-
-func TestBuildExternalAllowPolicy_NodePort_NamedPort_NoPodYet(t *testing.T) {
-	s := svc("api", "api")
-	s.Spec.Ports = []corev1.ServicePort{{
-		Port: 80, TargetPort: intstr.FromString("http"),
-	}}
-	_, err := buildExternalAllowPolicy(s, nil)
-	if !errors.Is(err, errNamedPortUnresolvable) {
-		t.Errorf("err = %v, want errNamedPortUnresolvable", err)
-	}
-}
-
-func TestBuildExternalAllowPolicy_ClusterIP_WithExternalIPs(t *testing.T) {
-	s := svc("admin", "ops")
-	s.Spec.Type = corev1.ServiceTypeClusterIP
-	s.Spec.ExternalIPs = []string{"10.0.0.1"}
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if pol == nil {
-		t.Fatal("ClusterIP+externalIPs should emit a policy")
-	}
-}
-
-func TestBuildExternalAllowPolicy_ClusterIP_NoExternalIPs(t *testing.T) {
-	s := svc("internal", "app")
-	s.Spec.Type = corev1.ServiceTypeClusterIP
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if pol != nil {
-		t.Errorf("plain ClusterIP shouldn't emit a policy, got: %v", pol.Name)
-	}
-}
-
-func TestBuildExternalAllowPolicy_Headless(t *testing.T) {
-	s := svc("headless", "app")
-	s.Spec.ClusterIP = corev1.ClusterIPNone
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil || pol != nil {
-		t.Errorf("headless should yield (nil, nil), got (%v, %v)", pol, err)
-	}
-}
-
-func TestBuildExternalAllowPolicy_ExternalName(t *testing.T) {
-	s := svc("dns-alias", "app")
-	s.Spec.Type = corev1.ServiceTypeExternalName
-	s.Spec.ExternalName = "elsewhere.example.com"
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil || pol != nil {
-		t.Errorf("ExternalName should yield (nil, nil), got (%v, %v)", pol, err)
-	}
-}
-
-func TestBuildExternalAllowPolicy_NilSelector(t *testing.T) {
-	s := svc("manual-endpoints", "app")
-	s.Spec.Selector = nil
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil || pol != nil {
-		t.Errorf("nil-selector Service should yield (nil, nil), got (%v, %v)", pol, err)
-	}
-}
-
-func TestBuildExternalAllowPolicy_MultiPort(t *testing.T) {
-	s := svc("multi", "app")
-	s.Spec.Ports = []corev1.ServicePort{
-		{Name: "http", Port: 80, TargetPort: intstr.FromInt32(80)},
-		{Name: "https", Port: 443, TargetPort: intstr.FromInt32(443)},
-	}
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := len(pol.Spec.Ingress[0].Ports); got != 2 {
-		t.Errorf("expected 2 ports, got %d", got)
-	}
-}
-
-func TestBuildExternalAllowPolicy_MultiPort_OneUnresolvableNamedPort(t *testing.T) {
-	// Partial emission would create a confusing in-between state; one
-	// unresolvable port triggers full requeue.
-	s := svc("multi", "app")
-	s.Spec.Ports = []corev1.ServicePort{
-		{Name: "http", Port: 80, TargetPort: intstr.FromInt32(80)},
-		{Name: "metrics", Port: 9100, TargetPort: intstr.FromString("metrics")},
-	}
-	_, err := buildExternalAllowPolicy(s, nil)
-	if !errors.Is(err, errNamedPortUnresolvable) {
-		t.Errorf("err = %v, want errNamedPortUnresolvable", err)
-	}
-}
-
-func TestBuildExternalAllowPolicy_TargetPortUnset_DefaultsToPort(t *testing.T) {
-	s := svc("default-target", "app")
-	s.Spec.Ports = []corev1.ServicePort{
-		{Name: "http", Port: 8080}, // TargetPort omitted
-	}
-	pol, err := buildExternalAllowPolicy(s, nil)
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
-		t.Errorf("unset targetPort should default to Port (8080), got %d", got)
-	}
-}
-
-func TestExternalAllowPolicyName_DeterministicAndCapped(t *testing.T) {
-	long := "this-is-a-very-long-service-name-that-exceeds-some-limit"
-	s := svc(long, "ns")
-	name := externalAllowPolicyName(s)
-	if len(name) > 63 {
-		t.Errorf("name length %d > 63: %q", len(name), name)
-	}
-	if !strings.HasPrefix(name, "kube-vnet.ext.svc.") {
-		t.Errorf("missing prefix: %q", name)
-	}
-	// Determinism.
-	if name != externalAllowPolicyName(s) {
-		t.Error("name is non-deterministic")
-	}
-}
-
-func TestExternalAllowPolicyName_DistinctSvcsDifferentHash(t *testing.T) {
-	// Two different long names that share a truncated prefix must still
-	// produce distinct policy names.
-	a := svc("very-long-name-aaaaaaaaaaaaaaaaaaaaaaaaaaa", "ns")
-	b := svc("very-long-name-aaaaaaaaaaaaaaaaaaaaaaaaaaa-2", "ns")
-	if externalAllowPolicyName(a) == externalAllowPolicyName(b) {
-		t.Errorf("name collision: %q == %q", externalAllowPolicyName(a), externalAllowPolicyName(b))
 	}
 }
 
@@ -440,50 +308,38 @@ func TestPodToSelectingServices(t *testing.T) {
 		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: labels}}
 	}
 	web := map[string]string{"app": "web"}
+	running := pod(web)
+	running.Status.Phase = corev1.PodRunning
 	cases := []struct {
-		name string
-		fire func(handler.Funcs, workqueue.TypedRateLimitingInterface[reconcile.Request])
-		want []string
+		name     string
+		old, new *corev1.Pod // old nil: create of new; new nil: delete of old
+		want     []string
 	}{
-		{"create matching", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Create(ctx, event.CreateEvent{Object: pod(web)}, q)
-		}, []string{"ns/web"}},
-		{"create matching nothing", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Create(ctx, event.CreateEvent{Object: pod(map[string]string{"app": "db"})}, q)
-		}, nil},
-		{"delete matching", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Delete(ctx, event.DeleteEvent{Object: pod(map[string]string{"app": "web", "track": "canary"})}, q)
-		}, []string{"ns/canary", "ns/web"}},
-		{"delete matching nothing", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Delete(ctx, event.DeleteEvent{Object: pod(nil)}, q)
-		}, nil},
-		{"update flips in", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", "track": "canary"})}, q)
-		}, []string{"ns/canary"}},
-		{"update from no labels", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(nil), ObjectNew: pod(web)}, q)
-		}, []string{"ns/web"}},
-		{"update flips out", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "db"})}, q)
-		}, []string{"ns/web"}},
-		{"update without flip", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(map[string]string{"app": "web", "v": "1"}), ObjectNew: pod(map[string]string{"app": "web", "v": "2"})}, q)
-		}, nil},
-		{"stamp only", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", LabelSystemNetPrefix + "ns.other": "both"})}, q)
-		}, nil},
-		{"stamp flips a Service selecting it", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: pod(map[string]string{"app": "web", "kube-vnet.system/net.ns.payments": "both"})}, q)
-		}, []string{"ns/stamped"}},
-		{"status-only update", func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
-			running := pod(web)
-			running.Status.Phase = corev1.PodRunning
-			h.Update(ctx, event.UpdateEvent{ObjectOld: pod(web), ObjectNew: running}, q)
-		}, nil},
+		{"create matching", nil, pod(web), []string{"ns/web"}},
+		{"create matching nothing", nil, pod(map[string]string{"app": "db"}), nil},
+		{"delete matching", pod(map[string]string{"app": "web", "track": "canary"}), nil, []string{"ns/canary", "ns/web"}},
+		{"delete matching nothing", pod(nil), nil, nil},
+		{"update flips in", pod(web), pod(map[string]string{"app": "web", "track": "canary"}), []string{"ns/canary"}},
+		{"update from no labels", pod(nil), pod(web), []string{"ns/web"}},
+		{"update flips out", pod(web), pod(map[string]string{"app": "db"}), []string{"ns/web"}},
+		{"update without flip", pod(map[string]string{"app": "web", "v": "1"}), pod(map[string]string{"app": "web", "v": "2"}), nil},
+		{"stamp only", pod(web), pod(map[string]string{"app": "web", LabelSystemNetPrefix + "ns.other": "both"}), nil},
+		{"stamp flips a Service selecting it", pod(web), pod(map[string]string{"app": "web", "kube-vnet.system/net.ns.payments": "both"}), []string{"ns/stamped"}},
+		{"status-only update", pod(web), running, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := podToSelectingServicesEnqueued(t, tc.fire); !slices.Equal(got, tc.want) {
+			got := podToSelectingServicesEnqueued(t, func(h handler.Funcs, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+				switch {
+				case tc.old == nil:
+					h.Create(ctx, event.CreateEvent{Object: tc.new}, q)
+				case tc.new == nil:
+					h.Delete(ctx, event.DeleteEvent{Object: tc.old}, q)
+				default:
+					h.Update(ctx, event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new}, q)
+				}
+			})
+			if !slices.Equal(got, tc.want) {
 				t.Fatalf("enqueued %v, want %v", got, tc.want)
 			}
 		})
@@ -525,33 +381,40 @@ func listPolicies(t *testing.T, c client.Client, ns string) []networkingv1.Netwo
 	return list.Items
 }
 
-// reconcileExternalAllow runs one reconcile of Service ns/name against objs
-// and returns the client.
-func reconcileExternalAllow(t *testing.T, ns, name string, objs ...client.Object) client.Client {
-	t.Helper()
-	c := autoAllowClient(t, objs...)
-	r := &ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+// Each external-allow reconciler applies its policy into a live namespace but
+// not into a terminating one: NamespaceLifecycle admission would reject the
+// create, so it would only fail and retry until the namespace is gone.
+func TestExternalAllowReconcilers_TerminatingNamespace_NoApply(t *testing.T) {
+	cases := []struct {
+		name      string
+		obj       client.Object
+		req       string // namespace/name, or the namespace alone
+		reconcile func(client.Client) reconcileFunc
+	}{
+		{"external_allow", svc("web", "ns"), "ns/web", func(c client.Client) reconcileFunc {
+			return (&ExternalAllowReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}).Reconcile
+		}},
+		{"apiserver_reachable", optedInService("ns", "webhook"), "ns/webhook", func(c client.Client) reconcileFunc {
+			return (&ApiserverReachableReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}).Reconcile
+		}},
+		{"host_port", podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP}), "ns",
+			func(c client.Client) reconcileFunc {
+				return (&HostPortReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}).Reconcile
+			}},
 	}
-	return c
-}
-
-// NamespaceLifecycle admission rejects creates in a terminating namespace, so
-// applying there would only fail and retry until the namespace is gone.
-func TestExternalAllowReconcile_TerminatingNamespace_NoApply(t *testing.T) {
-	c := reconcileExternalAllow(t, "ns", "web", terminatingNamespace("ns"), svc("web", "ns"))
-	if got := listPolicies(t, c, "ns"); len(got) != 0 {
-		t.Errorf("applied %d policies into a terminating namespace", len(got))
-	}
-}
-
-// Sanity check for the fake-client harness: a live namespace does get the
-// policy.
-func TestExternalAllowReconcile_AppliesPolicy(t *testing.T) {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
-	c := reconcileExternalAllow(t, "ns", "web", ns, svc("web", "ns"))
-	if got := listPolicies(t, c, "ns"); len(got) != 1 {
-		t.Errorf("got %d policies, want 1", len(got))
+	for _, tc := range cases {
+		for ns, want := range map[*corev1.Namespace]int{mkNamespace("ns", nil): 1, terminatingNamespace("ns"): 0} {
+			c := autoAllowClient(t, ns, tc.obj.DeepCopyObject().(client.Object))
+			reqNS, reqName, ok := strings.Cut(tc.req, "/")
+			if !ok {
+				reqNS, reqName = "", reqNS
+			}
+			if err := reconcileName(t, tc.reconcile(c), reqNS, reqName); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if got := len(listPolicies(t, c, "ns")); got != want {
+				t.Errorf("%s, terminating=%v: %d policies, want %d", tc.name, ns.DeletionTimestamp != nil, got, want)
+			}
+		}
 	}
 }

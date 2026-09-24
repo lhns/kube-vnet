@@ -69,9 +69,7 @@ func Wait(ctx context.Context, cfg Config) Result {
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		for _, ip := range pending {
-			wg.Add(1)
-			go func(ip string) {
-				defer wg.Done()
+			wg.Go(func() {
 				dctx, dcancel := context.WithTimeout(ctx, cfg.DialTimeout)
 				defer dcancel()
 				if cfg.Dial(dctx, net.JoinHostPort(ip, cfg.Port)) == nil {
@@ -79,7 +77,7 @@ func Wait(ctx context.Context, cfg Config) Result {
 					accepted[ip] = time.Since(start)
 					mu.Unlock()
 				}
-			}(ip)
+			})
 		}
 		wg.Wait()
 

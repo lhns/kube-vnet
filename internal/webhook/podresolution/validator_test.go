@@ -1,6 +1,7 @@
 package podresolution
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"strings"
@@ -17,10 +18,6 @@ import (
 )
 
 const operatorUser = "system:serviceaccount:kube-vnet-system:kube-vnet-controller"
-
-func newValidator(t *testing.T, c client.Client) *Validator {
-	return &Validator{newDeps(t, c)}
-}
 
 func validate(t *testing.T, v *Validator, user string, oldPod, newPod *corev1.Pod) admission.Response {
 	t.Helper()
@@ -63,48 +60,62 @@ func withLabels(p *corev1.Pod, kv map[string]string) *corev1.Pod {
 	return out
 }
 
-// A stamp the pod does not actually resolve to is forgery: it would make the
-// pod a member of a vnet nobody granted it. This is the property the
-// ValidatingAdmissionPolicy could not express, because CEL cannot resolve.
-func TestValidator_ForgedStamp_Denied(t *testing.T) {
-	base := pod("app", nil)
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, base)
-	v := newValidator(t, c)
+func TestValidator(t *testing.T) {
+	const stamp = "kube-vnet.system/net.app.web"
+	web := []client.Object{vnet("web", "app", nil)}
+	joined := pod("app", map[string]string{"kube-vnet/net.web": "both"})
+	stamped := withLabels(joined, map[string]string{stamp: "both"})
+	stale := pod("app", map[string]string{"kube-vnet.system/net.app.gone": "both"})
+	staleAnnotated := stale.DeepCopy()
+	staleAnnotated.Annotations = map[string]string{"example.com/note": "hi"}
 
-	forged := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": "both"})
-	resp := validate(t, v, "alice", nil, forged)
-
-	if resp.Allowed {
-		t.Fatal("a forged membership stamp was admitted")
-	}
-	if msg := resp.Result.Message; !strings.Contains(msg, "kube-vnet.system/net.app.web") {
-		t.Errorf("denial message should name the offending label, got: %s", msg)
-	}
-}
-
-// An added label with an empty value must not pass as "unchanged" just because
-// a missing key also reads as "".
-func TestValidator_ForgedEmptyStamp_Denied(t *testing.T) {
-	base := pod("app", nil)
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, base)
-	v := newValidator(t, c)
-
-	forged := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": ""})
-	if resp := validate(t, v, "alice", nil, forged); resp.Allowed {
-		t.Fatal("a forged empty-valued stamp was admitted")
-	}
-}
-
-// A stamp that matches what resolution produces is not forgery: it is the
-// correct value. Admitting it is what lets the mutator's own output through.
-func TestValidator_CorrectStamp_Allowed(t *testing.T) {
-	base := pod("app", map[string]string{"kube-vnet/net.web": "both"})
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, base)
-	v := newValidator(t, c)
-
-	stamped := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": "both"})
-	if resp := validate(t, v, "alice", nil, stamped); !resp.Allowed {
-		t.Fatalf("a correctly-resolved stamp was rejected: %+v", resp.Result)
+	for _, tc := range []struct {
+		name     string
+		objects  []client.Object
+		user     string // default alice
+		disabled []string
+		old, new *corev1.Pod // old nil: CREATE
+		allowed  bool
+		msg      string // substring of the denial
+	}{
+		// A stamp the pod does not resolve to would make it a member of a vnet
+		// nobody granted it; CEL cannot resolve, so the VAP couldn't catch it.
+		{name: "forged stamp", objects: web, new: withLabels(pod("app", nil), map[string]string{stamp: "both"}), msg: stamp},
+		// An added empty value must not pass as "unchanged" because a missing
+		// key also reads as "".
+		{name: "forged empty stamp", objects: web, new: withLabels(pod("app", nil), map[string]string{stamp: ""})},
+		// The correct value is not forgery; admitting it lets the mutator's
+		// output through.
+		{name: "correct stamp", objects: web, new: stamped, allowed: true},
+		// Stripping a stamp the pod still resolves to silently drops it out of
+		// a vnet whose policies still name it.
+		{name: "stripping a valid stamp", objects: web, old: stamped, new: joined, msg: "removed"},
+		// Why removal can't simply be forbidden: the mutator prunes a stamp
+		// together with its join label.
+		{name: "pruning a stamp with its join label", objects: web, old: stamped, new: pod("app", map[string]string{}), allowed: true},
+		// Only the delta is policed: a stale stamp the request doesn't touch is
+		// the reconciler's to fix, not a reason to deny an unrelated edit.
+		{name: "untouched stale stamp", old: stale, new: staleAnnotated, allowed: true},
+		// The mutator fails open, so an unstamped pod must be admitted; the
+		// reconciler stamps it later.
+		{name: "unstamped pod", objects: web, new: joined, allowed: true},
+		// The operator writes these labels.
+		{name: "operator exempt", user: operatorUser, new: withLabels(pod("app", nil), map[string]string{stamp: "both"}), allowed: true},
+		// An unmanaged namespace resolves to nothing, so any stamp there is
+		// unresolved.
+		{name: "stamp in an unmanaged namespace", disabled: []string{"kube-system"},
+			new: withLabels(pod("kube-system", nil), map[string]string{"kube-vnet.system/net.kube-system.web": "both"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &Validator{newDeps(t, newClient(t, tc.objects, tc.new), tc.disabled...)}
+			resp := validate(t, v, cmp.Or(tc.user, "alice"), tc.old, tc.new)
+			if resp.Allowed != tc.allowed {
+				t.Fatalf("allowed = %v, want %v: %+v", resp.Allowed, tc.allowed, resp.Result)
+			}
+			if tc.msg != "" && !strings.Contains(resp.Result.Message, tc.msg) {
+				t.Errorf("denial %q should mention %q", resp.Result.Message, tc.msg)
+			}
+		})
 	}
 }
 
@@ -134,100 +145,11 @@ func TestValidator_AcceptsMutatorOutput(t *testing.T) {
 			mutated := tc.pod.DeepCopy()
 			controller.SyncStamps(mutated, desired, nil)
 
-			if resp := validate(t, newValidator(t, c), "alice", nil, mutated); !resp.Allowed {
+			if resp := validate(t, &Validator{newDeps(t, c)}, "alice", nil, mutated); !resp.Allowed {
 				t.Fatalf("the validator rejected the mutator's own output: %+v\n"+
 					"this would block every pod creation in a managed namespace",
 					resp.Result)
 			}
 		})
-	}
-}
-
-// Stripping a stamp the pod still resolves to is the security-relevant
-// direction: it would silently drop the pod out of a vnet whose policies
-// still name it.
-func TestValidator_StrippingValidStamp_Denied(t *testing.T) {
-	base := pod("app", map[string]string{"kube-vnet/net.web": "both"})
-	stamped := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": "both"})
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, stamped)
-	v := newValidator(t, c)
-
-	resp := validate(t, v, "alice", stamped, base)
-	if resp.Allowed {
-		t.Fatal("stripping a still-resolved membership stamp was admitted")
-	}
-	if msg := resp.Result.Message; !strings.Contains(msg, "removed") {
-		t.Errorf("denial should say the label was removed, got: %s", msg)
-	}
-}
-
-// The mirror case, and the reason removal cannot simply be forbidden: when
-// the join label goes away the stamp must go with it. The mutator prunes it
-// in the same request, and the validator has to accept that.
-func TestValidator_PruningStampWithItsJoinLabel_Allowed(t *testing.T) {
-	old := pod("app", map[string]string{
-		"kube-vnet/net.web":            "both",
-		"kube-vnet.system/net.app.web": "both",
-	})
-	// Both the join label and its stamp removed, as the mutator would.
-	updated := pod("app", map[string]string{})
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, updated)
-
-	if resp := validate(t, newValidator(t, c), "alice", old, updated); !resp.Allowed {
-		t.Fatalf("pruning a stamp whose join label was removed was rejected: %+v", resp.Result)
-	}
-}
-
-// Only the delta is policed. A stale stamp the request does not touch is the
-// reconciler's problem; denying here would reject an unrelated edit for a
-// state the user did not cause and cannot fix.
-func TestValidator_UntouchedStaleStamp_Allowed(t *testing.T) {
-	stale := pod("app", map[string]string{"kube-vnet.system/net.app.gone": "both"})
-	c := newClient(t, nil, stale)
-
-	annotated := stale.DeepCopy()
-	annotated.Annotations = map[string]string{"example.com/note": "hi"}
-
-	if resp := validate(t, newValidator(t, c), "alice", stale, annotated); !resp.Allowed {
-		t.Fatalf("an unrelated edit was rejected because of a pre-existing stale stamp: %+v",
-			resp.Result)
-	}
-}
-
-// The mutating half runs failurePolicy: Ignore, so a pod can legitimately
-// arrive unstamped when the webhook was unreachable. That must degrade to
-// today's behaviour (controller stamps it later), not a hard failure.
-func TestValidator_UnstampedPod_Allowed(t *testing.T) {
-	p := pod("app", map[string]string{"kube-vnet/net.web": "both"})
-	c := newClient(t, []client.Object{vnet("web", "app", nil)}, p)
-
-	if resp := validate(t, newValidator(t, c), "alice", nil, p); !resp.Allowed {
-		t.Fatalf("an unstamped pod was rejected; a mutator outage must not block "+
-			"pod creation: %+v", resp.Result)
-	}
-}
-
-// The operator's own patches must go through: it is the component that
-// writes these labels.
-func TestValidator_OperatorServiceAccount_Exempt(t *testing.T) {
-	base := pod("app", nil)
-	c := newClient(t, nil, base)
-	forged := withLabels(base, map[string]string{"kube-vnet.system/net.app.web": "both"})
-
-	if resp := validate(t, newValidator(t, c), operatorUser, nil, forged); !resp.Allowed {
-		t.Fatalf("the operator ServiceAccount was not exempt: %+v", resp.Result)
-	}
-}
-
-// An unmanaged namespace resolves to no memberships at all, so any stamp
-// added there is unresolved by construction.
-func TestValidator_StampInUnmanagedNamespace_Denied(t *testing.T) {
-	base := pod("kube-system", nil)
-	c := newClient(t, nil, base)
-	v := &Validator{newDeps(t, c, "kube-system")}
-
-	forged := withLabels(base, map[string]string{"kube-vnet.system/net.kube-system.web": "both"})
-	if resp := validate(t, v, "alice", nil, forged); resp.Allowed {
-		t.Fatal("a stamp was admitted in an unmanaged namespace")
 	}
 }

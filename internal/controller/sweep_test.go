@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,98 +16,66 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-func TestSyncManagedLabels_AddsAndRemoves(t *testing.T) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-			"kube-vnet.system/net.old":             "both",    // managed, will be removed
-			"kube-vnet.system/net.payments":        "ingress", // managed, will be updated
-			"kube-vnet.system/host-port.stale.tcp": "true",    // managed (different prefix), will be removed
-			"app":                                  "demo",    // unmanaged, untouched
-		}},
-	}
-	isManaged := func(k string) bool {
-		return strings.HasPrefix(k, "kube-vnet.system/net.") ||
-			strings.HasPrefix(k, "kube-vnet.system/host-port.")
-	}
-	desired := map[string]string{
-		"kube-vnet.system/net.payments":     "both",   // update
-		"kube-vnet.system/net.new":          "egress", // add
-		"kube-vnet.system/host-port.80.tcp": "true",   // add (different prefix family)
-	}
-	changed := syncManagedLabels(pod, isManaged, desired)
-	if !changed {
-		t.Error("expected changed=true")
-	}
-	want := map[string]string{
-		"app":                               "demo",
-		"kube-vnet.system/net.payments":     "both",
-		"kube-vnet.system/net.new":          "egress",
-		"kube-vnet.system/host-port.80.tcp": "true",
-	}
-	for k, v := range want {
-		if pod.Labels[k] != v {
-			t.Errorf("label %q = %q, want %q", k, pod.Labels[k], v)
-		}
-	}
-	if _, ok := pod.Labels["kube-vnet.system/net.old"]; ok {
-		t.Error("kube-vnet.system/net.old should have been removed")
-	}
-	if _, ok := pod.Labels["kube-vnet.system/host-port.stale.tcp"]; ok {
-		t.Error("stale host-port label should have been removed")
-	}
-	if len(pod.Labels) != len(want) {
-		t.Errorf("label set size = %d, want %d (%v)", len(pod.Labels), len(want), pod.Labels)
-	}
-}
-
-func TestSyncManagedLabels_NoOp(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-		"kube-vnet.system/net.x": "both",
-		"unmanaged":              "y",
-	}}}
+func TestSyncManagedLabels(t *testing.T) {
 	isManaged := func(k string) bool { return strings.HasPrefix(k, "kube-vnet.system/") }
-	desired := map[string]string{"kube-vnet.system/net.x": "both"}
-	if changed := syncManagedLabels(pod, isManaged, desired); changed {
-		t.Error("expected changed=false for no-op call")
+	cases := []struct {
+		name        string
+		labels      map[string]string
+		desired     map[string]string
+		want        map[string]string
+		wantChanged bool
+	}{
+		{
+			name: "adds_updates_removes",
+			labels: map[string]string{
+				"kube-vnet.system/net.old":             "both",    // removed
+				"kube-vnet.system/net.payments":        "ingress", // updated
+				"kube-vnet.system/host-port.stale.tcp": "true",    // removed
+				"app":                                  "demo",    // unmanaged, untouched
+			},
+			desired: map[string]string{
+				"kube-vnet.system/net.payments":     "both",
+				"kube-vnet.system/net.new":          "egress",
+				"kube-vnet.system/host-port.80.tcp": "true",
+			},
+			want: map[string]string{
+				"app":                               "demo",
+				"kube-vnet.system/net.payments":     "both",
+				"kube-vnet.system/net.new":          "egress",
+				"kube-vnet.system/host-port.80.tcp": "true",
+			},
+			wantChanged: true,
+		},
+		{
+			name:    "no_op",
+			labels:  map[string]string{"kube-vnet.system/net.x": "both", "unmanaged": "y"},
+			desired: map[string]string{"kube-vnet.system/net.x": "both"},
+			want:    map[string]string{"kube-vnet.system/net.x": "both", "unmanaged": "y"},
+		},
+		{
+			name:        "remove_all",
+			labels:      map[string]string{"kube-vnet.system/net.a": "both", "kube-vnet.system/net.b": "ingress", "app": "demo"},
+			want:        map[string]string{"app": "demo"},
+			wantChanged: true,
+		},
+		{name: "nil_labels_nothing_desired"},
+		{
+			name:        "nil_labels_then_add",
+			desired:     map[string]string{"kube-vnet.system/net.x": "both"},
+			want:        map[string]string{"kube-vnet.system/net.x": "both"},
+			wantChanged: true,
+		},
 	}
-}
-
-func TestSyncManagedLabels_RemoveAll(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
-		"kube-vnet.system/net.a": "both",
-		"kube-vnet.system/net.b": "ingress",
-		"app":                    "demo",
-	}}}
-	isManaged := func(k string) bool { return strings.HasPrefix(k, "kube-vnet.system/") }
-	// Empty desired → remove all managed labels.
-	if changed := syncManagedLabels(pod, isManaged, nil); !changed {
-		t.Error("expected changed=true")
-	}
-	if len(pod.Labels) != 1 || pod.Labels["app"] != "demo" {
-		t.Errorf("expected only app=demo to remain, got %v", pod.Labels)
-	}
-}
-
-func TestSyncManagedLabels_NilLabelsNoDesired(t *testing.T) {
-	pod := &corev1.Pod{}
-	isManaged := func(k string) bool { return true }
-	if changed := syncManagedLabels(pod, isManaged, nil); changed {
-		t.Error("expected changed=false for nil labels + nil desired")
-	}
-	if pod.Labels != nil {
-		t.Error("nil labels should stay nil")
-	}
-}
-
-func TestSyncManagedLabels_NilLabelsThenAdd(t *testing.T) {
-	pod := &corev1.Pod{}
-	isManaged := func(k string) bool { return true }
-	desired := map[string]string{"kube-vnet.system/net.x": "both"}
-	if changed := syncManagedLabels(pod, isManaged, desired); !changed {
-		t.Error("expected changed=true")
-	}
-	if pod.Labels["kube-vnet.system/net.x"] != "both" {
-		t.Errorf("expected label added, got %v", pod.Labels)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Labels: c.labels}}
+			if changed := syncManagedLabels(pod, isManaged, c.desired); changed != c.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, c.wantChanged)
+			}
+			if !maps.Equal(pod.Labels, c.want) || (c.want == nil) != (pod.Labels == nil) {
+				t.Errorf("labels = %v, want %v", pod.Labels, c.want)
+			}
+		})
 	}
 }
 
@@ -114,8 +84,6 @@ func TestSyncManagedLabels_NilLabelsThenAdd(t *testing.T) {
 func TestHasControllerOwner(t *testing.T) {
 	uidA := types.UID("uid-a")
 	uidB := types.UID("uid-b")
-	truePtr := true
-	falsePtr := false
 	mk := func(refs ...metav1.OwnerReference) client.Object {
 		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{OwnerReferences: refs}}
 	}
@@ -125,15 +93,15 @@ func TestHasControllerOwner(t *testing.T) {
 		want bool
 	}{
 		{"no_owner_refs", mk(), false},
-		{"matching_controller", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &truePtr}), true},
-		{"mismatched_uid", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidB, Controller: &truePtr}), false},
-		{"mismatched_name", mk(metav1.OwnerReference{Kind: "Service", Name: "other", UID: uidA, Controller: &truePtr}), false},
-		{"mismatched_kind", mk(metav1.OwnerReference{Kind: "Pod", Name: "web", UID: uidA, Controller: &truePtr}), false},
-		{"controller_false", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &falsePtr}), false},
+		{"matching_controller", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(true)}), true},
+		{"mismatched_uid", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidB, Controller: new(true)}), false},
+		{"mismatched_name", mk(metav1.OwnerReference{Kind: "Service", Name: "other", UID: uidA, Controller: new(true)}), false},
+		{"mismatched_kind", mk(metav1.OwnerReference{Kind: "Pod", Name: "web", UID: uidA, Controller: new(true)}), false},
+		{"controller_false", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(false)}), false},
 		{"controller_nil", mk(metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: nil}), false},
 		{"multiple_refs_one_matches", mk(
-			metav1.OwnerReference{Kind: "Pod", Name: "decoy", UID: uidB, Controller: &truePtr},
-			metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: &truePtr},
+			metav1.OwnerReference{Kind: "Pod", Name: "decoy", UID: uidB, Controller: new(true)},
+			metav1.OwnerReference{Kind: "Service", Name: "web", UID: uidA, Controller: new(true)},
 		), true},
 	}
 	for _, c := range cases {
@@ -145,247 +113,122 @@ func TestHasControllerOwner(t *testing.T) {
 	}
 }
 
-// sweepStalePoliciesByOwner: realistic legacy-migration scenario
+// serviceSource.sweep: ownership by controller owner reference
 
-func mkPolicy(name, ns string, labels map[string]string, owner *metav1.OwnerReference) *networkingv1.NetworkPolicy {
-	pol := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Labels: labels},
-	}
+func mkPolicy(name string, labels map[string]string, owner *metav1.OwnerReference) *networkingv1.NetworkPolicy {
+	pol := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns1", Labels: labels}}
 	if owner != nil {
 		pol.OwnerReferences = []metav1.OwnerReference{*owner}
 	}
 	return pol
 }
 
-func TestSweepStalePoliciesByOwner_DeletesLegacyKeepsCurrent(t *testing.T) {
+// sweepWeb runs the Service-source sweep for Service ns1/web over objs,
+// keeping the policy named keep, and returns the names left.
+func sweepWeb(t *testing.T, keep string, objs ...client.Object) []string {
+	t.Helper()
 	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
 	_ = networkingv1.AddToScheme(scheme)
-
-	truePtr := true
-	svcRef := &metav1.OwnerReference{
-		APIVersion: "v1", Kind: "Service",
-		Name: "web", UID: types.UID("svc-web-uid"),
-		Controller: &truePtr,
-	}
-	managed := map[string]string{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow}
-
-	// Three objects in the fake client:
-	//   legacy:  not in keep set → deleted
-	//   current: in keep set     → kept
-	//   other:   different owner → untouched
-	legacy := mkPolicy("kube-vnet.external-web-deadbeef", "ns1", managed, svcRef)
-	current := mkPolicy("kube-vnet.ext.svc.web-cafebabe", "ns1", managed, svcRef)
-	other := mkPolicy("kube-vnet.ext.svc.other-feedface", "ns1", managed,
-		&metav1.OwnerReference{Kind: "Service", Name: "other", UID: "other-uid", Controller: &truePtr})
-
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(legacy, current, other).Build()
-
-	keep := map[client.ObjectKey]bool{
-		{Namespace: "ns1", Name: "kube-vnet.ext.svc.web-cafebabe"}: true,
-	}
-	err := sweepStalePoliciesByOwner(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		"Service", "web", types.UID("svc-web-uid"),
-		keep,
-		nil,
-	)
-	if err != nil {
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+	web := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "web", UID: "svc-web-uid"}}
+	if err := svcSourcePolicies.sweep(context.Background(), c, web, keep); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-
-	// legacy: gone
-	var got networkingv1.NetworkPolicy
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.external-web-deadbeef"}, &got); err == nil {
-		t.Errorf("legacy policy still exists; should have been swept")
-	}
-	// current: still there
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.svc.web-cafebabe"}, &got); err != nil {
-		t.Errorf("current policy was deleted: %v", err)
-	}
-	// other: untouched
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.svc.other-feedface"}, &got); err != nil {
-		t.Errorf("other-Service's policy was deleted: %v", err)
-	}
-}
-
-func TestSweepStalePoliciesByOwner_EmptyKeepDeletesAll(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
-	truePtr := true
-	svcRef := &metav1.OwnerReference{
-		Kind: "Service", Name: "web", UID: types.UID("svc-web-uid"),
-		Controller: &truePtr,
-	}
-	managed := map[string]string{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow}
-
-	policies := []*networkingv1.NetworkPolicy{
-		mkPolicy("kube-vnet.external-web-deadbeef", "ns1", managed, svcRef),
-		mkPolicy("kube-vnet.ext.svc.web-cafebabe", "ns1", managed, svcRef),
-	}
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(policies[0], policies[1]).Build()
-
-	err := sweepStalePoliciesByOwner(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		"Service", "web", types.UID("svc-web-uid"),
-		nil, // nuke-all
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
 	var list networkingv1.NetworkPolicyList
-	if err := c.List(context.Background(), &list, client.InNamespace("ns1")); err != nil {
+	if err := c.List(context.Background(), &list); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(list.Items) != 0 {
-		t.Errorf("expected 0 policies remaining, got %d", len(list.Items))
+	var left []string
+	for _, p := range list.Items {
+		left = append(left, p.Name)
 	}
+	slices.Sort(left)
+	return left
 }
 
-// TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind is
-// the regression test for the cross-reconciler deletion bug: both the
-// ExternalAllowReconciler (source-kind=svc) and ApiserverReachableReconciler
-// (source-kind=apiserver) own Service-owned role=external-allow policies.
-// The ExternalAllow sweep uses claimedByOtherSourceKind to exempt the
-// apiserver family — without it, every reconcile of a not-externally-
-// exposed webhook Service deleted the apiserver-reachable policy.
-func TestSweepStalePoliciesByOwner_SkipPredicate_ProtectsOtherSourceKind(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
-	truePtr := true
-	svcRef := &metav1.OwnerReference{
-		APIVersion: "v1", Kind: "Service",
-		Name: "webhook", UID: types.UID("svc-webhook-uid"),
-		Controller: &truePtr,
-	}
-	svcKind := map[string]string{
-		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
-		LabelSourceKind: LabelSourceKindService,
-	}
-	apiserverKind := map[string]string{
-		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
-		LabelSourceKind: LabelSourceKindApiserver,
-	}
-	legacyNoKind := map[string]string{
-		LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
-	}
-
-	// Same Service owns all three:
-	//   svcPol:       source-kind=svc       → swept (empty keep set)
-	//   apiserverPol: source-kind=apiserver → spared by the skip predicate
-	//   legacyPol:    no source-kind        → swept (legacy migration path)
-	svcPol := mkPolicy("kube-vnet.ext.svc.webhook-aaaa1111", "ns1", svcKind, svcRef)
-	apiserverPol := mkPolicy("kube-vnet.ext.apiserver.webhook-bbbb2222", "ns1", apiserverKind, svcRef)
-	legacyPol := mkPolicy("kube-vnet.external-webhook-cccc3333", "ns1", legacyNoKind, svcRef)
-
-	c := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(svcPol, apiserverPol, legacyPol).Build()
-
-	// The ExternalAllowReconciler's sweep when its policy isn't wanted.
-	webhook := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "ns1", Name: "webhook", UID: "svc-webhook-uid"}}
-	err := svcSourcePolicies.sweep(context.Background(), c, webhook, "")
-	if err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
-	var got networkingv1.NetworkPolicy
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.svc.webhook-aaaa1111"}, &got); err == nil {
-		t.Errorf("svc-source policy should have been swept")
-	}
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.external-webhook-cccc3333"}, &got); err == nil {
-		t.Errorf("legacy (label-less) policy should have been swept")
-	}
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.apiserver.webhook-bbbb2222"}, &got); err != nil {
-		t.Errorf("apiserver-source policy was deleted by the svc-family sweep (cross-reconciler deletion bug regressed): %v", err)
-	}
-}
-
-func TestSweepStalePoliciesByOwner_SkipsPoliciesWithoutOwner(t *testing.T) {
-	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
-	_ = networkingv1.AddToScheme(scheme)
-
+func TestServiceSourceSweep(t *testing.T) {
+	webRef := &metav1.OwnerReference{APIVersion: "v1", Kind: "Service", Name: "web", UID: "svc-web-uid", Controller: new(true)}
+	otherRef := &metav1.OwnerReference{Kind: "Service", Name: "other", UID: "other-uid", Controller: new(true)}
 	managed := map[string]string{LabelManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow}
-	// Host-source policies don't carry per-resource owner refs; the
-	// owner-ref sweeper must skip them so it doesn't accidentally claim
-	// host-source policies during a Service reconcile.
-	noOwner := mkPolicy("kube-vnet.ext.host.8080.tcp-abc", "ns1", managed, nil)
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(noOwner).Build()
-
-	err := sweepStalePoliciesByOwner(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		"Service", "web", types.UID("svc-web-uid"),
-		nil,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("sweep: %v", err)
+	withKind := func(kind string) map[string]string {
+		l := maps.Clone(managed)
+		l[LabelSourceKind] = kind
+		return l
 	}
-	var got networkingv1.NetworkPolicy
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "kube-vnet.ext.host.8080.tcp-abc"}, &got); err != nil {
-		t.Errorf("no-owner policy was deleted: %v", err)
+
+	cases := []struct {
+		name string
+		keep string
+		objs []client.Object
+		want []string
+	}{
+		{
+			// A legacy name is swept, the current one kept, another Service's
+			// policy left alone.
+			name: "legacy_migration",
+			keep: "current",
+			objs: []client.Object{
+				mkPolicy("legacy", managed, webRef),
+				mkPolicy("current", managed, webRef),
+				mkPolicy("other", managed, otherRef),
+			},
+			want: []string{"current", "other"},
+		},
+		{
+			name: "empty_keep_deletes_all",
+			objs: []client.Object{mkPolicy("legacy", managed, webRef), mkPolicy("current", managed, webRef)},
+		},
+		{
+			// Regression: the Service-source sweep deleted the
+			// apiserver-reachable policy on every reconcile of a webhook
+			// Service that isn't externally exposed.
+			name: "spares_other_source_kind",
+			objs: []client.Object{
+				mkPolicy("svc", withKind(LabelSourceKindService), webRef),
+				mkPolicy("apiserver", withKind(LabelSourceKindApiserver), webRef),
+				mkPolicy("legacy-no-kind", managed, webRef),
+			},
+			want: []string{"apiserver"},
+		},
+		{
+			// Host-source policies carry no owner reference.
+			name: "skips_policies_without_owner",
+			objs: []client.Object{mkPolicy("host", managed, nil)},
+			want: []string{"host"},
+		},
+		{
+			// LabelK8sManagedBy is user-writable, so it is never an ownership
+			// signal, even with a matching owner reference.
+			name: "standard_managed_by_label_alone",
+			objs: []client.Object{mkPolicy("user-policy", map[string]string{
+				LabelK8sManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+			}, webRef)},
+			want: []string{"user-policy"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sweepWeb(t, c.keep, c.objs...); !slices.Equal(got, c.want) {
+				t.Errorf("left %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
-// TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative pins the
-// contract on LabelK8sManagedBy (app.kubernetes.io/managed-by): it is
-// informational only. It is user-writable and not VAP-protectable, so a
-// user could stamp it on a third-party policy; if any sweep treated it
-// as an ownership signal, kube-vnet would delete objects it doesn't own.
-// Both sweep entry points must ignore a policy that carries only the
-// standard label (plus a matching owner-ref, to make the owner-based
-// sweep's ignore-decision maximally adversarial).
-func TestSweep_StandardManagedByLabelAlone_IsNeverAuthoritative(t *testing.T) {
+// The label-based sweep never matches a policy carrying only the standard
+// managed-by label.
+func TestSweepStalePolicies_StandardManagedByLabelAlone(t *testing.T) {
 	scheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(scheme)
 	_ = networkingv1.AddToScheme(scheme)
-
-	truePtr := true
-	svcRef := &metav1.OwnerReference{
-		APIVersion: "v1", Kind: "Service",
-		Name: "web", UID: types.UID("svc-web-uid"),
-		Controller: &truePtr,
-	}
-	// Adversarial object: standard managed-by label (user-settable) +
-	// role label + owner-ref, but no kube-vnet.system/managed-by.
-	impostor := mkPolicy("user-policy-with-standard-label", "ns1", map[string]string{
-		LabelK8sManagedBy: LabelManagedByValue,
-		LabelRole:         LabelRoleExternalAllow,
-	}, svcRef)
-
+	impostor := mkPolicy("user-policy", map[string]string{
+		LabelK8sManagedBy: LabelManagedByValue, LabelRole: LabelRoleExternalAllow,
+	}, nil)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(impostor).Build()
-
-	// Label-based sweep: inNamespacePolicyLabels always requires the
-	// system managed-by label, so the impostor must not match the List.
 	if err := sweepStalePolicies(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		nil, nil,
-	); err != nil {
-		t.Fatalf("label sweep: %v", err)
+		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}), nil, nil); err != nil {
+		t.Fatalf("sweep: %v", err)
 	}
-	var got networkingv1.NetworkPolicy
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "user-policy-with-standard-label"}, &got); err != nil {
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(impostor), &networkingv1.NetworkPolicy{}); err != nil {
 		t.Errorf("label-based sweep deleted a policy that carries only the standard managed-by label: %v", err)
-	}
-
-	// Owner-ref-based sweep with an empty keep set: same requirement.
-	if err := sweepStalePoliciesByOwner(context.Background(), c,
-		inNamespacePolicyLabels("ns1", map[string]string{LabelRole: LabelRoleExternalAllow}),
-		"Service", "web", types.UID("svc-web-uid"),
-		nil,
-		nil,
-	); err != nil {
-		t.Fatalf("owner sweep: %v", err)
-	}
-	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "ns1", Name: "user-policy-with-standard-label"}, &got); err != nil {
-		t.Errorf("owner-based sweep deleted a policy that carries only the standard managed-by label: %v", err)
 	}
 }

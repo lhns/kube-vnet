@@ -207,6 +207,26 @@ func TestNsToVnets(t *testing.T) {
 	}
 }
 
+// A pod enqueues the vnet each join label names: bare in its own namespace,
+// qualified in the named one, `cluster` in the operator namespace.
+func TestPodToVnets(t *testing.T) {
+	r := &VirtualNetworkReconciler{OperatorNamespace: "kube-vnet"}
+	pod := podWithLabels("webapp", "p", map[string]string{
+		"kube-vnet/net.local":           "both",
+		"kube-vnet/net.platform.shared": "ingress",
+		"kube-vnet.system/net.cluster":  "both",
+		"app":                           "web",
+	})
+	var got []string
+	for _, req := range r.podToVnets(context.Background(), pod) {
+		got = append(got, req.Namespace+"/"+req.Name)
+	}
+	want := []string{"kube-vnet/cluster", "platform/shared", "webapp/local"}
+	if !slices.Equal(sortedNames(got), want) {
+		t.Fatalf("got %v, want %v", sortedNames(got), want)
+	}
+}
+
 // A binding only ever selects pods in its own namespace, so a pod enqueues
 // the bindings there. A namespace additionally enqueues the bindings whose
 // target vnet lives in it: its managed-ness decides whether that vnet is served.

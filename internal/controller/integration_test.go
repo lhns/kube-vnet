@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,7 +151,7 @@ func TestIntegration_ForeignJoiner_TouchesOnlyItsOwnNamespace(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "strict"}, v); err != nil {
 			return err
 		}
-		if s := conditionStatusOf(v, "Degraded"); s != metav1.ConditionFalse {
+		if s := conditionStatus(v, "Degraded"); s != metav1.ConditionFalse {
 			return fmt.Errorf("Degraded = %s, want False", s)
 		}
 		return nil
@@ -358,7 +359,7 @@ func TestIntegration_Disabled_NamespaceSkipped(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Ready") != metav1.ConditionFalse {
+		if conditionStatus(v, "Ready") != metav1.ConditionFalse {
 			return fmt.Errorf("Ready != False")
 		}
 		return nil
@@ -431,7 +432,7 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "selvnet"}, v); err != nil {
 			return err
 		}
-		if s := conditionStatusOf(v, "Degraded"); s != metav1.ConditionFalse {
+		if s := conditionStatus(v, "Degraded"); s != metav1.ConditionFalse {
 			return fmt.Errorf("Degraded = %s, want False", s)
 		}
 		return nil
@@ -496,7 +497,7 @@ func TestIntegration_AllowedNamespaces_HomeNamespaceNeedNotBeListed(t *testing.T
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "hnlvnet"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") == metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") == metav1.ConditionTrue {
 			return fmt.Errorf("Degraded=True; the home-NS pod must not be an InvalidJoiner")
 		}
 		return nil
@@ -689,7 +690,7 @@ func TestIntegration_ExcludedNamespace_PodSurfacedInDegraded(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "vex"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") != metav1.ConditionTrue {
 			return fmt.Errorf("Degraded != True")
 		}
 		// The Degraded message must mention the excluded pod.
@@ -782,7 +783,7 @@ func TestIntegration_DirectionEnum_OneOfEach(t *testing.T) {
 		}
 		got := p.Spec.PodSelector.MatchExpressions[0].Values
 		want := []string{"both", "ingress"}
-		if !equalStringSlice(got, want) {
+		if !slices.Equal(got, want) {
 			return fmt.Errorf("podSelector values=%v want %v", got, want)
 		}
 		return nil
@@ -811,7 +812,7 @@ func TestIntegration_DirectionEnum_UnknownValue_Degraded(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") != metav1.ConditionTrue {
 			return fmt.Errorf("Degraded != True")
 		}
 		for _, c := range v.Status.Conditions {
@@ -988,7 +989,7 @@ func TestIntegration_MemberWithMalformedUserLabel_StaysMember(t *testing.T) {
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: "v"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
+		if conditionStatus(v, "Degraded") != metav1.ConditionTrue {
 			return fmt.Errorf("Degraded != True (want InvalidJoiners for the bogus label)")
 		}
 		// Membership survived: the pod is listed in status.

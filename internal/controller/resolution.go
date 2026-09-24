@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -198,9 +201,8 @@ func intersect(a, b Direction) Direction {
 //     consumed during resolution to compute override-permission.
 //   - Entries with effective Direction=none are dropped from the result.
 func Resolve(layers []ResolutionLayer) ResolutionResult {
-	ordered := make([]ResolutionLayer, len(layers))
-	copy(ordered, layers)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Scope < ordered[j].Scope })
+	ordered := slices.Clone(layers)
+	slices.SortStableFunc(ordered, func(a, b ResolutionLayer) int { return cmp.Compare(a.Scope, b.Scope) })
 
 	// running carries the cascade value (still default-*-tagged so cross-tier
 	// override-permission can be evaluated). Stripped to bare at the end.
@@ -219,17 +221,10 @@ func Resolve(layers []ResolutionLayer) ResolutionResult {
 		for _, r := range layer.Rules {
 			byVnet[r.Vnet] = append(byVnet[r.Vnet], r)
 		}
-		// Stable iteration for deterministic conflict ordering.
-		vnets := make([]VnetKey, 0, len(byVnet))
-		for v := range byVnet {
-			vnets = append(vnets, v)
-		}
-		sort.Slice(vnets, func(i, j int) bool { return vnets[i] < vnets[j] })
-
-		for _, vnet := range vnets {
+		// Sorted for deterministic conflict reporting.
+		for _, vnet := range slices.Sorted(maps.Keys(byVnet)) {
 			rules := byVnet[vnet]
-			// Sort rules by source for stable conflict reporting.
-			sort.SliceStable(rules, func(i, j int) bool { return rules[i].Source < rules[j].Source })
+			slices.SortStableFunc(rules, func(a, b ResolutionRule) int { return strings.Compare(a.Source, b.Source) })
 
 			// Intersect all directions in the group.
 			eff := rules[0].Direction
@@ -251,16 +246,7 @@ func Resolve(layers []ResolutionLayer) ResolutionResult {
 			// when all participants in this layer were default-*; otherwise the
 			// stricter bare form propagates to the next tier.
 			if anyDefault && !anyBare {
-				switch eff {
-				case DirectionBoth:
-					eff = DirectionDefaultBoth
-				case DirectionIngress:
-					eff = DirectionDefaultIngress
-				case DirectionEgress:
-					eff = DirectionDefaultEgress
-				case DirectionNone:
-					eff = DirectionDefaultNone
-				}
+				eff = "default-" + eff.Bare()
 			}
 
 			if disagree {
@@ -303,17 +289,11 @@ func Resolve(layers []ResolutionLayer) ResolutionResult {
 	}
 
 	// Stable conflict + rejection ordering.
-	sort.SliceStable(conflicts, func(i, j int) bool {
-		if conflicts[i].Scope != conflicts[j].Scope {
-			return conflicts[i].Scope < conflicts[j].Scope
-		}
-		return conflicts[i].Vnet < conflicts[j].Vnet
+	slices.SortStableFunc(conflicts, func(a, b ResolutionConflict) int {
+		return cmp.Or(cmp.Compare(a.Scope, b.Scope), cmp.Compare(a.Vnet, b.Vnet))
 	})
-	sort.SliceStable(rejected, func(i, j int) bool {
-		if rejected[i].AttemptedScope != rejected[j].AttemptedScope {
-			return rejected[i].AttemptedScope < rejected[j].AttemptedScope
-		}
-		return rejected[i].Vnet < rejected[j].Vnet
+	slices.SortStableFunc(rejected, func(a, b OverrideRejected) int {
+		return cmp.Or(cmp.Compare(a.AttemptedScope, b.AttemptedScope), cmp.Compare(a.Vnet, b.Vnet))
 	})
 
 	return ResolutionResult{

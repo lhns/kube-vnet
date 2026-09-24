@@ -41,7 +41,6 @@ func networkWait(pod *corev1.Pod, cfg *NetworkWaitConfig) (*corev1.Container, st
 		}
 	}
 
-	no, yes := false, true
 	return &corev1.Container{
 		Name:            NetworkWaitContainerName,
 		Image:           cfg.Image,
@@ -58,18 +57,11 @@ func networkWait(pod *corev1.Pod, cfg *NetworkWaitConfig) (*corev1.Container, st
 			},
 		},
 		SecurityContext: &corev1.SecurityContext{
-			RunAsNonRoot:             &yes,
-			AllowPrivilegeEscalation: &no,
-			ReadOnlyRootFilesystem:   &yes,
+			RunAsNonRoot:             new(true),
+			AllowPrivilegeEscalation: new(false),
+			ReadOnlyRootFilesystem:   new(true),
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 			SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 		},
 	}, ""
-}
-
-// unmanagedNetworkWait is the warning for a pod that asked for the wait in a
-// namespace kube-vnet doesn't manage, where it gets no wait (nor any
-// NetworkPolicy from kube-vnet).
-func unmanagedNetworkWait(pod *corev1.Pod) string {
-	return controller.NetworkWaitWarning(pod, false, false)
 }

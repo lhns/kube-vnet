@@ -2,16 +2,14 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"maps"
 	"slices"
-	"time"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -23,14 +21,9 @@ import (
 )
 
 // ApiserverReachableReconciler emits "allow-from-anywhere" NetworkPolicies
-// for Services that the kube-apiserver reaches in-cluster. Per ADR 0041 —
-// the gap NetworkPolicy can't naturally close, because the apiserver
-// isn't a pod and its source IP (control-plane node IP or managed-control-
-// plane IP) doesn't match any namespaceSelector or podSelector.
-//
-// Trigger surface: four cluster-scoped Kubernetes resources that declare
-// "the apiserver dials this Service," plus an opt-in annotation on Services
-// for cases the four don't cover.
+// for Services the kube-apiserver reaches in-cluster (ADR 0041): the
+// apiserver isn't a pod, so no namespaceSelector or podSelector matches it.
+// These declare that the apiserver dials a Service:
 //
 //	ValidatingWebhookConfiguration  webhooks[].clientConfig.service
 //	MutatingWebhookConfiguration    webhooks[].clientConfig.service
@@ -38,11 +31,8 @@ import (
 //	CustomResourceDefinition        spec.conversion.webhook.clientConfig.service
 //	corev1.Service                  annotation kube-vnet/apiserver-reachable=true
 //
-// The policy is additive (NetworkPolicy union), so vnet isolation is
-// unchanged; the apiserver only gains a path to the webhook's targetPort.
-//
-// Default-on. Opt out with `kube-vnet/external-allow=false` on the Service or
-// its Namespace, the same annotation as ADR 0038.
+// The policy is additive, so vnet isolation is unchanged. Opt out with
+// `kube-vnet/external-allow=false` on the Service or its Namespace.
 type ApiserverReachableReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -71,115 +61,53 @@ type serviceRef struct {
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	applied := false
-	defer apiserverPolicies.forgetUnless(&applied, &r.restores, req.Namespace, req.Name)
-	svc := &corev1.Service{}
-	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
-		if apierrors.IsNotFound(err) {
-			r.pending.forget(req.NamespacedName)
-			return ctrl.Result{}, apiserverPolicies.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
-		}
-		return ctrl.Result{}, err
-	}
-	waiting := false
-	defer apiserverPolicies.endPending(&waiting, &r.pending, svc)
+	return apiserverPolicies.reconcile(ctx, req,
+		serviceReconciler{r.Client, r.Scheme, r.NSFilter, r.Recorder, &r.restores, &r.pending}, r.desired)
+}
 
-	ns := &corev1.Namespace{}
-	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	// NamespaceLifecycle admission rejects creates in a terminating namespace.
-	if ns.DeletionTimestamp != nil {
-		return ctrl.Result{}, nil
-	}
-
-	// Same opt-out gates as ExternalAllowReconciler.
-	if !r.NSFilter.IsManaged(ns) ||
-		ExternalAllowOptedOut(ns.Annotations) ||
-		ExternalAllowOptedOut(svc.Annotations) {
-		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
-	}
-
+// desired returns the Service's policy, or nil if nothing the apiserver dials
+// names it and it hasn't opted in.
+func (r *ApiserverReachableReconciler) desired(ctx context.Context, svc *corev1.Service) (*networkingv1.NetworkPolicy, error) {
 	// Headless / ExternalName / selector-less Services have no podSelector
 	// to mirror.
 	if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.Type == corev1.ServiceTypeExternalName ||
 		len(svc.Spec.Selector) == 0 {
-		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
+		return nil, nil
 	}
-
 	ports, err := r.collectReferencedPorts(ctx, svc)
-	if err != nil {
-		return ctrl.Result{}, err
+	if err != nil || len(ports) == 0 {
+		return nil, err
 	}
-	if len(ports) == 0 {
-		// Nothing references this Service and it hasn't opted in.
-		return ctrl.Result{}, apiserverPolicies.sweep(ctx, r.Client, svc, "")
-	}
-
 	// Pods resolve named targetPorts.
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(svc.Namespace)); err != nil {
-		return ctrl.Result{}, err
+		return nil, err
 	}
-
-	desired, err := buildApiserverReachablePolicy(svc, pods.Items, ports, r.SourceCIDR)
-	if err != nil {
-		if errors.Is(err, errNamedPortUnresolvable) {
-			waiting = true
-			apiserverPolicies.startPending(r.Recorder, &r.pending, svc)
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-		}
-		return ctrl.Result{}, err
-	}
-	applied, err = apiserverPolicies.applyAndReport(ctx, r.Client, r.Scheme, r.Recorder, &r.restores, svc, desired)
-	return ctrl.Result{}, err
+	return buildApiserverReachablePolicy(svc, pods.Items, ports, r.SourceCIDR)
 }
 
-// collectReferencedPorts walks all four discovery resource kinds and the
-// Service's own annotation, returning the sorted unique set of ports
-// reached for this Service. Returns nil if nothing references this Service.
+// collectReferencedPorts returns the sorted unique ports the discovery
+// resources and the Service's own annotation reach it on; nil if none.
 func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Context, svc *corev1.Service) ([]int32, error) {
-	var refs []serviceRef
-
-	var vwhcs admissionregistrationv1.ValidatingWebhookConfigurationList
-	if err := r.List(ctx, &vwhcs); err != nil {
-		return nil, err
-	}
-	for i := range vwhcs.Items {
-		refs = append(refs, extractValidatingWebhookRefs(&vwhcs.Items[i])...)
-	}
-
-	var mwhcs admissionregistrationv1.MutatingWebhookConfigurationList
-	if err := r.List(ctx, &mwhcs); err != nil {
-		return nil, err
-	}
-	for i := range mwhcs.Items {
-		refs = append(refs, extractMutatingWebhookRefs(&mwhcs.Items[i])...)
-	}
-
-	var apisvcs apiregistrationv1.APIServiceList
-	if err := r.List(ctx, &apisvcs); err != nil {
-		return nil, err
-	}
-	for i := range apisvcs.Items {
-		refs = append(refs, extractAPIServiceRefs(&apisvcs.Items[i])...)
-	}
-
-	var crds apiextensionsv1.CustomResourceDefinitionList
-	if err := r.List(ctx, &crds); err != nil {
-		return nil, err
-	}
-	for i := range crds.Items {
-		refs = append(refs, extractCRDConversionRefs(&crds.Items[i])...)
-	}
-
 	portSet := map[int32]struct{}{}
-	for _, ref := range refs {
-		if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
-			portSet[ref.Port] = struct{}{}
+	for _, list := range []client.ObjectList{
+		&admissionregistrationv1.ValidatingWebhookConfigurationList{},
+		&admissionregistrationv1.MutatingWebhookConfigurationList{},
+		&apiregistrationv1.APIServiceList{},
+		&apiextensionsv1.CustomResourceDefinitionList{},
+	} {
+		if err := r.List(ctx, list); err != nil {
+			return nil, err
+		}
+		if err := meta.EachListItem(list, func(obj runtime.Object) error {
+			for _, ref := range serviceRefs(obj) {
+				if ref.Namespace == svc.Namespace && ref.Name == svc.Name {
+					portSet[ref.Port] = struct{}{}
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
 		}
 	}
 
@@ -194,76 +122,45 @@ func (r *ApiserverReachableReconciler) collectReferencedPorts(ctx context.Contex
 	return slices.Sorted(maps.Keys(portSet)), nil
 }
 
-// extractValidatingWebhookRefs returns the Service refs declared in a
-// ValidatingWebhookConfiguration. URL-only entries are out-of-cluster and
-// skipped.
-func extractValidatingWebhookRefs(cfg *admissionregistrationv1.ValidatingWebhookConfiguration) []serviceRef {
-	if cfg == nil {
-		return nil
-	}
-	out := make([]serviceRef, 0, len(cfg.Webhooks))
-	for _, wh := range cfg.Webhooks {
-		if wh.ClientConfig.Service == nil {
-			continue
+// serviceRefs returns the Service refs a discovery resource declares, one per
+// entry. URL-only entries are out of cluster and skipped, as are local
+// APIServices (`spec.service: nil`, served by the apiserver itself). An unset
+// port defaults to 443, per the Kubernetes API.
+func serviceRefs(obj runtime.Object) []serviceRef {
+	var out []serviceRef
+	add := func(namespace, name string, port *int32) {
+		p := int32(443)
+		if port != nil && *port != 0 {
+			p = *port
 		}
-		s := wh.ClientConfig.Service
-		out = append(out, newServiceRef(s.Namespace, s.Name, s.Port))
+		out = append(out, serviceRef{Namespace: namespace, Name: name, Port: p})
+	}
+	switch o := obj.(type) {
+	case *admissionregistrationv1.ValidatingWebhookConfiguration:
+		for _, wh := range o.Webhooks {
+			if s := wh.ClientConfig.Service; s != nil {
+				add(s.Namespace, s.Name, s.Port)
+			}
+		}
+	case *admissionregistrationv1.MutatingWebhookConfiguration:
+		for _, wh := range o.Webhooks {
+			if s := wh.ClientConfig.Service; s != nil {
+				add(s.Namespace, s.Name, s.Port)
+			}
+		}
+	case *apiregistrationv1.APIService:
+		if s := o.Spec.Service; s != nil {
+			add(s.Namespace, s.Name, s.Port)
+		}
+	case *apiextensionsv1.CustomResourceDefinition:
+		conv := o.Spec.Conversion
+		if conv != nil && conv.Strategy == apiextensionsv1.WebhookConverter &&
+			conv.Webhook != nil && conv.Webhook.ClientConfig != nil && conv.Webhook.ClientConfig.Service != nil {
+			s := conv.Webhook.ClientConfig.Service
+			add(s.Namespace, s.Name, s.Port)
+		}
 	}
 	return out
-}
-
-// extractMutatingWebhookRefs is extractValidatingWebhookRefs for
-// MutatingWebhookConfiguration.
-func extractMutatingWebhookRefs(cfg *admissionregistrationv1.MutatingWebhookConfiguration) []serviceRef {
-	if cfg == nil {
-		return nil
-	}
-	out := make([]serviceRef, 0, len(cfg.Webhooks))
-	for _, wh := range cfg.Webhooks {
-		if wh.ClientConfig.Service == nil {
-			continue
-		}
-		s := wh.ClientConfig.Service
-		out = append(out, newServiceRef(s.Namespace, s.Name, s.Port))
-	}
-	return out
-}
-
-// extractAPIServiceRefs returns the Service ref declared in an APIService.
-// Local APIServices (`spec.service: nil`) are served by the apiserver itself.
-func extractAPIServiceRefs(api *apiregistrationv1.APIService) []serviceRef {
-	if api == nil || api.Spec.Service == nil {
-		return nil
-	}
-	s := api.Spec.Service
-	return []serviceRef{newServiceRef(s.Namespace, s.Name, s.Port)}
-}
-
-// extractCRDConversionRefs returns the Service ref of a CRD's conversion
-// webhook, if it has one.
-func extractCRDConversionRefs(crd *apiextensionsv1.CustomResourceDefinition) []serviceRef {
-	if crd == nil || crd.Spec.Conversion == nil {
-		return nil
-	}
-	conv := crd.Spec.Conversion
-	if conv.Strategy != apiextensionsv1.WebhookConverter {
-		return nil
-	}
-	if conv.Webhook == nil || conv.Webhook.ClientConfig == nil || conv.Webhook.ClientConfig.Service == nil {
-		return nil
-	}
-	s := conv.Webhook.ClientConfig.Service
-	return []serviceRef{newServiceRef(s.Namespace, s.Name, s.Port)}
-}
-
-// newServiceRef builds a serviceRef, defaulting an unset port to 443 per the
-// Kubernetes API spec.
-func newServiceRef(namespace, name string, port *int32) serviceRef {
-	p := int32(443)
-	if port != nil && *port != 0 {
-		p = *port
-	}
-	return serviceRef{Namespace: namespace, Name: name, Port: p}
 }
 
 // buildApiserverReachablePolicy constructs the desired NetworkPolicy for a
@@ -312,80 +209,33 @@ func findServicePort(svc *corev1.Service, port int32) (corev1.ServicePort, bool)
 // apiserverReachablePolicyName returns
 // `kube-vnet.ext.apiserver.<svcName>-<8hex>` (ADR 0039).
 func apiserverReachablePolicyName(svc *corev1.Service) string {
-	return servicePolicyName(LabelSourceKindApiserver, svc)
+	return servicePolicyName(LabelSourceKindApiserver, svc.Namespace, svc.Name)
 }
 
 func (r *ApiserverReachableReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	b := ctrl.NewControllerManagedBy(mgr).
+	b := apiserverPolicies.watchInputs(ctrl.NewControllerManagedBy(mgr).
 		Named("apiserver-reachable").
-		For(&corev1.Service{})
-	return apiserverPolicies.watchInputs(b, mgr, r.Client).
-		Watches(
-			&admissionregistrationv1.ValidatingWebhookConfiguration{},
-			handler.EnqueueRequestsFromMapFunc(validatingWebhookToServices),
-		).
-		Watches(
-			&admissionregistrationv1.MutatingWebhookConfiguration{},
-			handler.EnqueueRequestsFromMapFunc(mutatingWebhookToServices),
-		).
-		Watches(
-			&apiregistrationv1.APIService{},
-			handler.EnqueueRequestsFromMapFunc(apiServiceToServices),
-		).
-		Watches(
-			&apiextensionsv1.CustomResourceDefinition{},
-			handler.EnqueueRequestsFromMapFunc(crdConversionToServices),
-		).
-		Complete(r)
-}
-
-// validatingWebhookToServices / mutatingWebhookToServices / apiServiceToServices /
-// crdConversionToServices map an event on a cluster-scoped discovery resource
-// to requests for the Services it references.
-
-func validatingWebhookToServices(_ context.Context, obj client.Object) []reconcile.Request {
-	cfg, ok := obj.(*admissionregistrationv1.ValidatingWebhookConfiguration)
-	if !ok {
-		return nil
+		For(&corev1.Service{}), mgr, r.Client)
+	for _, obj := range []client.Object{
+		&admissionregistrationv1.ValidatingWebhookConfiguration{},
+		&admissionregistrationv1.MutatingWebhookConfiguration{},
+		&apiregistrationv1.APIService{},
+		&apiextensionsv1.CustomResourceDefinition{},
+	} {
+		b = b.Watches(obj, handler.EnqueueRequestsFromMapFunc(discoveryToServices))
 	}
-	return refsToRequests(extractValidatingWebhookRefs(cfg))
+	return b.Complete(r)
 }
 
-func mutatingWebhookToServices(_ context.Context, obj client.Object) []reconcile.Request {
-	cfg, ok := obj.(*admissionregistrationv1.MutatingWebhookConfiguration)
-	if !ok {
-		return nil
-	}
-	return refsToRequests(extractMutatingWebhookRefs(cfg))
-}
-
-func apiServiceToServices(_ context.Context, obj client.Object) []reconcile.Request {
-	api, ok := obj.(*apiregistrationv1.APIService)
-	if !ok {
-		return nil
-	}
-	return refsToRequests(extractAPIServiceRefs(api))
-}
-
-func crdConversionToServices(_ context.Context, obj client.Object) []reconcile.Request {
-	crd, ok := obj.(*apiextensionsv1.CustomResourceDefinition)
-	if !ok {
-		return nil
-	}
-	return refsToRequests(extractCRDConversionRefs(crd))
-}
-
-// refsToRequests dedupes refs to one request per Service.
-func refsToRequests(refs []serviceRef) []reconcile.Request {
-	seen := map[types.NamespacedName]struct{}{}
-	out := make([]reconcile.Request, 0, len(refs))
-	for _, ref := range refs {
-		key := types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}
-		if _, dup := seen[key]; dup {
-			continue
+// discoveryToServices maps an event on a discovery resource to one request per
+// Service it references.
+func discoveryToServices(_ context.Context, obj client.Object) []reconcile.Request {
+	var out []reconcile.Request
+	for _, ref := range serviceRefs(obj) {
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}}
+		if !slices.Contains(out, req) {
+			out = append(out, req)
 		}
-		seen[key] = struct{}{}
-		out = append(out, reconcile.Request{NamespacedName: key})
 	}
 	return out
 }

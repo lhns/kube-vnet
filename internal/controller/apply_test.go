@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -190,7 +191,7 @@ func TestReconcile_ApplyFailureDoesNotStarveLaterNamespaces(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(vnet), got); err != nil {
 		t.Fatal(err)
 	}
-	ready := conditionFor(got, "Ready")
+	ready := meta.FindStatusCondition(got.Status.Conditions, "Ready")
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != ReasonApplyFailed {
 		t.Fatalf("Ready = %+v, want False/%s", ready, ReasonApplyFailed)
 	}
@@ -273,14 +274,4 @@ func TestJoinErrorMessages_Bounded(t *testing.T) {
 	if got, want := joinErrorMessages(errs[:2]), errs[0].Error()+"; "+errs[1].Error(); got != want {
 		t.Fatalf("two errors: got %q, want %q", got, want)
 	}
-}
-
-// conditionFor returns vnet's condition of type t, or nil.
-func conditionFor(vnet *vnetv1alpha1.VirtualNetwork, t string) *metav1.Condition {
-	for i := range vnet.Status.Conditions {
-		if vnet.Status.Conditions[i].Type == t {
-			return &vnet.Status.Conditions[i]
-		}
-	}
-	return nil
 }

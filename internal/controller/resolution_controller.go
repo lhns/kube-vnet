@@ -43,18 +43,10 @@ const (
 	ResolvedByController = "controller"
 )
 
-// ResolutionReconciler resolves the inheritance lattice for each pod and
-// stamps `kube-vnet.system/net.<vnet>=<direction>` labels accordingly. Three
-// scopes per ADR 0031:
-//   - ScopeClusterBaseline: the ClusterVirtualNetworkBaseline named `default`.
-//   - ScopeNamespaceBaseline: the VirtualNetworkBaseline named `default` in
-//     the pod's namespace (if present).
-//   - ScopePod: VirtualNetworkBindings matching the pod, plus the pod's own
-//     `kube-vnet/net.<vnet>=<direction>` labels. All sources within this
-//     scope intersect on conflict (fail-closed).
-//
-// On change to any of those input sources, the affected pod(s) get
-// re-resolved. Pods in disabled namespaces have their stamps removed.
+// ResolutionReconciler resolves each pod's memberships through the Resolver
+// (the tiers of ADR 0031) and stamps them as `kube-vnet.system/net.*`
+// labels, re-resolving pods when any input changes. Pods in disabled
+// namespaces have their stamps removed.
 type ResolutionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -129,12 +121,12 @@ func (r *ResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	r.warnNarrowedMembership(pod, res)
-	if w := NetworkWaitWarning(pod, true, r.NetworkWaitEnabled); w != "" {
+	w := NetworkWaitWarning(pod, true, r.NetworkWaitEnabled)
+	if w == "" && r.NetworkWaitEnabled {
+		w = networkWaitMissing(pod)
+	}
+	if w != "" {
 		r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
-	} else if r.NetworkWaitEnabled {
-		if w := networkWaitMissing(pod); w != "" {
-			r.warnOnce(pod, ReasonNetworkWaitSkipped, w)
-		}
 	}
 
 	return ctrl.Result{}, nil
@@ -238,13 +230,10 @@ func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
 	}
 }
 
-// bareJoinLabelHint returns the guidance to append when a *bare* pod join label
-// `kube-vnet/net.<X>` can't be honored: the bare form is only resolved against
-// the pod's own namespace, so a missing local vnet usually means the user meant
-// a vnet hosted elsewhere and should use the prefixed form. suffix is the label
-// key's tail (the part after `kube-vnet/net.`); a dot means it's already the
-// prefixed `<homeNS>.<name>` form (fully covered by notJoinableNote — no hint),
-// and the reserved system-vnet names are legitimately bare.
+// bareJoinLabelHint returns the guidance to append when a bare join label
+// `kube-vnet/net.<suffix>` can't be honored: the bare form resolves in the
+// pod's own namespace, so the user likely meant a vnet hosted elsewhere. The
+// prefixed form and the system vnets' bare names get no hint.
 func bareJoinLabelHint(labelKey, suffix string) string {
 	if strings.Contains(suffix, ".") ||
 		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
@@ -333,11 +322,11 @@ func (r *ResolutionReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&vnetv1alpha1.VirtualNetworkBaseline{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceBaselineToPods),
+			handler.EnqueueRequestsFromMapFunc(r.podsInObjectNamespace),
 		).
 		Watches(
 			&vnetv1alpha1.VirtualNetworkBinding{},
-			handler.EnqueueRequestsFromMapFunc(r.vnbToPods),
+			handler.EnqueueRequestsFromMapFunc(r.podsInObjectNamespace),
 		).
 		// Resolution reads two namespace properties: the `kube-vnet/disabled`
 		// annotation and the labels `allowedNamespaces.selector` matches on.
@@ -401,28 +390,17 @@ func (r *ResolutionReconciler) clusterBaselineToPods(ctx context.Context, _ clie
 	return r.podsIn(ctx, "")
 }
 
-// namespaceBaselineToPods fans a VirtualNetworkBaseline event to every pod in
-// the baseline's namespace.
-func (r *ResolutionReconciler) namespaceBaselineToPods(ctx context.Context, obj client.Object) []reconcile.Request {
+// podsInObjectNamespace fans a VirtualNetworkBaseline or VirtualNetworkBinding
+// event to every pod in its namespace, the only pods either applies to.
+func (r *ResolutionReconciler) podsInObjectNamespace(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.podsIn(ctx, obj.GetNamespace())
 }
 
-// vnbToPods maps a VirtualNetworkBinding event to all pods in the binding's
-// namespace — a binding only ever selects pods there.
-func (r *ResolutionReconciler) vnbToPods(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.podsIn(ctx, obj.GetNamespace())
-}
-
-// vnetToAffectedPods maps a VirtualNetwork event to the pods it could change.
-//
-// Vnet existence and allowedNamespaces are inputs to resolution: a rule
-// naming a not-yet-created vnet resolves to no stamp, and since the pod
-// predicate is change-based nothing else would revisit it.
-//
-// The affected set is the pods in the namespaces the vnet admits, which covers
-// every membership source without matching each one. On update the handler
-// maps both revisions, so narrowing allowedNamespaces also reaches the pods it
-// excluded. See ADR 0044.
+// vnetToAffectedPods maps a VirtualNetwork event to the pods in the
+// namespaces it admits (ADR 0044). Vnet existence and allowedNamespaces are
+// resolution inputs nothing else revisits: a rule naming a not-yet-created vnet
+// resolves to no stamp. On update both revisions are mapped, so narrowing
+// allowedNamespaces reaches the pods it excluded.
 func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
 	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
 	if !ok || vnet == nil {

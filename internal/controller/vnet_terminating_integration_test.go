@@ -81,7 +81,7 @@ func TestIntegration_TerminatingMemberNamespace_DoesNotBlockOthers(t *testing.T)
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "v"}, v); err != nil {
 			return err
 		}
-		if got := conditionReason(v.Status.Conditions, "Ready"); conditionStatusOf(v, "Ready") != metav1.ConditionTrue {
+		if got := conditionReason(v.Status.Conditions, "Ready"); conditionStatus(v, "Ready") != metav1.ConditionTrue {
 			return fmt.Errorf("Ready not True (reason %q)", got)
 		}
 		// The terminating namespace's pods still run until they are gone,

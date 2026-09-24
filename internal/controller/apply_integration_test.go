@@ -70,7 +70,7 @@ func denyPoliciesIn(t *testing.T, ns string) {
 	vap := &admissionregistrationv1.ValidatingAdmissionPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "deny-policies-" + ns},
 		Spec: admissionregistrationv1.ValidatingAdmissionPolicySpec{
-			FailurePolicy: ptr(admissionregistrationv1.Fail),
+			FailurePolicy: new(admissionregistrationv1.Fail),
 			MatchConstraints: &admissionregistrationv1.MatchResources{
 				ResourceRules: []admissionregistrationv1.NamedRuleWithOperations{{
 					RuleWithOperations: admissionregistrationv1.RuleWithOperations{

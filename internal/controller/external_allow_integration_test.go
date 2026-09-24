@@ -396,7 +396,6 @@ func TestIntegration_ExternalAllow_LegacyNameMigration(t *testing.T) {
 	waitForPolicy(t, ns, newName, 10*time.Second)
 
 	// Legacy label values: no LabelSourceKind, LabelSource is the bare name.
-	truePtr := true
 	legacy := &networkingv1.NetworkPolicy{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "kube-vnet.external-web-deadbeef",
@@ -409,7 +408,7 @@ func TestIntegration_ExternalAllow_LegacyNameMigration(t *testing.T) {
 			OwnerReferences: []metav1.OwnerReference{{
 				APIVersion: "v1", Kind: "Service",
 				Name: svc.Name, UID: svc.UID,
-				Controller: &truePtr, BlockOwnerDeletion: &truePtr,
+				Controller: new(true), BlockOwnerDeletion: new(true),
 			}},
 		},
 		Spec: networkingv1.NetworkPolicySpec{

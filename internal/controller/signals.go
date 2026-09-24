@@ -3,6 +3,7 @@ package controller
 import (
 	"sync"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -18,6 +19,18 @@ func eventf(rec events.EventRecorder, obj runtime.Object, eventtype, reason, act
 		return
 	}
 	rec.Eventf(obj, nil, eventtype, reason, action, note, args...)
+}
+
+// applyFailed counts a failed apply of kind in apply_errors_total and reports
+// it as an ApplyFailed Warning on obj.
+func applyFailed(rec events.EventRecorder, obj runtime.Object, kind, note string, args ...any) {
+	applyErrors.WithLabelValues(kind).Inc()
+	eventf(rec, obj, corev1.EventTypeWarning, EventApplyFailed, "Apply", note, args...)
+}
+
+// policyRestored reports a recreated policy as a PolicyRestored Warning on obj.
+func policyRestored(rec events.EventRecorder, obj runtime.Object, note string, args ...any) {
+	eventf(rec, obj, corev1.EventTypeWarning, EventPolicyRestored, "Restore", note, args...)
 }
 
 // policyTracker remembers which policies this process has applied, so an

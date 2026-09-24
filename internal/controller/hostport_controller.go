@@ -24,16 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// HostPortReconciler emits external-allow NetworkPolicies for pods that
-// declare `hostPort` (ADR 0040). NetworkPolicy can only select those pods by
-// label, so ResolutionReconciler stamps
-// `kube-vnet.system/host-port.<port>.<proto>=true` on them and this
-// reconciler emits one policy per (namespace, port, protocol) selecting that
-// stamp. Keying on the port rather than the pod means rollouts, which replace
-// pods, cause no policy churn.
-//
-// Opting a Namespace out (`kube-vnet/disabled=true` or
-// `kube-vnet/external-allow=false`) deletes its host-port policies.
+// HostPortReconciler emits one external-allow NetworkPolicy per (namespace,
+// port, protocol) that a pod declares as `hostPort` (ADR 0040), selecting
+// the host-port stamp resolution puts on those pods. Keying on the port, not
+// the pod, keeps rollouts from churning policies. A namespace opted out
+// (`kube-vnet/disabled=true` or `kube-vnet/external-allow=false`) gets none.
 type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -100,8 +95,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		keep[client.ObjectKeyFromObject(pol)] = true
 		created, err := applyPolicy(ctx, r.Client, r.Client, pol)
 		if err != nil {
-			applyErrors.WithLabelValues(ApplyErrorHostPort).Inc()
-			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventApplyFailed, "Apply",
+			applyFailed(r.Recorder, pol, ApplyErrorHostPort,
 				"the host-port NetworkPolicy %s could not be applied: %v. Until this is fixed, traffic to hostPort %d/%s "+
 					"on pods in this namespace is blocked.", pol.Name, err, key.port, key.protocol)
 			applyErrs = append(applyErrs, fmt.Errorf("apply host-port policy %s: %w", key, err))
@@ -109,7 +103,7 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			continue
 		}
 		if r.restores.applied(client.ObjectKeyFromObject(pol), created) {
-			eventf(r.Recorder, pol, corev1.EventTypeWarning, EventPolicyRestored, "Restore",
+			policyRestored(r.Recorder, pol,
 				"this NetworkPolicy was deleted and has been recreated: kube-vnet lets external traffic reach hostPort %d/%s "+
 					"on pods in this namespace through it. An administrator opts the namespace out with the annotation %s=false.",
 				key.port, key.protocol, AnnotationExternalAllow)

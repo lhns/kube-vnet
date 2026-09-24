@@ -278,13 +278,6 @@ func updateService(t *testing.T, ns, name string, mutate func(*corev1.Service)) 
 	})
 }
 
-func conditionStatusOf(vnet *vnetv1alpha1.VirtualNetwork, t string) metav1.ConditionStatus {
-	if c := meta.FindStatusCondition(vnet.Status.Conditions, t); c != nil {
-		return c.Status
-	}
-	return metav1.ConditionUnknown
-}
-
 // conditionReason returns the reason of condition t, or "" if it is not set.
 func conditionReason(conds []metav1.Condition, t string) string {
 	if c := meta.FindStatusCondition(conds, t); c != nil {

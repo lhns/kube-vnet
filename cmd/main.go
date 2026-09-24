@@ -171,109 +171,64 @@ func main() {
 			CertDir: webhookCertDir,
 		}),
 	})
-	if err != nil {
-		setupLog.Error(err, "unable to create manager")
-		os.Exit(1)
-	}
+	must(err, "unable to create manager")
+	c := mgr.GetClient()
 
-	r := &controller.VirtualNetworkReconciler{
-		Client:            mgr.GetClient(),
+	must((&controller.VirtualNetworkReconciler{
+		Client:            c,
 		APIReader:         mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
+		Scheme:            scheme,
 		Recorder:          mgr.GetEventRecorder("kube-vnet"),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
-	}
-	if err := r.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up controller")
-		os.Exit(1)
-	}
-
-	if err := mgr.Add(&controller.MetricsCollector{Client: mgr.GetClient()}); err != nil {
-		setupLog.Error(err, "unable to register metrics collector")
-		os.Exit(1)
-	}
-
-	nsReconciler := &controller.NamespaceReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up controller")
+	must(mgr.Add(&controller.MetricsCollector{Client: c}), "unable to register metrics collector")
+	must((&controller.NamespaceReconciler{
+		Client:   c,
+		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-namespace"),
-	}
-	if err := nsReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up namespace reconciler")
-		os.Exit(1)
-	}
-
-	bindingReconciler := &controller.VirtualNetworkBindingReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up namespace reconciler")
+	must((&controller.VirtualNetworkBindingReconciler{
+		Client:            c,
+		Scheme:            scheme,
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
-	}
-	if err := bindingReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up binding reconciler")
-		os.Exit(1)
-	}
-
-	resReconciler := &controller.ResolutionReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up binding reconciler")
+	must((&controller.ResolutionReconciler{
+		Client:   c,
+		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
 		// The wait is injected by the webhook only.
 		NetworkWaitEnabled: webhookEnabled && networkWait != nil,
-	}
-	if err := resReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up resolution reconciler")
-		os.Exit(1)
-	}
-
-	sysVnetReconciler := &controller.SystemVnetReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up resolution reconciler")
+	must((&controller.SystemVnetReconciler{
+		Client:            c,
+		Scheme:            scheme,
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
 		Recorder:          mgr.GetEventRecorder("kube-vnet-system-vnet"),
-	}
-	if err := sysVnetReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up system vnet reconciler")
-		os.Exit(1)
-	}
-
-	extAllowReconciler := &controller.ExternalAllowReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up system vnet reconciler")
+	must((&controller.ExternalAllowReconciler{
+		Client:   c,
+		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-external-allow"),
-	}
-	if err := extAllowReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up external-allow reconciler")
-		os.Exit(1)
-	}
-
-	apiserverReachableReconciler := &controller.ApiserverReachableReconciler{
-		Client:     mgr.GetClient(),
-		Scheme:     mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up external-allow reconciler")
+	must((&controller.ApiserverReachableReconciler{
+		Client:     c,
+		Scheme:     scheme,
 		NSFilter:   nsFilter,
 		Recorder:   mgr.GetEventRecorder("kube-vnet-apiserver-reachable"),
 		SourceCIDR: apiserverSourceCIDR,
-	}
-	if err := apiserverReachableReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up apiserver-reachable reconciler")
-		os.Exit(1)
-	}
-
-	hostPortReconciler := &controller.HostPortReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
+	}).SetupWithManager(mgr), "unable to set up apiserver-reachable reconciler")
+	must((&controller.HostPortReconciler{
+		Client:   c,
+		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-host-port"),
-	}
-	if err := hostPortReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to set up host-port reconciler")
-		os.Exit(1)
-	}
+	}).SetupWithManager(mgr), "unable to set up host-port reconciler")
 
 	if webhookEnabled {
 		if operatorNS == "" {
@@ -286,17 +241,14 @@ func main() {
 				"(the validating webhook must know the operator's ServiceAccount)")
 			os.Exit(1)
 		}
-		resolver := &controller.Resolver{
-			Reader: mgr.GetClient(),
+		podresolution.Register(mgr.GetWebhookServer(), podresolution.Deps{
 			// No Recorder: admission is not a place to write to the
 			// apiserver. The reconciler emits the same diagnostic Events on
 			// its own pass moments later.
-		}
-		podresolution.Register(mgr.GetWebhookServer(), podresolution.Deps{
-			Resolver:         resolver,
-			Reader:           mgr.GetClient(),
+			Resolver:         &controller.Resolver{Reader: c},
+			Reader:           c,
 			NSFilter:         nsFilter,
-			Decoder:          admission.NewDecoder(mgr.GetScheme()),
+			Decoder:          admission.NewDecoder(scheme),
 			OperatorUsername: controller.ServiceAccountUsername(operatorNS, serviceAccountName),
 			NetworkWait:      networkWait,
 		})
@@ -304,20 +256,19 @@ func main() {
 			"port", webhookPort, "certDir", webhookCertDir)
 	}
 
-	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to add healthz")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to add readyz")
-		os.Exit(1)
-	}
+	must(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to add healthz")
+	must(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to add readyz")
 
 	setupLog.Info("starting kube-vnet operator",
 		"version", version, "commit", commit, "buildDate", date,
 		"disabled", fmt.Sprintf("%v", disabled))
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "manager exited with error")
+	must(mgr.Start(ctrl.SetupSignalHandler()), "manager exited with error")
+}
+
+// must logs msg and exits if err is set.
+func must(err error, msg string) {
+	if err != nil {
+		setupLog.Error(err, msg)
 		os.Exit(1)
 	}
 }

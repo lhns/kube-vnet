@@ -1,258 +1,97 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"maps"
 	"slices"
-	"strings"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// ---- extractors ----
+// ---- discovery ----
 
-func TestExtractValidatingWebhookRefs(t *testing.T) {
-	port443 := int32(443)
-	port8443 := int32(8443)
+func TestServiceRefs(t *testing.T) {
+	svcRef := func(port *int32) *admissionregistrationv1.ServiceReference {
+		return &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "svc", Port: port}
+	}
+	validating := func(refs ...*admissionregistrationv1.ServiceReference) *admissionregistrationv1.ValidatingWebhookConfiguration {
+		cfg := &admissionregistrationv1.ValidatingWebhookConfiguration{}
+		for _, ref := range refs {
+			cc := admissionregistrationv1.WebhookClientConfig{Service: ref}
+			if ref == nil {
+				cc.URL = new("https://external.example.com/validate")
+			}
+			cfg.Webhooks = append(cfg.Webhooks, admissionregistrationv1.ValidatingWebhook{ClientConfig: cc})
+		}
+		return cfg
+	}
+	crd := func(strategy apiextensionsv1.ConversionStrategyType, cc *apiextensionsv1.WebhookClientConfig) *apiextensionsv1.CustomResourceDefinition {
+		conv := &apiextensionsv1.CustomResourceConversion{Strategy: strategy}
+		if cc != nil {
+			conv.Webhook = &apiextensionsv1.WebhookConversion{ClientConfig: cc}
+		}
+		return &apiextensionsv1.CustomResourceDefinition{Spec: apiextensionsv1.CustomResourceDefinitionSpec{Conversion: conv}}
+	}
+	ref := func(port int32) serviceRef { return serviceRef{Namespace: "ns", Name: "svc", Port: port} }
 
 	cases := []struct {
 		name string
-		in   *admissionregistrationv1.ValidatingWebhookConfiguration
+		in   runtime.Object
 		want []serviceRef
 	}{
-		{
-			name: "service_ref_present",
-			in: &admissionregistrationv1.ValidatingWebhookConfiguration{
-				Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-					ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "cert-manager", Name: "cert-manager-webhook",
-							Port: &port443,
-						},
-					},
-				}},
-			},
-			want: []serviceRef{{Namespace: "cert-manager", Name: "cert-manager-webhook", Port: 443}},
-		},
-		{
-			name: "port_defaulted_to_443",
-			in: &admissionregistrationv1.ValidatingWebhookConfiguration{
-				Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-					ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "ns", Name: "svc",
-							Port: nil,
-						},
-					},
-				}},
-			},
-			want: []serviceRef{{Namespace: "ns", Name: "svc", Port: 443}},
-		},
-		{
-			name: "url_only_skipped",
-			in: &admissionregistrationv1.ValidatingWebhookConfiguration{
-				Webhooks: []admissionregistrationv1.ValidatingWebhook{{
-					ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						URL: ptr("https://external.example.com/validate"),
-					},
-				}},
-			},
-			want: []serviceRef{},
-		},
-		{
-			name: "multiple_webhook_entries_same_service",
-			in: &admissionregistrationv1.ValidatingWebhookConfiguration{
-				Webhooks: []admissionregistrationv1.ValidatingWebhook{
-					{ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "ns", Name: "svc", Port: &port443,
-						},
-					}},
-					{ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "ns", Name: "svc", Port: &port443,
-						},
-					}},
-				},
-			},
-			// Extractor returns 1 ref per webhook entry; dedup happens at
-			// the reconciler. Both refs present.
-			want: []serviceRef{
-				{Namespace: "ns", Name: "svc", Port: 443},
-				{Namespace: "ns", Name: "svc", Port: 443},
-			},
-		},
-		{
-			name: "service_ref_with_different_ports",
-			in: &admissionregistrationv1.ValidatingWebhookConfiguration{
-				Webhooks: []admissionregistrationv1.ValidatingWebhook{
-					{ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "ns", Name: "svc", Port: &port443,
-						},
-					}},
-					{ClientConfig: admissionregistrationv1.WebhookClientConfig{
-						Service: &admissionregistrationv1.ServiceReference{
-							Namespace: "ns", Name: "svc", Port: &port8443,
-						},
-					}},
-				},
-			},
-			want: []serviceRef{
-				{Namespace: "ns", Name: "svc", Port: 443},
-				{Namespace: "ns", Name: "svc", Port: 8443},
-			},
-		},
-		{name: "nil_input", in: nil, want: nil},
+		{"validating", validating(svcRef(new(int32(8443)))), []serviceRef{ref(8443)}},
+		{"validating_port_defaulted_to_443", validating(svcRef(nil)), []serviceRef{ref(443)}},
+		{"validating_url_only_skipped", validating(nil), nil},
+		// One ref per webhook entry; the callers dedup.
+		{"validating_same_service_twice", validating(svcRef(new(int32(443))), svcRef(new(int32(443)))), []serviceRef{ref(443), ref(443)}},
+		{"validating_different_ports", validating(svcRef(new(int32(443))), svcRef(new(int32(8443)))), []serviceRef{ref(443), ref(8443)}},
+		{"mutating", &admissionregistrationv1.MutatingWebhookConfiguration{Webhooks: []admissionregistrationv1.MutatingWebhook{
+			{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: svcRef(new(int32(8443)))}},
+			{ClientConfig: admissionregistrationv1.WebhookClientConfig{URL: new("https://x")}},
+		}}, []serviceRef{ref(8443)}},
+		{"apiservice", &apiregistrationv1.APIService{Spec: apiregistrationv1.APIServiceSpec{
+			Service: &apiregistrationv1.ServiceReference{Namespace: "ns", Name: "svc", Port: new(int32(443))},
+		}}, []serviceRef{ref(443)}},
+		{"apiservice_local", &apiregistrationv1.APIService{}, nil},
+		{"crd_conversion_webhook", crd(apiextensionsv1.WebhookConverter, &apiextensionsv1.WebhookClientConfig{
+			Service: &apiextensionsv1.ServiceReference{Namespace: "ns", Name: "svc", Port: new(int32(443))},
+		}), []serviceRef{ref(443)}},
+		{"crd_no_conversion", &apiextensionsv1.CustomResourceDefinition{}, nil},
+		{"crd_strategy_none", crd(apiextensionsv1.NoneConverter, nil), nil},
+		{"crd_url_only", crd(apiextensionsv1.WebhookConverter, &apiextensionsv1.WebhookClientConfig{URL: new("https://x")}), nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := extractValidatingWebhookRefs(c.in)
-			if !slices.Equal(got, c.want) {
+			if got := serviceRefs(c.in); !slices.Equal(got, c.want) {
 				t.Errorf("got %+v, want %+v", got, c.want)
 			}
 		})
 	}
 }
 
-func TestExtractMutatingWebhookRefs(t *testing.T) {
-	port := int32(8443)
-	in := &admissionregistrationv1.MutatingWebhookConfiguration{
-		Webhooks: []admissionregistrationv1.MutatingWebhook{{
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{
-				Service: &admissionregistrationv1.ServiceReference{
-					Namespace: "istio-system", Name: "istiod",
-					Port: &port,
-				},
-			},
-		}},
-	}
-	got := extractMutatingWebhookRefs(in)
-	want := []serviceRef{{Namespace: "istio-system", Name: "istiod", Port: 8443}}
-	if !slices.Equal(got, want) {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-
-	// URL-only is skipped
-	urlOnly := &admissionregistrationv1.MutatingWebhookConfiguration{
-		Webhooks: []admissionregistrationv1.MutatingWebhook{{
-			ClientConfig: admissionregistrationv1.WebhookClientConfig{URL: ptr("https://x")},
-		}},
-	}
-	if len(extractMutatingWebhookRefs(urlOnly)) != 0 {
-		t.Errorf("URL-only webhook should be skipped")
-	}
-}
-
-func TestExtractAPIServiceRefs(t *testing.T) {
-	port := int32(443)
-	in := &apiregistrationv1.APIService{
-		Spec: apiregistrationv1.APIServiceSpec{
-			Service: &apiregistrationv1.ServiceReference{
-				Namespace: "kube-system", Name: "metrics-server",
-				Port: &port,
-			},
-		},
-	}
-	got := extractAPIServiceRefs(in)
-	want := []serviceRef{{Namespace: "kube-system", Name: "metrics-server", Port: 443}}
-	if !slices.Equal(got, want) {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-
-	// Local APIService (no service ref) → no emission.
-	local := &apiregistrationv1.APIService{Spec: apiregistrationv1.APIServiceSpec{Service: nil}}
-	if len(extractAPIServiceRefs(local)) != 0 {
-		t.Errorf("local APIService should yield no refs")
-	}
-}
-
-func TestExtractCRDConversionRefs(t *testing.T) {
-	port := int32(443)
-
-	// Conversion webhook with Service ref → extracted.
-	withSvc := &apiextensionsv1.CustomResourceDefinition{
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Conversion: &apiextensionsv1.CustomResourceConversion{
-				Strategy: apiextensionsv1.WebhookConverter,
-				Webhook: &apiextensionsv1.WebhookConversion{
-					ClientConfig: &apiextensionsv1.WebhookClientConfig{
-						Service: &apiextensionsv1.ServiceReference{
-							Namespace: "kubevirt", Name: "kubevirt-webhook",
-							Port: &port,
-						},
-					},
-				},
-			},
-		},
-	}
-	got := extractCRDConversionRefs(withSvc)
-	want := []serviceRef{{Namespace: "kubevirt", Name: "kubevirt-webhook", Port: 443}}
-	if !slices.Equal(got, want) {
-		t.Errorf("got %+v, want %+v", got, want)
-	}
-
-	// No conversion configured → no refs.
-	noConv := &apiextensionsv1.CustomResourceDefinition{
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{Conversion: nil},
-	}
-	if len(extractCRDConversionRefs(noConv)) != 0 {
-		t.Errorf("CRD without conversion should yield no refs")
-	}
-
-	// Strategy: None → no refs even if webhook block present.
-	noneStrategy := &apiextensionsv1.CustomResourceDefinition{
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Conversion: &apiextensionsv1.CustomResourceConversion{
-				Strategy: apiextensionsv1.NoneConverter,
-			},
-		},
-	}
-	if len(extractCRDConversionRefs(noneStrategy)) != 0 {
-		t.Errorf("CRD with strategy=None should yield no refs")
-	}
-
-	// URL-only conversion webhook → no refs.
-	urlOnly := &apiextensionsv1.CustomResourceDefinition{
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Conversion: &apiextensionsv1.CustomResourceConversion{
-				Strategy: apiextensionsv1.WebhookConverter,
-				Webhook: &apiextensionsv1.WebhookConversion{
-					ClientConfig: &apiextensionsv1.WebhookClientConfig{
-						URL: ptr("https://x"),
-					},
-				},
-			},
-		},
-	}
-	if len(extractCRDConversionRefs(urlOnly)) != 0 {
-		t.Errorf("URL-only conversion webhook should yield no refs")
+func TestDiscoveryToServices_Dedups(t *testing.T) {
+	port := new(int32(443))
+	cfg := &admissionregistrationv1.ValidatingWebhookConfiguration{Webhooks: []admissionregistrationv1.ValidatingWebhook{
+		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "a", Port: port}}},
+		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "b", Port: port}}},
+		{ClientConfig: admissionregistrationv1.WebhookClientConfig{Service: &admissionregistrationv1.ServiceReference{Namespace: "ns", Name: "a", Port: new(int32(8443))}}},
+	}}
+	got := discoveryToServices(context.Background(), cfg)
+	if len(got) != 2 || got[0].Name != "a" || got[1].Name != "b" {
+		t.Errorf("got %v, want one request each for ns/a and ns/b", got)
 	}
 }
 
 // ---- policy builder ----
-
-// podWith returns a Pod matching the standard test selector
-// {app: x} and with containers exposing the given (name, port) pairs.
-func podWith(ns string, namedPorts ...corev1.ContainerPort) corev1.Pod {
-	return corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "p", Labels: map[string]string{"app": "x"}},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{
-			Name:  "c",
-			Ports: namedPorts,
-		}}},
-	}
-}
 
 func TestBuildApiserverReachablePolicy(t *testing.T) {
 	svc := &corev1.Service{
@@ -284,211 +123,82 @@ func TestBuildApiserverReachablePolicy(t *testing.T) {
 	if !maps.Equal(p.Spec.PodSelector.MatchLabels, map[string]string{"app": "webhook"}) {
 		t.Errorf("podSelector matchLabels mismatch: %v", p.Spec.PodSelector.MatchLabels)
 	}
-	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 {
+	if len(p.Spec.Ingress) != 1 || len(p.Spec.Ingress[0].From) != 1 || p.Spec.Ingress[0].From[0].IPBlock == nil {
 		t.Fatalf("unexpected ingress shape: %+v", p.Spec.Ingress)
 	}
-	if p.Spec.Ingress[0].From[0].IPBlock == nil ||
-		p.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("ipBlock CIDR mismatch: %+v", p.Spec.Ingress[0].From[0].IPBlock)
-	}
-	if len(p.Spec.Ingress[0].Ports) != 1 ||
-		p.Spec.Ingress[0].Ports[0].Port.IntValue() != 10250 {
-		t.Errorf("port mismatch: %+v", p.Spec.Ingress[0].Ports)
-	}
 }
 
-func TestBuildApiserverReachablePolicy_CustomCIDR(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
-		},
+func TestBuildApiserverReachablePolicy_PortsAndCIDR(t *testing.T) {
+	svcWith := func(ports ...corev1.ServicePort) *corev1.Service {
+		return &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
+			Spec:       corev1.ServiceSpec{Selector: map[string]string{"app": "x"}, Ports: ports},
+		}
 	}
-	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "10.0.0.0/8")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
+	numeric := func(port, target int32) corev1.ServicePort {
+		return corev1.ServicePort{Port: port, TargetPort: intstr.FromInt32(target)}
 	}
-	if p.Spec.Ingress[0].From[0].IPBlock.CIDR != "10.0.0.0/8" {
-		t.Errorf("custom CIDR not honored: got %q", p.Spec.Ingress[0].From[0].IPBlock.CIDR)
+	named := corev1.ServicePort{Port: 443, TargetPort: intstr.FromString("https")}
+	// Selected by {app: x}.
+	pod := func(name string, port int32) corev1.Pod {
+		return corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "p", Labels: map[string]string{"app": "x"}},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Ports: []corev1.ContainerPort{{Name: name, ContainerPort: port}}}}},
+		}
 	}
-}
+	unselected := pod("https", 9999)
+	unselected.Labels = map[string]string{"app": "y"}
 
-func TestBuildApiserverReachablePolicy_EmptyCIDRDefaultsToAll(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
-		},
+	cases := []struct {
+		name           string
+		svc            *corev1.Service
+		pods           []corev1.Pod
+		ports          []int32
+		cidr, wantCIDR string
+		want           []int
+		wantUnresolved bool
+	}{
+		{name: "target_port", svc: svcWith(numeric(443, 10250)), ports: []int32{443}, want: []int{10250}},
+		{name: "custom_cidr", svc: svcWith(numeric(443, 443)), ports: []int32{443}, cidr: "10.0.0.0/8", wantCIDR: "10.0.0.0/8", want: []int{443}},
+		{name: "empty_cidr_is_all", svc: svcWith(numeric(443, 443)), ports: []int32{443}, cidr: "", want: []int{443}},
+		// Ports are emitted in the order passed.
+		{name: "multiple_ports", svc: svcWith(numeric(443, 8443), numeric(8080, 8080)), ports: []int32{443, 8080}, want: []int{8443, 8080}},
+		// cert-manager: `targetPort: webhook-tls` backed by 10250. Allowing
+		// 443 instead would time out admission requests DNAT'd to the pod.
+		{name: "named_target_port_from_pod", svc: svcWith(named), pods: []corev1.Pod{pod("https", 10250)}, ports: []int32{443}, want: []int{10250}},
+		// Only a pod matching both the selector and the port name counts.
+		{name: "named_target_port_across_pods", svc: svcWith(named),
+			pods: []corev1.Pod{unselected, pod("metrics", 9090), pod("https", 8443)}, ports: []int32{443}, want: []int{8443}},
+		// The sentinel makes the caller requeue instead of emitting the wrong port.
+		{name: "named_target_port_no_pod", svc: svcWith(named), ports: []int32{443}, wantUnresolved: true},
+		{name: "named_target_port_wrong_name", svc: svcWith(named), pods: []corev1.Pod{pod("other", 10250)}, ports: []int32{443}, wantUnresolved: true},
+		// A discovery port the Service doesn't declare passes through.
+		{name: "port_not_in_spec", svc: svcWith(numeric(443, 443)), ports: []int32{8443}, want: []int{8443}},
 	}
-	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if p.Spec.Ingress[0].From[0].IPBlock.CIDR != "0.0.0.0/0" {
-		t.Errorf("empty CIDR should default to 0.0.0.0/0, got %q", p.Spec.Ingress[0].From[0].IPBlock.CIDR)
-	}
-}
-
-func TestBuildApiserverReachablePolicy_MultiplePorts(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports: []corev1.ServicePort{
-				{Port: 443, TargetPort: intstr.FromInt32(8443)},
-				{Port: 8080, TargetPort: intstr.FromInt32(8080)},
-			},
-		},
-	}
-	p, err := buildApiserverReachablePolicy(svc, nil, []int32{443, 8080}, "0.0.0.0/0")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if len(p.Spec.Ingress[0].Ports) != 2 {
-		t.Fatalf("expected 2 ports, got %d", len(p.Spec.Ingress[0].Ports))
-	}
-	// Ports are emitted in the order passed; both targetPorts resolved.
-	if p.Spec.Ingress[0].Ports[0].Port.IntValue() != 8443 {
-		t.Errorf("first port targetPort mismatch: %v", p.Spec.Ingress[0].Ports[0].Port)
-	}
-	if p.Spec.Ingress[0].Ports[1].Port.IntValue() != 8080 {
-		t.Errorf("second port targetPort mismatch: %v", p.Spec.Ingress[0].Ports[1].Port)
-	}
-}
-
-// The cert-manager case: `targetPort: webhook-tls` backed by containerPort
-// 10250. The policy must allow 10250, not the Service-side 443, or admission
-// requests DNAT'd to the pod time out.
-func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedFromPod(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports: []corev1.ServicePort{
-				{Port: 443, TargetPort: intstr.FromString("webhook-tls")},
-			},
-		},
-	}
-	pod := podWith("ns", corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250})
-
-	p, err := buildApiserverReachablePolicy(svc, []corev1.Pod{pod}, []int32{443}, "0.0.0.0/0")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := p.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
-		t.Errorf("named targetPort 'webhook-tls' should resolve to pod containerPort 10250, got %d", got)
-	}
-}
-
-// No backing pod yet, or no matching containerPort name: the sentinel error
-// makes the caller requeue instead of emitting the wrong port.
-func TestBuildApiserverReachablePolicy_NamedTargetPortUnresolvableReturnsError(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports: []corev1.ServicePort{
-				{Port: 443, TargetPort: intstr.FromString("webhook-tls")},
-			},
-		},
-	}
-
-	// Case A: no pods at all.
-	_, err := buildApiserverReachablePolicy(svc, nil, []int32{443}, "0.0.0.0/0")
-	if !errors.Is(err, errNamedPortUnresolvable) {
-		t.Errorf("no pods → err = %v, want errNamedPortUnresolvable", err)
-	}
-
-	// Case B: matching pod exists but its containerPort name doesn't
-	// match what the Service declared. Still unresolvable.
-	wrongName := podWith("ns", corev1.ContainerPort{Name: "other", ContainerPort: 10250})
-	_, err = buildApiserverReachablePolicy(svc, []corev1.Pod{wrongName}, []int32{443}, "0.0.0.0/0")
-	if !errors.Is(err, errNamedPortUnresolvable) {
-		t.Errorf("wrong containerPort name → err = %v, want errNamedPortUnresolvable", err)
-	}
-}
-
-// Only one of several pods matches both the selector and the port name.
-func TestBuildApiserverReachablePolicy_NamedTargetPortResolvedAcrossMultiplePods(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports: []corev1.ServicePort{
-				{Port: 443, TargetPort: intstr.FromString("https")},
-			},
-		},
-	}
-	// Pod with wrong app label — should be skipped (selector mismatch).
-	noMatchSelector := corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "other", Labels: map[string]string{"app": "y"}},
-		Spec: corev1.PodSpec{Containers: []corev1.Container{{
-			Name:  "c",
-			Ports: []corev1.ContainerPort{{Name: "https", ContainerPort: 9999}},
-		}}},
-	}
-	// Pod with matching selector but wrong containerPort name.
-	noMatchPortName := podWith("ns", corev1.ContainerPort{Name: "metrics", ContainerPort: 9090})
-	// The right one.
-	right := podWith("ns", corev1.ContainerPort{Name: "https", ContainerPort: 8443})
-	right.Name = "right"
-
-	p, err := buildApiserverReachablePolicy(svc, []corev1.Pod{noMatchSelector, noMatchPortName, right}, []int32{443}, "0.0.0.0/0")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if got := p.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8443 {
-		t.Errorf("expected port 8443 from matching pod, got %d", got)
-	}
-}
-
-func TestBuildApiserverReachablePolicy_ServicePortNotInSpec(t *testing.T) {
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "ns"},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": "x"},
-			Ports:    []corev1.ServicePort{{Port: 443, TargetPort: intstr.FromInt32(443)}},
-		},
-	}
-	// Discovery says port 8443 but Service only declares 443. Pass the
-	// discovery port through (kube-proxy DNAT will fail anyway since
-	// 8443 maps nowhere, but emitting the policy leaves a breadcrumb).
-	p, err := buildApiserverReachablePolicy(svc, nil, []int32{8443}, "0.0.0.0/0")
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if p.Spec.Ingress[0].Ports[0].Port.IntValue() != 8443 {
-		t.Errorf("unknown discovery port should pass through, got %v", p.Spec.Ingress[0].Ports[0].Port)
-	}
-}
-
-// ---- name + naming ----
-
-func TestApiserverReachablePolicyName_ShapeAndUniqueness(t *testing.T) {
-	a := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "webhook", Namespace: "ns-a"}}
-	b := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "webhook", Namespace: "ns-b"}}
-
-	na := apiserverReachablePolicyName(a)
-	nb := apiserverReachablePolicyName(b)
-	if na == nb {
-		t.Errorf("same-name Services in different NSes should produce different policy names (got %q == %q)", na, nb)
-	}
-	if len(na) > 63 {
-		t.Errorf("policy name %q exceeds K8s 63-char limit", na)
-	}
-	if !strings.HasPrefix(na, "kube-vnet.ext.apiserver.webhook-") {
-		t.Errorf("policy name shape unexpected: %q", na)
-	}
-}
-
-func TestApiserverReachablePolicyName_LongServiceTruncates(t *testing.T) {
-	longName := "this-is-a-very-very-long-service-name-that-exceeds-the-K8s-name-limit"
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: longName, Namespace: "ns"}}
-	n := apiserverReachablePolicyName(svc)
-	if len(n) > 63 {
-		t.Errorf("policy name %q exceeds K8s 63-char limit", n)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p, err := buildApiserverReachablePolicy(c.svc, c.pods, c.ports, c.cidr)
+			if c.wantUnresolved {
+				if !errors.Is(err, errNamedPortUnresolvable) {
+					t.Fatalf("err = %v, want errNamedPortUnresolvable", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+			wantCIDR := cmp.Or(c.wantCIDR, "0.0.0.0/0")
+			if got := p.Spec.Ingress[0].From[0].IPBlock.CIDR; got != wantCIDR {
+				t.Errorf("CIDR = %q, want %q", got, wantCIDR)
+			}
+			var got []int
+			for _, pp := range p.Spec.Ingress[0].Ports {
+				got = append(got, pp.Port.IntValue())
+			}
+			if !slices.Equal(got, c.want) {
+				t.Errorf("ports = %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
@@ -515,18 +225,6 @@ func TestApiserverReachableOptedIn(t *testing.T) {
 
 // ---- Reconcile ----
 
-// reconcileApiserverReachable runs one reconcile of Service ns/name against
-// objs and returns the client.
-func reconcileApiserverReachable(t *testing.T, ns, name string, objs ...client.Object) client.Client {
-	t.Helper()
-	c := autoAllowClient(t, objs...)
-	r := &ApiserverReachableReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil), Recorder: &fakeRecorder{}}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Namespace: ns, Name: name}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	return c
-}
-
 // optedInService returns a Service annotated apiserver-reachable.
 func optedInService(ns, name string) *corev1.Service {
 	return &corev1.Service{
@@ -541,34 +239,18 @@ func optedInService(ns, name string) *corev1.Service {
 	}
 }
 
-func TestApiserverReachableReconcile_AppliesPolicy(t *testing.T) {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
-	c := reconcileApiserverReachable(t, "ns", "webhook", ns, optedInService("ns", "webhook"))
-	if got := listPolicies(t, c, "ns"); len(got) != 1 {
-		t.Errorf("got %d policies, want 1", len(got))
-	}
-}
-
 // The apiserver dials an ExternalName Service's DNS target, not its pods, so
 // a stray selector must not produce a policy for them.
 func TestApiserverReachableReconcile_ExternalName_NoPolicy(t *testing.T) {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
 	s := optedInService("ns", "webhook")
 	s.Spec.Type = corev1.ServiceTypeExternalName
 	s.Spec.ExternalName = "webhook.example.com"
-	c := reconcileApiserverReachable(t, "ns", "webhook", ns, s)
+	c := autoAllowClient(t, mkNamespace("ns", nil), s)
+	r := &ApiserverReachableReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}
+	if err := reconcileName(t, r.Reconcile, "ns", "webhook"); err != nil {
+		t.Fatal(err)
+	}
 	if got := listPolicies(t, c, "ns"); len(got) != 0 {
 		t.Errorf("got %d policies for an ExternalName Service, want 0", len(got))
 	}
 }
-
-// NamespaceLifecycle admission rejects creates in a terminating namespace, so
-// applying there would only fail and retry until the namespace is gone.
-func TestApiserverReachableReconcile_TerminatingNamespace_NoApply(t *testing.T) {
-	c := reconcileApiserverReachable(t, "ns", "webhook", terminatingNamespace("ns"), optedInService("ns", "webhook"))
-	if got := listPolicies(t, c, "ns"); len(got) != 0 {
-		t.Errorf("applied %d policies into a terminating namespace", len(got))
-	}
-}
-
-func ptr[T any](v T) *T { return &v }
