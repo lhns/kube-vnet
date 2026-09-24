@@ -115,7 +115,7 @@ Home namespace is always included. Foreign pods use the prefixed label form (`ku
 | `kube-vnet/apiserver-reachable: "true"` | Service | Opt in to the apiserver auto-allow when no webhook/APIService declares it |
 | `kube-vnet/network-max-wait: "30s"` | Pod | Hold the app until every node has applied its NetworkPolicy rules, at most this long ([network wait](docs/reference/labels-and-annotations.md#kube-vnetnetwork-max-wait)) |
 
-On kube-router, when the network wait releases, the vnet rules are live or follow within milliseconds. On Calico and Cilium the release is a strong hint that they are live, not a proof, and can come up to ~0.5 s later because those CNIs drop rather than refuse. Measured per CNI in [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
+On kube-router the network wait releases when the vnet rules are live or within milliseconds of it; on Calico and Cilium the release is a strong hint, not a proof ([measured per CNI](docs/adr/0045-network-wait-for-opted-in-pods.md)).
 
 ### The NetworkPolicies the operator creates
 
