@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // AnnotationDisabled, when set to "true" on a Namespace, opts that namespace
@@ -79,4 +82,14 @@ func (f *NamespaceFilter) IsManaged(ns *corev1.Namespace) bool {
 		return false
 	}
 	return true
+}
+
+// Manages reads the namespace name through c and reports IsManaged; a missing
+// namespace is not managed.
+func (f *NamespaceFilter) Manages(ctx context.Context, c client.Reader, name string) (bool, error) {
+	ns := &corev1.Namespace{}
+	if err := c.Get(ctx, client.ObjectKey{Name: name}, ns); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	return f.IsManaged(ns), nil
 }

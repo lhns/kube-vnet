@@ -8,9 +8,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -72,16 +72,16 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	// The status as fetched, before setBindingReady changes it.
 	stored := b.Status.DeepCopy()
+	notReady := func(reason, msg string, args ...any) (ctrl.Result, error) {
+		setBindingReady(b, metav1.ConditionFalse, reason, fmt.Sprintf(msg, args...))
+		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+	}
 
 	// Namespace excluded → nothing to do, but reflect that on the binding.
-	bns := &corev1.Namespace{}
-	if err := r.Get(ctx, client.ObjectKey{Name: b.Namespace}, bns); err != nil && !apierrors.IsNotFound(err) {
+	if managed, err := r.NSFilter.Manages(ctx, r.Client, b.Namespace); err != nil {
 		return ctrl.Result{}, err
-	}
-	if bns.Name == "" || !r.NSFilter.IsManaged(bns) {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingNamespaceExcluded,
-			fmt.Sprintf("namespace %q is excluded by the operator", b.Namespace))
-		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+	} else if !managed {
+		return notReady(ReasonBindingNamespaceExcluded, "namespace %q is excluded by the operator", b.Namespace)
 	}
 
 	// Validate direction.
@@ -90,9 +90,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		dirVal = string(DirectionBoth)
 	}
 	if _, ok := ParseBareDirection(dirVal); !ok {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingInvalidDirection,
-			fmt.Sprintf("spec.direction %q is not one of both, ingress, egress, none", dirVal))
-		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		return notReady(ReasonBindingInvalidDirection, "spec.direction %q is not one of both, ingress, egress, none", dirVal)
 	}
 
 	// Locate target VirtualNetwork.
@@ -100,31 +98,24 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	vnetKey := bindingTarget(b, r.OperatorNamespace)
 	if err := r.Get(ctx, vnetKey, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
-			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotJoinable,
-				fmt.Sprintf("VirtualNetwork %s/%s does not exist", vnetKey.Namespace, vnetKey.Name))
-			return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+			return notReady(ReasonBindingVNetNotJoinable, "VirtualNetwork %s/%s does not exist", vnetKey.Namespace, vnetKey.Name)
 		}
 		return ctrl.Result{}, err
 	}
 	if !vnet.DeletionTimestamp.IsZero() {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetTerminating,
-			fmt.Sprintf("VirtualNetwork %s/%s is being deleted", vnet.Namespace, vnet.Name))
-		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		return notReady(ReasonBindingVNetTerminating, "VirtualNetwork %s/%s is being deleted", vnet.Namespace, vnet.Name)
 	}
 
 	// The vnet reconciler does not serve a vnet whose home namespace is
 	// unmanaged (system vnets exempt, as there), so no pod is a member of it
 	// whatever resolution stamps. The binding's own namespace was checked above.
 	if vnet.Labels[LabelManagedBy] != LabelManagedByValue && vnet.Namespace != b.Namespace {
-		home := &corev1.Namespace{}
-		if err := r.Get(ctx, client.ObjectKey{Name: vnet.Namespace}, home); err != nil && !apierrors.IsNotFound(err) {
+		if managed, err := r.NSFilter.Manages(ctx, r.Client, vnet.Namespace); err != nil {
 			return ctrl.Result{}, err
-		}
-		if home.Name == "" || !r.NSFilter.IsManaged(home) {
-			setBindingReady(b, metav1.ConditionFalse, ReasonBindingHomeNamespaceExcluded,
-				fmt.Sprintf("VirtualNetwork %s/%s is not served: its home namespace %q is excluded by the operator",
-					vnet.Namespace, vnet.Name, vnet.Namespace))
-			return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		} else if !managed {
+			return notReady(ReasonBindingHomeNamespaceExcluded,
+				"VirtualNetwork %s/%s is not served: its home namespace %q is excluded by the operator",
+				vnet.Namespace, vnet.Name, vnet.Namespace)
 		}
 	}
 
@@ -134,17 +125,15 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, err
 	}
 	if !allowed {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotJoinable,
-			fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q; its owner can add it to spec.allowedNamespaces",
-				vnet.Namespace, vnet.Name, b.Namespace))
-		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		return notReady(ReasonBindingVNetNotJoinable,
+			"VirtualNetwork %s/%s does not permit namespace %q; its owner can add it to spec.allowedNamespaces",
+			vnet.Namespace, vnet.Name, b.Namespace)
 	}
 
 	// Evaluate the binding's podSelector against pods in the binding's namespace.
 	sel, err := metav1.LabelSelectorAsSelector(&b.Spec.PodSelector)
 	if err != nil {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingInvalidSelector, err.Error())
-		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
+		return notReady(ReasonBindingInvalidSelector, "%s", err.Error())
 	}
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(b.Namespace), client.MatchingLabelsSelector{Selector: sel}); err != nil {
@@ -212,7 +201,7 @@ func isStampedMember(pod *corev1.Pod, stampKey string) bool {
 }
 
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {
-	upsertCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
+	meta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }
 
 func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -240,57 +229,38 @@ func (r *VirtualNetworkBindingReconciler) SetupWithManager(mgr ctrl.Manager) err
 
 // bindingsInNamespaceOf enqueues every binding in the changed pod's namespace.
 func (r *VirtualNetworkBindingReconciler) bindingsInNamespaceOf(ctx context.Context, obj client.Object) []reconcile.Request {
-	ns := obj.GetNamespace()
-	var bindings vnetv1alpha1.VirtualNetworkBindingList
-	if err := r.List(ctx, &bindings, client.InNamespace(ns)); err != nil {
-		return nil
-	}
-	out := make([]reconcile.Request, 0, len(bindings.Items))
-	for i := range bindings.Items {
-		out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
-			Namespace: bindings.Items[i].Namespace, Name: bindings.Items[i].Name,
-		}})
-	}
-	return out
+	return r.bindingRequests(ctx, nil, client.InNamespace(obj.GetNamespace()))
 }
 
 // nsToBindings enqueues the bindings in the changed namespace and those whose
 // target vnet lives there.
 func (r *VirtualNetworkBindingReconciler) nsToBindings(ctx context.Context, obj client.Object) []reconcile.Request {
 	ns := obj.GetName()
-	var bindings vnetv1alpha1.VirtualNetworkBindingList
-	if err := r.List(ctx, &bindings); err != nil {
-		return nil
-	}
-	out := []reconcile.Request{}
-	for i := range bindings.Items {
-		b := &bindings.Items[i]
-		if b.Namespace == ns || bindingTarget(b, r.OperatorNamespace).Namespace == ns {
-			out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: b.Namespace, Name: b.Name,
-			}})
-		}
-	}
-	return out
+	return r.bindingRequests(ctx, func(b *vnetv1alpha1.VirtualNetworkBinding) bool {
+		return b.Namespace == ns || bindingTarget(b, r.OperatorNamespace).Namespace == ns
+	})
 }
 
 // vnetToBindings enqueues every binding that targets the changed vnet.
 func (r *VirtualNetworkBindingReconciler) vnetToBindings(ctx context.Context, obj client.Object) []reconcile.Request {
-	v, ok := obj.(*vnetv1alpha1.VirtualNetwork)
-	if !ok {
-		return nil
-	}
+	return r.bindingRequests(ctx, func(b *vnetv1alpha1.VirtualNetworkBinding) bool {
+		return bindingTarget(b, r.OperatorNamespace) == client.ObjectKeyFromObject(obj)
+	})
+}
+
+// bindingRequests returns a request per binding listed with opts that passes
+// keep (all if keep is nil).
+func (r *VirtualNetworkBindingReconciler) bindingRequests(
+	ctx context.Context, keep func(*vnetv1alpha1.VirtualNetworkBinding) bool, opts ...client.ListOption,
+) []reconcile.Request {
 	var bindings vnetv1alpha1.VirtualNetworkBindingList
-	if err := r.List(ctx, &bindings); err != nil {
+	if err := r.List(ctx, &bindings, opts...); err != nil {
 		return nil
 	}
-	out := []reconcile.Request{}
+	var out []reconcile.Request
 	for i := range bindings.Items {
-		b := &bindings.Items[i]
-		if bindingTarget(b, r.OperatorNamespace) == client.ObjectKeyFromObject(v) {
-			out = append(out, reconcile.Request{NamespacedName: types.NamespacedName{
-				Namespace: b.Namespace, Name: b.Name,
-			}})
+		if b := &bindings.Items[i]; keep == nil || keep(b) {
+			out = append(out, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(b)})
 		}
 	}
 	return out
