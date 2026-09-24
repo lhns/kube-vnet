@@ -110,7 +110,7 @@ func TestUpdateStatus_WritesWhenChanged(t *testing.T) {
 			name:    "condition reason changed",
 			members: base,
 			mutate: func(v *vnetv1alpha1.VirtualNetwork) {
-				setDegraded(v, metav1.ConditionTrue, ReasonInvalidJoiners, "1 invalid joiner: home/bad:UnknownDirection")
+				setDegraded(v, metav1.ConditionTrue, ReasonInvalidJoiners, "1 invalid joiner: home/bad:InvalidDirection")
 			},
 		},
 	} {

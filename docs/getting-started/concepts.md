@@ -72,7 +72,7 @@ The join label *value* declares which directions a pod participates in. Recogniz
 
 The legacy `"true"`, `"false"`, and empty-string aliases were dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md). Use `both`/`ingress`/`egress`/`none` exclusively.
 
-Unknown values (typos like `"bothh"`) are rejected at admission by the chart's `ValidatingAdmissionPolicy` (Kubernetes ≥ 1.30). Where that policy is absent, the label is ignored and reported: an `InvalidJoinLabelDirection` event on the pod, and `Degraded=True, reason=InvalidJoiners` (per-pod reason `UnknownDirection`) on the vnet. Nothing is silently allowed.
+Unknown values (typos like `"bothh"`) are rejected at admission by the chart's `ValidatingAdmissionPolicy` (Kubernetes ≥ 1.30). Where that policy is absent, the label is ignored and reported: an `InvalidDirection` event on the pod, and `Degraded=True, reason=InvalidJoiners` (per-pod reason `InvalidDirection`) on the vnet. Nothing is silently allowed.
 
 ### The `default-*` variants (baseline tiers only)
 
@@ -168,7 +168,7 @@ spec:
 Behavior:
 
 - The selector is **scoped to the binding's own namespace**. There are no cross-namespace bindings.
-- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
+- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=VirtualNetworkNotJoinable`.
 - A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert. The binding's status is `Ready=False, Reason=NamespaceExcluded`.
 - No per-binding policy is emitted: selected pods get the same stamp as label-driven members and are covered by the regular membership policy ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 

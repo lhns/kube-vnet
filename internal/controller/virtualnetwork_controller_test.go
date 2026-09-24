@@ -76,7 +76,7 @@ func TestDiscoverMembers_EligibilityAndDiagnostics(t *testing.T) {
 	}
 	wantInvalid := map[string]string{
 		"off/stale":    ReasonNamespaceExcluded,
-		"allowed/typo": ReasonUnknownDirection,
+		"allowed/typo": ReasonInvalidDirection,
 	}
 	if !reflect.DeepEqual(gotInvalid, wantInvalid) {
 		t.Errorf("invalid = %v, want %v", gotInvalid, wantInvalid)

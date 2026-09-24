@@ -31,7 +31,10 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// Condition reasons surfaced on VirtualNetwork.status.conditions.
+// Condition reasons surfaced on VirtualNetwork.status.conditions. Some also
+// name Events: InvalidDirection is the pod Event for a join label whose value
+// is not a direction (where the direction-value VAP is absent), and
+// NamespaceExcluded the pod Event for a join label in an unmanaged namespace.
 const (
 	ReasonPoliciesGenerated     = "PoliciesGenerated"
 	ReasonNoMembers             = "NoMembers"
@@ -41,7 +44,7 @@ const (
 	ReasonInvalidName           = "InvalidName"
 	ReasonNamespaceNotAllowed   = "NamespaceNotAllowed"
 	ReasonNamespaceExcluded     = "NamespaceExcluded"
-	ReasonUnknownDirection      = "UnknownDirection"
+	ReasonInvalidDirection      = "InvalidDirection"
 	ReasonNoIssues              = "NoIssues"
 )
 
@@ -197,7 +200,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				"NetworkPolicy %s for VirtualNetwork %s/%s could not be applied in this namespace: %v. "+
 					"Until this is fixed, member pods here receive no traffic from the vnet's other members.",
 				p.Name, vnet.Namespace, vnet.Name, err)
-			applyErrs = append(applyErrs, fmt.Errorf("apply %s/%s: %w", p.Namespace, p.Name, err))
+			applyErrs = append(applyErrs, fmt.Errorf("namespace %s: %w", p.Namespace, err))
 			failedNS[p.Namespace] = true
 			continue
 		}
@@ -385,7 +388,7 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 			reason := ""
 			for _, v := range userVals {
 				if _, ok := ParseBareDirection(v); !ok {
-					reason = ReasonUnknownDirection
+					reason = ReasonInvalidDirection
 				}
 			}
 			if reason == "" {

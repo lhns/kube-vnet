@@ -22,13 +22,15 @@ import (
 
 // Condition reasons surfaced on VirtualNetworkBinding.status.conditions.
 const (
-	ReasonBindingPodsAttached        = "PodsAttached"
-	ReasonBindingNoPodsMatch         = "NoPodsMatch"
-	ReasonBindingVNetNotFound        = "VirtualNetworkNotFound"
-	ReasonBindingNamespaceNotAllowed = "NamespaceNotAllowed"
-	ReasonBindingNamespaceExcluded   = "NamespaceExcluded"
-	ReasonBindingUnknownDirection    = "UnknownDirection"
-	ReasonBindingInvalidSelector     = "InvalidSelector"
+	ReasonBindingPodsAttached = "PodsAttached"
+	ReasonBindingNoPodsMatch  = "NoPodsMatch"
+	// The target vnet does not exist or does not permit the binding's
+	// namespace: the same reason as the binding's Event, the message says
+	// which.
+	ReasonBindingVNetNotJoinable   = ReasonVirtualNetworkNotJoinable
+	ReasonBindingNamespaceExcluded = "NamespaceExcluded"
+	ReasonBindingInvalidDirection  = ReasonInvalidDirection
+	ReasonBindingInvalidSelector   = "InvalidSelector"
 	// The selector matches pods, but resolution made none of them a member
 	// (a baseline or pod-label conflict, direction none, ...).
 	ReasonBindingNoPodsAttached = "NoPodsAttached"
@@ -88,8 +90,8 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		dirVal = string(DirectionBoth)
 	}
 	if _, ok := ParseBareDirection(dirVal); !ok {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingUnknownDirection,
-			fmt.Sprintf("unknown direction %q", dirVal))
+		setBindingReady(b, metav1.ConditionFalse, ReasonBindingInvalidDirection,
+			fmt.Sprintf("spec.direction %q is not one of both, ingress, egress, none", dirVal))
 		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}
 
@@ -98,8 +100,8 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	vnetKey := bindingTarget(b, r.OperatorNamespace)
 	if err := r.Get(ctx, vnetKey, vnet); err != nil {
 		if apierrors.IsNotFound(err) {
-			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotFound,
-				fmt.Sprintf("VirtualNetwork %s/%s not found", vnetKey.Namespace, vnetKey.Name))
+			setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotJoinable,
+				fmt.Sprintf("VirtualNetwork %s/%s does not exist", vnetKey.Namespace, vnetKey.Name))
 			return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 		}
 		return ctrl.Result{}, err
@@ -132,8 +134,8 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, err
 	}
 	if !allowed {
-		setBindingReady(b, metav1.ConditionFalse, ReasonBindingNamespaceNotAllowed,
-			fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q",
+		setBindingReady(b, metav1.ConditionFalse, ReasonBindingVNetNotJoinable,
+			fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q; its owner can add it to spec.allowedNamespaces",
 				vnet.Namespace, vnet.Name, b.Namespace))
 		return ctrl.Result{}, r.writeStatus(ctx, b, stored, nil)
 	}

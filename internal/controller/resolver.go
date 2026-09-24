@@ -32,8 +32,8 @@ import (
 // Every method only reads, so Reader may be a cache-backed client.Reader.
 type Resolver struct {
 	Reader client.Reader
-	// Recorder surfaces VirtualNetworkNotJoinable and
-	// InvalidJoinLabelDirection Warning Events. Optional; nil disables the
+	// Recorder surfaces VirtualNetworkNotJoinable and InvalidDirection
+	// Warning Events. Optional; nil disables the
 	// diagnostic. The webhook passes nil — admission is not a place to
 	// write to the apiserver, and the reconciler emits the same Events
 	// moments later on its own pass.
@@ -127,17 +127,17 @@ func (r *Resolver) buildLayers(ctx context.Context, pod *corev1.Pod) ([]Resoluti
 func (r *Resolver) notJoinableNote(ctx context.Context, key VnetKey, podNS string) string {
 	homeNS, name, ok := splitVnetKey(key)
 	if !ok {
-		return fmt.Sprintf("malformed virtual network key %q", key)
+		return fmt.Sprintf("%q is not a valid VirtualNetwork reference", key)
 	}
 	var v vnetv1alpha1.VirtualNetwork
 	if err := r.Reader.Get(ctx, client.ObjectKey{Namespace: homeNS, Name: name}, &v); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("VirtualNetwork %q does not exist in namespace %q", name, homeNS)
+			return fmt.Sprintf("VirtualNetwork %s does not exist", key.Display())
 		}
-		return fmt.Sprintf("could not read VirtualNetwork %s/%s: %v", homeNS, name, err)
+		return fmt.Sprintf("VirtualNetwork %s could not be read to tell why (%v)", key.Display(), err)
 	}
-	return fmt.Sprintf("VirtualNetwork %s/%s does not permit namespace %q (spec.allowedNamespaces)",
-		homeNS, name, podNS)
+	return fmt.Sprintf("VirtualNetwork %s does not permit namespace %q; its owner can add it to spec.allowedNamespaces",
+		key.Display(), podNS)
 }
 
 // filterPermittedRules drops rules naming vnets the pod's namespace may not
@@ -156,8 +156,8 @@ func (r *Resolver) filterPermittedRules(ctx context.Context, rules []ResolutionR
 			if r.Recorder != nil && rule.Owner != nil {
 				r.Recorder.Eventf(rule.Owner, nil, corev1.EventTypeWarning,
 					ReasonVirtualNetworkNotJoinable, "Resolve",
-					"pod namespace %q cannot join %q (from %s): %s%s%s",
-					podNS, rule.Vnet, rule.Source,
+					"cannot join VirtualNetwork %s (from %s): %s.%s%s",
+					rule.Vnet.Display(), rule.Source,
 					r.notJoinableNote(ctx, rule.Vnet, podNS), notJoinableHint(rule.Ref), rule.Hint)
 			}
 			continue
@@ -292,9 +292,9 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			// direction-value VAP (Kubernetes < 1.30, or disabled).
 			if r.Recorder != nil {
 				r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning,
-					ReasonInvalidJoinLabelDirection, "Resolve",
-					"join label %q has an unrecognized direction value %q; must be one of "+
-						"both, ingress, egress, none (ADR 0030). The label is ignored until fixed.",
+					ReasonInvalidDirection, "Resolve",
+					"join label %s has the value %q, which is not a direction; use both, ingress, egress "+
+						"or none. The label is ignored until fixed.",
 					k, v)
 			}
 			continue
@@ -302,7 +302,7 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 		out = append(out, ResolutionRule{
 			Vnet:      VnetKey(CanonicalSuffix(suffix, pod.Namespace)),
 			Direction: dir,
-			Source:    "<pod-label>",
+			Source:    "pod label " + k,
 			// No Ref: a join label carries no namespace field to be wrong
 			// about. The Event still lands on the pod that asked for the
 			// unjoinable vnet.

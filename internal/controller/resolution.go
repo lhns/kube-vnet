@@ -16,11 +16,21 @@ import (
 // Resolve treats VnetKey as opaque; callers compute the key for each rule.
 type VnetKey string
 
+// Display renders k for users as `<homeNS>/<name>`, the form every message
+// uses; the cluster singleton is `cluster`.
+func (k VnetKey) Display() string {
+	homeNS, name, ok := splitVnetKey(k)
+	if !ok || homeNS == "" {
+		return string(k)
+	}
+	return homeNS + "/" + name
+}
+
 // ResolutionRule is one row of the inheritance lattice — a single baseline
 // membership, binding, or pod-label entry that contributes to the effective
 // state. Source names the contributing object (e.g.
-// "VirtualNetworkBinding/<name>" or "<pod-label>"); it appears in conflict
-// reports.
+// "VirtualNetworkBinding/<name>" or "pod label kube-vnet/net.<x>"); it
+// appears in conflict reports.
 type ResolutionRule struct {
 	Vnet      VnetKey
 	Direction Direction
@@ -76,6 +86,19 @@ func (s ResolutionScope) String() string {
 		return "pod"
 	}
 	return fmt.Sprintf("scope-%d", int(s))
+}
+
+// describe names the tier's sources for users.
+func (s ResolutionScope) describe() string {
+	switch s {
+	case ScopeClusterBaseline:
+		return "the ClusterVirtualNetworkBaseline"
+	case ScopeNamespaceBaseline:
+		return "this namespace's VirtualNetworkBaseline"
+	case ScopePod:
+		return "a binding or pod label"
+	}
+	return s.String()
 }
 
 // ResolutionLayer is all rules from a single scope. The resolver iterates

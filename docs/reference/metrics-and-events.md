@@ -147,7 +147,7 @@ Repeated `PolicyRestored` Events (someone fighting the operator) have no metric 
 
 ## Kubernetes Events
 
-Events are best-effort notifications with the apiserver's default TTL (1 hour), not an audit log. Status conditions are the source of truth for current state.
+Events are best-effort notifications with the apiserver's default TTL (1 hour), not an audit log. Status conditions are the source of truth for current state, but a vnet's conditions live in its home namespace. Someone who can read only a member namespace sees the Events on their own pods, bindings, Services and NetworkPolicies, which is why every failure also emits one there ([troubleshooting](../guides/troubleshooting.md#i-can-only-see-my-own-namespace)).
 
 Every reason the operator emits:
 
@@ -167,13 +167,13 @@ Every reason the operator emits:
 | `VirtualNetworkNotJoinable` | Warning | the Pod, `VirtualNetworkBinding` or `VirtualNetworkBaseline` that declared the membership; the Pod for a `ClusterVirtualNetworkBaseline` rule (an Event on a cluster-scoped object would land in `default`, naming the pod's namespace there) | `kube-vnet-resolution` | A referenced vnet can't be joined: it doesn't exist at the resolved namespace (a bare `kube-vnet/net.<X>` label with no local vnet `<X>` gets a hint to use the prefixed form), or its `spec.allowedNamespaces` doesn't permit the pod's namespace. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md). |
 | `ResolutionConflict` | Warning | Pod | `kube-vnet-resolution` | Rules in the same tier (e.g. a binding and a pod label) gave different directions for one vnet. They are intersected; the message names the sources and the result, and says so when the pod ends up not a member. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
 | `OverrideRejected` | Warning | Pod | `kube-vnet-resolution` | A lower tier tried to change a direction an upper tier pinned with a bare value (e.g. a pod label against a cluster baseline's `both`). The pinned value stays; use a `default-*` value upstream to allow overrides. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
-| `InvalidJoinLabelDirection` | Warning | Pod | `kube-vnet-resolution` | A `kube-vnet/net.*` label has a value other than `both`, `ingress`, `egress`, `none`. The label is ignored until fixed. Mostly relevant where the join-label `ValidatingAdmissionPolicy` is absent (Kubernetes < 1.30). |
-| `Pending` | Warning | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | An auto-allow policy is held back because a named `targetPort` has no backing pod with a matching `containerPort` name yet. Retried every 30s. |
-| `Skipped` | Normal | Service | `kube-vnet-external-allow` | An externally exposed Service has no `spec.selector`, so no `ext.svc` policy can be derived. |
+| `InvalidDirection` | Warning | Pod | `kube-vnet-resolution` | A `kube-vnet/net.*` label has a value other than `both`, `ingress`, `egress`, `none`. The label is ignored until fixed. Mostly relevant where the join-label `ValidatingAdmissionPolicy` is absent (Kubernetes < 1.30). |
+| `NamedPortUnresolved` | Normal | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | An auto-allow policy is held back because a named `targetPort` has no backing pod with a matching `containerPort` name yet, which is expected while pods start. Retried every 30s; the Event is emitted when the wait starts, not on every retry. |
+| `ServiceHasNoSelector` | Warning | Service | `kube-vnet-external-allow` | An externally exposed Service has no `spec.selector`, so no `ext.svc` policy can be derived and its pods stay blocked. Add a selector or write a NetworkPolicy. |
 | `NetworkWaitSkipped` | Warning | Pod | `kube-vnet-resolution` | The pod has `kube-vnet/network-max-wait` but starts without the wait: the value is not a positive duration, the wait is not enabled, the namespace is not managed, or the webhook did not inject the init container. Same text as the webhook's admission warning, which only the pod's direct creator sees (for a Deployment or Job pod, a controller). Once per pod. |
-| `NamespaceNotManaged` | Warning | Pod | `kube-vnet-resolution` | The pod carries a `kube-vnet/net.*` join label in a namespace kube-vnet does not manage, so the label has no effect. Once per pod; pods there without a join label get nothing. |
+| `NamespaceExcluded` | Warning | Pod | `kube-vnet-resolution` | The pod carries a `kube-vnet/net.*` join label in a namespace kube-vnet does not manage, so the label has no effect. Once per pod; pods there without a join label get nothing. |
 
-In a disabled namespace the operator emits only `NamespaceNotManaged` and `NetworkWaitSkipped`, for pods that explicitly ask for something. `VirtualNetworkNotJoinable` is the one Event on a `VirtualNetworkBinding`; its other state is in its `Ready` condition ([reasons](api.md#ready-condition-1)).
+In a disabled namespace the operator emits only `NamespaceExcluded` and `NetworkWaitSkipped`, for pods that explicitly ask for something. `VirtualNetworkNotJoinable` is the one Event on a `VirtualNetworkBinding`; its other state is in its `Ready` condition ([reasons](api.md#ready-condition-1)).
 
 Status-condition reasons for all CRDs are in [`api.md`](api.md); the constants are the `Reason*` blocks in `internal/controller/virtualnetwork_controller.go` and `virtualnetworkbinding_controller.go`.
 

@@ -22,7 +22,7 @@ import (
 // election uses the deprecated core-v1 recorder. Granting only one of the two
 // means either every operator Event or every leader-election Event is
 // forbidden, and the operator log fills with RBAC errors while the user-facing
-// diagnostics (VirtualNetworkNotJoinable, InvalidJoinLabelDirection, Ready,
+// diagnostics (VirtualNetworkNotJoinable, InvalidDirection, Ready,
 // Degraded, PolicyRestored) silently never appear.
 //
 // envtest does not enforce RBAC, so no envtest-based test can catch this —

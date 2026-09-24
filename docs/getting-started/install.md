@@ -10,7 +10,7 @@ Three install paths, in order of preference: **Helm** (recommended), **`kubectl 
 
 `>= 1.25`. The CRD uses an `x-kubernetes-validations` (CEL) rule for name validation; CEL became Generally Available in 1.25.
 
-On Kubernetes ≥ 1.30 the chart also installs three `ValidatingAdmissionPolicies`: one rejects `kube-vnet/net.*` label values other than `both`, `ingress`, `egress`, `none`; one protects the operator-owned `kube-vnet.system/*` labels; one reserves the system vnet names. Below 1.30 the chart skips them and prints a warning. Invalid join-label values are then still ignored at reconcile time and reported (an `InvalidJoinLabelDirection` event on the pod, `InvalidJoiners` on the vnet), but the operator-owned labels are protected only by drift correction — see [threat model F-02](../security/threat-model.md#7-findings-register).
+On Kubernetes ≥ 1.30 the chart also installs three `ValidatingAdmissionPolicies`: one rejects `kube-vnet/net.*` label values other than `both`, `ingress`, `egress`, `none`; one protects the operator-owned `kube-vnet.system/*` labels; one reserves the system vnet names. Below 1.30 the chart skips them and prints a warning. Invalid join-label values are then still ignored at reconcile time and reported (an `InvalidDirection` event on the pod, `InvalidJoiners` on the vnet), but the operator-owned labels are protected only by drift correction — see [threat model F-02](../security/threat-model.md#7-findings-register).
 
 ### CNI that enforces NetworkPolicy
 

@@ -9,6 +9,7 @@ For the full list of status-condition reasons and what each one means, see [`ref
 ## Index
 
 - [Pod events kube-vnet emits](#pod-events-kube-vnet-emits)
+- [I can only see my own namespace](#i-can-only-see-my-own-namespace)
 - [`kubectl apply` rejected my pod: "must be one of: both, ingress, egress, none"](#kubectl-apply-rejected-my-pod-must-be-one-of-both-ingress-egress-none)
 - [My pod with `kube-vnet/net.X: "true"` (or `""`/`"false"`) stopped working after upgrade](#my-pod-with-kube-vnetnetx-true-or-false-stopped-working-after-upgrade)
 - [My pod has the join label but isn't a member](#my-pod-has-the-join-label-but-isnt-a-member)
@@ -36,11 +37,11 @@ For the full list of status-condition reasons and what each one means, see [`ref
 
 ## Pod events kube-vnet emits
 
-A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidJoinLabelDirection` instead, and rules that disagree about a vnet get `ResolutionConflict` or `OverrideRejected` ([all reasons](../reference/metrics-and-events.md#kubernetes-events)). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
+A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored — on the Pod for a `kube-vnet/net.*` label, on the `VirtualNetworkBinding` or baseline for a ref declared there. It surfaces in `kubectl describe` and via `kubectl get events --field-selector reason=VirtualNetworkNotJoinable -A`. The message tells you which of the cases below applies. A label with an unrecognized direction value gets `InvalidDirection` instead, and rules that disagree about a vnet get `ResolutionConflict` or `OverrideRejected` ([all reasons](../reference/metrics-and-events.md#kubernetes-events)). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) (retirement amendment) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md).
 
-> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. A pod there that carries a `kube-vnet/net.*` label gets one `NamespaceNotManaged` Warning instead, saying the label has no effect; pods without one get nothing.
+> Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. A pod there that carries a `kube-vnet/net.*` label gets one `NamespaceExcluded` Warning instead, saying the label has no effect; pods without one get nothing.
 >
-> Events are **best-effort**. The durable record of a vnet's rejected joiners is always the vnet's own `Degraded`/`InvalidJoiners` condition (`kubectl describe vnet`); reach for that if a pod event didn't land.
+> Events are **best-effort** and expire after an hour. The vnet's own `Degraded`/`InvalidJoiners` condition (`kubectl describe vnet`) keeps the durable record for pods in namespaces the vnet admits, if you can read the vnet's namespace. A pod that asked to join from elsewhere is reported only by its own Event, and resolution re-emits it whenever the pod is re-resolved.
 
 ### Bare label, no local vnet
 
@@ -112,7 +113,7 @@ Or move the pod to a permitted namespace. (The vnet owner has to make the policy
 $ kubectl apply -f mypod.yaml
 The pods "my-pod" is invalid: ValidatingAdmissionPolicy "kube-vnet-join-label-direction"
 denied request: kube-vnet join label values must be one of: both, ingress, egress, none.
-The legacy true/false/empty aliases were removed per ADR 0030.
+The legacy true/false/empty values are no longer accepted.
 ```
 
 **Cause.** Kubernetes ≥ 1.30 with the kube-vnet chart installed runs a `ValidatingAdmissionPolicy` that rejects Pod create/update when any `kube-vnet/net.*` label has an unrecognized value (typo like `bothh`, or an arbitrary string). See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md).
@@ -125,7 +126,7 @@ labels:
   # or `ingress`, `egress`, `none`
 ```
 
-The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the chart doesn't install the VAP (it checks the Kubernetes version). The same typo is then admitted but ignored at reconcile time: the pod gets an `InvalidJoinLabelDirection` event and the vnet `Degraded=True, reason=InvalidJoiners` with per-pod reason `UnknownDirection` — see [Degraded reasons](#degraded-condition-is-true--what-does-each-reason-mean).
+The legacy `true`/`false`/empty-string aliases are no longer accepted (dropped per [ADR 0030](../adr/0030-unified-vnet-membership-with-resolution.md); see the [ADR 0021 2026-05-05 addendum](../adr/0021-direction-modes-on-join-labels.md#addendum-2026-05-05--legacy-truefalseempty-aliases-dropped)). On clusters older than 1.30 the chart doesn't install the VAP (it checks the Kubernetes version). The same typo is then admitted but ignored at reconcile time: the pod gets an `InvalidDirection` event and the vnet `Degraded=True, reason=InvalidJoiners` with per-pod reason `InvalidDirection` — see [Degraded reasons](#degraded-condition-is-true--what-does-each-reason-mean).
 
 ---
 
@@ -145,9 +146,41 @@ labels:
 
 ---
 
+## I can only see my own namespace
+
+Many users can read only their own namespace. From there you can't read a vnet hosted in another namespace, the `cluster` vnet (it lives in the operator's namespace), the Namespace object, or the operator's logs. Everything kube-vnet reports about your workloads lands in your namespace instead:
+
+1. **The pod.** `kubectl describe pod <pod>` lists its Events: `VirtualNetworkNotJoinable`, `InvalidDirection`, `ResolutionConflict`, `OverrideRejected`, `NamespaceExcluded`, `NetworkWaitSkipped` ([what each means](../reference/metrics-and-events.md#kubernetes-events)). Its labels say whether it is a member. `kube-vnet.system/net.<home-ns>.<vnet>=<direction>` means it is (bare `kube-vnet.system/net.cluster` for the `cluster` vnet). No such label while `kube-vnet.system/resolved-generation` is set means resolution decided it is not, and the Events say why.
+
+   ```bash
+   kubectl get pod <pod> -o jsonpath='{.metadata.labels}{"\n"}{.metadata.annotations}{"\n"}'
+   ```
+
+2. **Your namespace's Warnings.** A membership policy that could not be applied here, a baseline that could not be applied (your namespace then has no default-deny), a restored policy, and Service problems all show up here:
+
+   ```bash
+   kubectl get events -n <ns> --field-selector type=Warning --sort-by=.lastTimestamp
+   kubectl get events -n <ns> --field-selector reason=ApplyFailed
+   ```
+
+3. **Your bindings.** `kubectl describe vnb -n <ns> <binding>` shows the binding's `Ready` condition and a `VirtualNetworkNotJoinable` Event if its vnet can't be joined.
+
+4. **The NetworkPolicies in your namespace.** `kube-vnet.base` is the baseline. There is one `kube-vnet.mem.<home-ns>.<vnet>-<hash>` per vnet with members here, and `kube-vnet.ext.*` for auto-allow:
+
+   ```bash
+   kubectl get netpol -n <ns> -l kube-vnet.system/managed-by=kube-vnet
+   kubectl get netpol -n <ns> -l kube-vnet.system/network=<home-ns>.<vnet> -o yaml
+   ```
+
+   A stamped pod with no membership policy here usually means an `ApplyFailed` Event from step 2.
+
+5. **Still stuck?** Send the vnet's owner or a cluster admin the pod, namespace, vnet `<home-ns>/<name>` and the Events above. They can read the vnet's conditions and the operator's logs.
+
+---
+
 ## My pod has the join label but isn't a member
 
-Most common case. Walk through these in order:
+Most common case. Walk through these in order. Steps 2, 3 and 5 read the vnet or the Namespace; if you can't, use [I can only see my own namespace](#i-can-only-see-my-own-namespace).
 
 1. **Did you use the right label form?**
    - Pod in the VirtualNetwork's home namespace → either form works: `kube-vnet/net.<vnet-name>=both` or `kube-vnet/net.<home-ns>.<vnet-name>=both`.
@@ -155,7 +188,7 @@ Most common case. Walk through these in order:
 
    The pod's namespace decides which forms are valid, not the vnet's.
 
-   **Direction value.** The value must be `both`, `ingress`, `egress`, or `none`. An unknown value (e.g. a typo `"bothh"`) is rejected at admission, or — without the VAP — ignored with an `InvalidJoinLabelDirection` pod event.
+   **Direction value.** The value must be `both`, `ingress`, `egress`, or `none`. An unknown value (e.g. a typo `"bothh"`) is rejected at admission, or — without the VAP — ignored with an `InvalidDirection` pod event.
 
    **Another rule disagrees.** If a binding or baseline also names the vnet, the directions combine: same-tier rules intersect (`ingress` and `egress` give no membership), and a baseline's bare value can't be overridden. `kubectl describe pod` shows a `ResolutionConflict` or `OverrideRejected` Warning naming the rules involved.
 
@@ -165,7 +198,7 @@ Most common case. Walk through these in order:
    kubectl describe vnet -n <home-ns> <vnet-name> | grep -A4 Conditions:
    ```
 
-   If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded. Without access to the vnet: a pod with a join label there has a `NamespaceNotManaged` Warning (`kubectl describe pod`).
+   If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded. Without access to the vnet: a pod with a join label there has a `NamespaceExcluded` Warning (`kubectl describe pod`).
 
    Two ways a namespace can be excluded:
    - The operator-level `--disabled-namespaces` flag (default `kube-system`, plus the operator's own namespace).
@@ -559,10 +592,9 @@ Check the `Ready` condition's reason:
 | `HomeNamespaceExcluded` | The target vnet's home namespace is disabled or excluded, so the vnet is not served. | Re-enable the home namespace, or bind to a vnet in a managed namespace. |
 | `VirtualNetworkTerminating` | The target vnet is being deleted. | Recreate the vnet or point the binding elsewhere. |
 | `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
-| `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
-| `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |
+| `VirtualNetworkNotJoinable` | The target vnet does not exist, or its `spec.allowedNamespaces` does not permit the binding's namespace; the message says which. | "does not exist": check the target namespace and name. "does not permit": ask the vnet's owner to add the binding's namespace to `allowedNamespaces`, or move the binding. |
 | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |
-| `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
+| `InvalidDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
 | `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
 
 Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:
@@ -594,7 +626,7 @@ The reason explains what to fix.
 | Reason | Meaning | Fix |
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
-| `InvalidJoiners` | At least one pod in a namespace this vnet admits carries a join label for it that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (namespace disabled). Pods in namespaces the vnet doesn't admit are not listed; they get a `VirtualNetworkNotJoinable` Event in their own namespace. | Fix the value, or remove the join label if the pod shouldn't be a member. |
+| `InvalidJoiners` | At least one pod in a namespace this vnet admits carries a join label for it that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `InvalidDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (namespace disabled). Pods in namespaces the vnet doesn't admit are not listed; they get a `VirtualNetworkNotJoinable` Event in their own namespace. | Fix the value, or remove the join label if the pod shouldn't be a member. |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 

@@ -64,7 +64,7 @@ func TestResolutionEvents_ConflictWarnsOnPod(t *testing.T) {
 		t.Fatalf("ingress ∩ egress must leave the pod out of the vnet, got stamps %v", stamps)
 	}
 	note := only(t, rec, ReasonResolutionConflict)
-	for _, want := range []string{"VirtualNetworkBinding/b=egress", "<pod-label>=ingress", "app.web", "not a member"} {
+	for _, want := range []string{"VirtualNetworkBinding/b=egress", "pod label kube-vnet/net.web=ingress", "app/web", "not a member"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("conflict message %q should mention %q", note, want)
 		}
@@ -88,7 +88,7 @@ func TestResolutionEvents_OverrideRejectedWarnsOnPod(t *testing.T) {
 		t.Fatalf("the pinned value must win, got %q", got)
 	}
 	note := only(t, rec, ReasonOverrideRejected)
-	for _, want := range []string{"pod tier", `"ingress"`, "cluster-baseline tier", `"both"`, "default-*"} {
+	for _, want := range []string{"app/web", "a binding or pod label", `"ingress"`, "the ClusterVirtualNetworkBaseline", `"both"`, "default-*"} {
 		if !strings.Contains(note, want) {
 			t.Errorf("override message %q should mention %q", note, want)
 		}

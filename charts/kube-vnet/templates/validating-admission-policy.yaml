@@ -8,7 +8,7 @@ were dropped per ADR 0030 (and the ADR 0021 2026-05-05 addendum).
 
 Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
 older clusters this template renders nothing; the operator's vnet-status
-`UnknownDirection` reason still catches bad values at reconcile time.
+`InvalidDirection` reason still catches bad values at reconcile time.
 
 See ADR 0027 and ADR 0030.
 */}}
@@ -46,7 +46,7 @@ spec:
         variables.podLabels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           variables.podLabels[k] in variables.validValues)
-      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty aliases were removed per ADR 0030. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+      message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty values are no longer accepted. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

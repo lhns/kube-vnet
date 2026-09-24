@@ -152,7 +152,7 @@ kube-vnet/
                                               (ADR 0041)
 ```
 
-The pod-scoped diagnostics are emitted by the `ResolutionReconciler`: `VirtualNetworkNotJoinable` and `InvalidJoinLabelDirection` through the `Resolver`, `ResolutionConflict` and `OverrideRejected` from the resolution result. The separate `JoinLabelDiagnosticReconciler` was retired (ADR 0027 retirement amendment).
+The pod-scoped diagnostics are emitted by the `ResolutionReconciler`: `VirtualNetworkNotJoinable` and `InvalidDirection` through the `Resolver`, `ResolutionConflict` and `OverrideRejected` from the resolution result, and `NamespaceExcluded` and `NetworkWaitSkipped` once per pod. The separate `JoinLabelDiagnosticReconciler` was retired (ADR 0027 retirement amendment).
 
 ## Code flow
 
@@ -310,11 +310,11 @@ permanently rather than slowly.
 |---|---|---|
 | `VirtualNetworkReconciler` | `NetworkPolicy` (membership), vnet `status` | `VirtualNetwork`, `Pod` (system labels), `NetworkPolicy` (drift), `Namespace` |
 | `NamespaceReconciler` | `NetworkPolicy` (baseline) | `Namespace`, baseline `NetworkPolicy` (drift) |
-| `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` Events on the declaring object; `InvalidJoinLabelDirection`, `ResolutionConflict`, `OverrideRejected` Events on the pod | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
+| `ResolutionReconciler` | `Pod` labels + annotations; `VirtualNetworkNotJoinable` Events on the declaring object; `InvalidDirection`, `ResolutionConflict`, `OverrideRejected`, `NamespaceExcluded`, `NetworkWaitSkipped` Events on the pod | `Pod`, `Namespace` (annotation + labels), `VirtualNetwork`, `ClusterVirtualNetworkBaseline`, `VirtualNetworkBaseline`, `VirtualNetworkBinding` |
 | `SystemVnetReconciler` | `VirtualNetwork` (the `namespace` and `cluster` singletons) | `Namespace`, `VirtualNetwork` (drift) |
 | `VirtualNetworkBindingReconciler` | `VirtualNetworkBinding` `status` | `VirtualNetworkBinding`, `VirtualNetwork`, `Pod`, `Namespace` |
-| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `Pending`/`Skipped` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift) |
+| `ExternalAllowReconciler` | `NetworkPolicy` (`ext.svc`), `NamedPortUnresolved`/`ServiceHasNoSelector`/`ApplyFailed` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift) |
 | `HostPortReconciler` | `NetworkPolicy` (`ext.host`) | `Namespace`, `Pod` (hostPort changes), own policies (drift) |
-| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `Pending` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
+| `ApiserverReachableReconciler` | `NetworkPolicy` (`ext.apiserver`), `NamedPortUnresolved`/`ApplyFailed` Events | `Service`, `Namespace`, `Pod` (entering or leaving a named-port Service's selector), own policies (drift), Validating/MutatingWebhookConfiguration, `APIService`, `CustomResourceDefinition` |
 
 The pure-function split (`resolution.go`, `policy_generator.go`, `baseline.go`) keeps the I/O-driven logic in the controllers thin and easy to unit-test against contrived inputs.

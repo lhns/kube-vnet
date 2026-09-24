@@ -84,9 +84,36 @@ release. Pinning to an exact version is recommended.
     `NetworkWaitSkipped` Warning. The admission warning reaches only the pod's
     direct creator, which for a Deployment or Job pod is a controller.
   - A pod with a `kube-vnet/net.*` label in a namespace kube-vnet does not
-    manage gets a `NamespaceNotManaged` Warning.
+    manage gets a `NamespaceExcluded` Warning.
 
 ### Changed
+
+- **BREAKING: Event and condition reasons renamed so that one meaning has one
+  name.** Update alerts and `--field-selector reason=…` queries:
+
+  | Old | New | Where |
+  |---|---|---|
+  | `InvalidJoinLabelDirection` | `InvalidDirection` | Event on a Pod |
+  | `UnknownDirection` | `InvalidDirection` | per-pod reason in a vnet's `Degraded`/`InvalidJoiners` message |
+  | `Pending` (Warning, every 30s) | `NamedPortUnresolved` (Normal, once when the wait starts) | Event on a Service |
+  | `Skipped` (Normal) | `ServiceHasNoSelector` (Warning: the Service's pods stay blocked) | Event on a Service |
+  | `UnknownDirection` | `InvalidDirection` | `VirtualNetworkBinding` `Ready` reason |
+  | `VirtualNetworkNotFound` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not exist" |
+  | `NamespaceNotAllowed` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not permit" |
+
+  The binding's condition now uses the same reason as the
+  `VirtualNetworkNotJoinable` Event it already got.
+
+- **Clearer Event messages.** Every message names a vnet as
+  `<namespace>/<name>`. Previously some used the internal `<namespace>.<name>`
+  key. A pod label source reads `pod label kube-vnet/net.<x>` instead of
+  `<pod-label>`. `ResolutionConflict` and `OverrideRejected` name the rules
+  instead of internal tier names. Messages no longer cite ADR numbers, and the
+  join-label admission policy's message doesn't either. A vnet's `ApplyFailed`
+  message lists failures as `namespace <ns>: <error>`.
+- **Removed the `Ready` column from `kubectl get vnbl` and
+  `kubectl get cvnbl`.** Baselines have no status conditions, so it was always
+  empty.
 
 - **Fewer auto-allow reconciles on pod churn.** The external-allow and
   apiserver-reachable reconcilers now re-run a named-`targetPort` Service only
