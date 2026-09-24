@@ -50,12 +50,6 @@ histogram_quantile(0.95, rate(kube_vnet_reconcile_duration_seconds_bucket[5m]))
 | **Description** | Number of `VirtualNetwork` resources observed in the cluster. |
 | **When it changes** | Updated by `MetricsCollector` every 30 seconds (lists `VirtualNetwork` cluster-wide). |
 
-Sample query — current vnet count:
-
-```promql
-kube_vnet_networks_total
-```
-
 ### `kube_vnet_managed_policies_total`
 
 | | |
@@ -64,12 +58,6 @@ kube_vnet_networks_total
 | **Labels** | none |
 | **Description** | Number of `NetworkPolicy` resources currently labeled `kube-vnet.system/managed-by=kube-vnet` (baselines, membership and auto-allow policies). |
 | **When it changes** | Updated by `MetricsCollector` every 30 seconds. |
-
-Sample query — current managed-policy count:
-
-```promql
-kube_vnet_managed_policies_total
-```
 
 ### `kube_vnet_members_total`
 
@@ -92,8 +80,8 @@ topk(5, kube_vnet_members_total)
 |---|---|
 | **Type** | Counter |
 | **Labels** | `kind` ∈ `membership_policy` \| `baseline` \| `system_vnet` \| `external_allow` \| `apiserver_reachable` \| `host_port` |
-| **Description** | Total apply errors by object kind. Increments when an SSA `Patch` returns an error. `system_vnet` counts failed creates of the `namespace` and `cluster` system vnets; the others count `NetworkPolicy` applies. Each failure also emits an `ApplyFailed` Event in the affected namespace. |
-| **When it changes** | At the failure site of each apply call. |
+| **Description** | Total apply errors by object kind: `system_vnet` counts failed writes of the `namespace` and `cluster` system vnets, the others failed `NetworkPolicy` applies. Each failure also emits an `ApplyFailed` Event in the affected namespace. |
+| **When it changes** | At each failed apply. |
 
 Sample query — recent apply errors:
 
@@ -147,7 +135,7 @@ Repeated `PolicyRestored` Events (someone fighting the operator) have no metric 
 
 ## Kubernetes Events
 
-Events are best-effort notifications with the apiserver's default TTL (1 hour), not an audit log. Status conditions are the source of truth for current state, but a vnet's conditions live in its home namespace. Someone who can read only a member namespace sees the Events on their own pods, bindings, Services and NetworkPolicies, which is why every failure also emits one there ([troubleshooting](../guides/troubleshooting.md#i-can-only-see-my-own-namespace)).
+Events are best-effort, kept for the apiserver's default TTL (1 hour), and not an audit log. Status conditions are the source of truth, but a vnet's live in its home namespace, so every failure also emits an Event in the namespace it affects, on the pod, binding, Service or NetworkPolicy there ([troubleshooting](../guides/troubleshooting.md#i-can-only-see-my-own-namespace)).
 
 Every reason the operator emits:
 
@@ -157,13 +145,13 @@ Every reason the operator emits:
 | `NotReady` | Warning | VirtualNetwork | `kube-vnet` | `Ready` condition transitions to False. |
 | `Degraded` | Warning | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to True. |
 | `Recovered` | Normal | VirtualNetwork | `kube-vnet` | `Degraded` condition transitions to False. |
-| `ApplyFailed` | Warning | VirtualNetwork, and the membership `NetworkPolicy` in each failed namespace | `kube-vnet` | Membership `NetworkPolicy` applies returned errors. The vnet gets one summary per reconcile (the `Ready` message: a count and the first three errors). Each failed member namespace gets its own Event on the policy that could not be applied, so it lands in that namespace even though the policy doesn't exist; it names only that namespace's policy and error. The other namespaces are still applied. |
+| `ApplyFailed` | Warning | VirtualNetwork, and the membership `NetworkPolicy` in each failed namespace | `kube-vnet` | Membership `NetworkPolicy` applies failed. The vnet gets one summary per reconcile (a count and the first three errors); each failed namespace gets an Event on its policy (even though it doesn't exist) naming only its own error. The other namespaces are still applied. |
 | `ApplyFailed` | Warning | the baseline `NetworkPolicy` `kube-vnet.base` | `kube-vnet-namespace` | The baseline could not be applied. The namespace has **no default-deny** while this lasts (fail-open). |
 | `ApplyFailed` | Warning | the `namespace` (or `cluster`) system VirtualNetwork | `kube-vnet-system-vnet` | The system vnet could not be created or updated, so pods joining it are not members. |
 | `ApplyFailed` | Warning | Service | `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` | The Service's external-allow or apiserver-reachable policy could not be applied, so external clients or the apiserver can't reach its pods. |
 | `ApplyFailed` | Warning | the host-port `NetworkPolicy` | `kube-vnet-host-port` | A host-port policy could not be applied, so that hostPort is blocked. The other ports are still applied. |
-| `PolicyRestored` | Warning | VirtualNetwork and the restored membership `NetworkPolicy` | `kube-vnet` | The operator re-created a membership `NetworkPolicy` that the vnet's `status.generatedPolicies` listed and that was absent immediately before its apply, i.e. an out-of-band deletion was reverted. The Event on the policy lands in the namespace of whoever deleted it. See [ADR 0019](../adr/0019-baseline-durability.md). |
-| `PolicyRestored` | Warning | the restored baseline, external-allow, apiserver-reachable or host-port `NetworkPolicy` | `kube-vnet-namespace` / `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` / `kube-vnet-host-port` | The operator re-created a policy it had applied before. The operator remembers what it applied in memory, so a policy deleted while the operator was down is re-created without an Event. |
+| `PolicyRestored` | Warning | VirtualNetwork and the restored membership `NetworkPolicy` | `kube-vnet` | An out-of-band deletion of a membership policy the vnet's `status.generatedPolicies` listed was reverted. The Event on the policy lands in the namespace of whoever deleted it ([ADR 0019](../adr/0019-baseline-durability.md)). |
+| `PolicyRestored` | Warning | the restored baseline, external-allow, apiserver-reachable or host-port `NetworkPolicy` | `kube-vnet-namespace` / `kube-vnet-external-allow` / `kube-vnet-apiserver-reachable` / `kube-vnet-host-port` | The operator re-created a policy it had applied before. It remembers this in memory, so a policy deleted while the operator was down is re-created without an Event. |
 | `VirtualNetworkNotJoinable` | Warning | the Pod, `VirtualNetworkBinding` or `VirtualNetworkBaseline` that declared the membership; the Pod for a `ClusterVirtualNetworkBaseline` rule (an Event on a cluster-scoped object would land in `default`, naming the pod's namespace there) | `kube-vnet-resolution` | A referenced vnet can't be joined: it doesn't exist at the resolved namespace (a bare `kube-vnet/net.<X>` label with no local vnet `<X>` gets a hint to use the prefixed form), or its `spec.allowedNamespaces` doesn't permit the pod's namespace. See [ADR 0027](../adr/0027-pod-scoped-join-label-events.md) and [ADR 0043](../adr/0043-virtualnetworkref-namespace-inferred-or-honored.md). |
 | `ResolutionConflict` | Warning | Pod | `kube-vnet-resolution` | Rules in the same tier (e.g. a binding and a pod label) gave different directions for one vnet. They are intersected; the message names the sources and the result, and says so when the pod ends up not a member. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
 | `OverrideRejected` | Warning | Pod | `kube-vnet-resolution` | A lower tier tried to change a direction an upper tier pinned with a bare value (e.g. a pod label against a cluster baseline's `both`). The pinned value stays; use a `default-*` value upstream to allow overrides. See [ADR 0031](../adr/0031-baseline-tier-resolution.md). |
