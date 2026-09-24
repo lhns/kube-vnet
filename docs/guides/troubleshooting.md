@@ -90,7 +90,7 @@ Either correct the label key, or apply the missing `VirtualNetwork` manifest.
 
 **Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork <homeNS>/X does not permit namespace "<this-pod-ns>" (spec.allowedNamespaces)`.
 
-**Cause.** The vnet's `spec.allowedNamespaces` does not permit the pod's namespace. Same condition that surfaces on the *vnet's* `Degraded`/`InvalidJoiners` status, but addressed to the pod owner instead of the vnet owner.
+**Cause.** The vnet's `spec.allowedNamespaces` does not permit the pod's namespace. Only the pod owner is told: the vnet's `Degraded` status counts only pods in namespaces it admits, so a tenant can't mark someone else's vnet degraded by labelling a pod.
 
 **Fix.** Either extend the vnet's `allowedNamespaces`:
 
@@ -165,7 +165,7 @@ Most common case. Walk through these in order:
    kubectl describe vnet -n <home-ns> <vnet-name> | grep -A4 Conditions:
    ```
 
-   If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded.
+   If `Degraded=True` with reason `InvalidJoiners` and the message names your pod's namespace, the namespace is excluded. Without access to the vnet: a pod with a join label there has a `NamespaceNotManaged` Warning (`kubectl describe pod`).
 
    Two ways a namespace can be excluded:
    - The operator-level `--disabled-namespaces` flag (default `kube-system`, plus the operator's own namespace).
@@ -179,7 +179,7 @@ Most common case. Walk through these in order:
 
    If `allowedNamespaces` is unset, only the home namespace can join. If it's `names: [...]`, your namespace must be in that list (exact match — no globs). If it's `selector: {...}`, your namespace's labels must match; a malformed selector matches no namespaces.
 
-   A pod in a non-permitted namespace shows up as `Degraded=True, reason=InvalidJoiners` with `NamespaceNotAllowed` in the per-pod reason.
+   A pod in a non-permitted namespace gets a `VirtualNetworkNotJoinable` Warning saying so; it does not appear on the vnet.
 
 4. **Is the operator alive?**
 
@@ -594,7 +594,7 @@ The reason explains what to fix.
 | Reason | Meaning | Fix |
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
-| `InvalidJoiners` | At least one pod carries a join label for this vnet that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceNotAllowed` (not in `allowedNamespaces`), `NamespaceExcluded` (namespace disabled). | Fix the value; extend `allowedNamespaces` or move the pod; or remove the join label if the pod shouldn't be a member. |
+| `InvalidJoiners` | At least one pod in a namespace this vnet admits carries a join label for it that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (namespace disabled). Pods in namespaces the vnet doesn't admit are not listed; they get a `VirtualNetworkNotJoinable` Event in their own namespace. | Fix the value, or remove the join label if the pod shouldn't be a member. |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 

@@ -114,7 +114,10 @@ func TestIntegration_AllowedNamespaces_TwoNamespaces(t *testing.T) {
 	})
 }
 
-func TestIntegration_InvalidJoiner_DegradedCondition(t *testing.T) {
+// A pod in a namespace the vnet doesn't admit can't degrade the vnet or put
+// its name in the vnet's status: any tenant could otherwise. It is told in
+// its own namespace instead.
+func TestIntegration_ForeignJoiner_TouchesOnlyItsOwnNamespace(t *testing.T) {
 	ctx := context.Background()
 	home := uniqueNS(t, "ihome")
 	other := uniqueNS(t, "iother")
@@ -125,23 +128,30 @@ func TestIntegration_InvalidJoiner_DegradedCondition(t *testing.T) {
 	mustCreate(t, &vnetv1alpha1.VirtualNetwork{
 		ObjectMeta: metav1.ObjectMeta{Name: "strict", Namespace: home},
 	})
-	// Pod in `other` carries the prefixed join label — should be flagged invalid.
 	mustCreate(t, makePod(other, "rogue", map[string]string{
 		"kube-vnet/net." + home + ".strict": "both",
 	}))
 
 	eventually(t, 10*time.Second, func() error {
+		var events corev1.EventList
+		if err := testClient.List(ctx, &events, client.InNamespace(other)); err != nil {
+			return err
+		}
+		for _, e := range events.Items {
+			if e.Reason == ReasonVirtualNetworkNotJoinable && e.InvolvedObject.Name == "rogue" {
+				return nil
+			}
+		}
+		return fmt.Errorf("no %s Event on the pod yet", ReasonVirtualNetworkNotJoinable)
+	})
+	// The vnet has reconciled the pod (its status exists) and is not Degraded.
+	eventually(t, 10*time.Second, func() error {
 		v := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "strict"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
-			return fmt.Errorf("Degraded != True")
-		}
-		for _, c := range v.Status.Conditions {
-			if c.Type == "Degraded" && c.Reason != ReasonInvalidJoiners {
-				return fmt.Errorf("reason=%s, want %s", c.Reason, ReasonInvalidJoiners)
-			}
+		if s := conditionStatusOf(v, "Degraded"); s != metav1.ConditionFalse {
+			return fmt.Errorf("Degraded = %s, want False", s)
 		}
 		return nil
 	})
@@ -397,7 +407,8 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 	mustCreate(t, makePod(prod, "p", map[string]string{
 		"kube-vnet/net." + home + ".selvnet": "both",
 	}))
-	// Dev pod's join label should be ignored (label doesn't match) and surface as InvalidJoiner.
+	// Dev pod's join label is ignored (label doesn't match). The vnet doesn't
+	// admit dev, so it doesn't report the pod either.
 	mustCreate(t, makePod(dev, "d", map[string]string{
 		"kube-vnet/net." + home + ".selvnet": "both",
 	}))
@@ -416,13 +427,12 @@ func TestIntegration_AllowedNamespaces_Selector(t *testing.T) {
 		if _, err := findPolicy(ctx, dev, PolicyName("selvnet", home)); !apierrors.IsNotFound(err) {
 			return fmt.Errorf("dev policy should not exist; err=%v", err)
 		}
-		// Vnet status: Degraded=True with reason InvalidJoiners (the dev pod).
 		v := &vnetv1alpha1.VirtualNetwork{}
 		if err := testClient.Get(ctx, client.ObjectKey{Namespace: home, Name: "selvnet"}, v); err != nil {
 			return err
 		}
-		if conditionStatusOf(v, "Degraded") != metav1.ConditionTrue {
-			return fmt.Errorf("Degraded != True")
+		if s := conditionStatusOf(v, "Degraded"); s != metav1.ConditionFalse {
+			return fmt.Errorf("Degraded = %s, want False", s)
 		}
 		return nil
 	})

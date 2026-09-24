@@ -342,6 +342,18 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		nsReason[ns] = reason
 		return reason, nil
 	}
+	nsAdmitted := map[string]bool{}
+	admits := func(ns string) (bool, error) {
+		if ok, seen := nsAdmitted[ns]; seen {
+			return ok, nil
+		}
+		ok, err := PermitsForVnet(ctx, r.Client, vnet, ns)
+		if err != nil {
+			return false, err
+		}
+		nsAdmitted[ns] = ok
+		return ok, nil
+	}
 
 	for i := range pods.Items {
 		p := &pods.Items[i]
@@ -357,6 +369,17 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		}
 		if v, ok := p.Labels[userPrefixedKey]; ok && !clusterVnet {
 			userVals = append(userVals, v)
+		}
+		// Only namespaces the vnet admits count. Anyone can label a pod with
+		// any vnet's name, so a joiner from elsewhere would let any tenant
+		// make this vnet Degraded and write their namespace and pod name
+		// into its status. That pod gets its own Event in its namespace.
+		if len(userVals) > 0 {
+			if ok, err := admits(p.Namespace); err != nil {
+				return nil, nil, err
+			} else if !ok {
+				userVals = nil
+			}
 		}
 		if len(userVals) > 0 {
 			reason := ""

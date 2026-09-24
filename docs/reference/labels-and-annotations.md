@@ -45,7 +45,7 @@ A join label is a *request*. Membership takes effect when the operator stamps th
 
 - **Admission** (Kubernetes ≥ 1.30): the chart's `<release>-join-label-direction` `ValidatingAdmissionPolicy` rejects a pod whose `kube-vnet/net.*` label value is not one of the four directions.
 - **Pod events**: `InvalidJoinLabelDirection` for an unrecognized value (the label is ignored); `VirtualNetworkNotJoinable` when the named vnet doesn't exist or doesn't permit the pod's namespace — for a bare label naming a vnet that doesn't exist locally, the message hints at the prefixed form. Full list: [metrics-and-events § Kubernetes Events](metrics-and-events.md#kubernetes-events).
-- **Vnet condition**: the vnet's `Degraded=True, reason=InvalidJoiners` names offending pods with a per-pod reason (`UnknownDirection`, `NamespaceExcluded`, `NamespaceNotAllowed`).
+- **Vnet condition**: the vnet's `Degraded=True, reason=InvalidJoiners` names offending pods in namespaces it admits, with a per-pod reason (`UnknownDirection`, `NamespaceExcluded`).
 
 Symptom-first walkthroughs: [troubleshooting § pod events](../guides/troubleshooting.md#pod-events-kube-vnet-emits).
 
