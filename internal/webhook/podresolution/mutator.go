@@ -35,7 +35,8 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 	if !managed {
 		resp := admission.Allowed("namespace is not managed by kube-vnet")
 		if req.Operation == admissionv1.Create {
-			if w := unmanagedNetworkWait(r.pod); w != "" {
+			// The pod gets no wait here, nor any NetworkPolicy from kube-vnet.
+			if w := controller.NetworkWaitWarning(r.pod, false, false); w != "" {
 				resp = resp.WithWarnings(w)
 			}
 		}

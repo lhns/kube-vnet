@@ -15,7 +15,6 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -95,12 +94,9 @@ func (d *Deps) namespaceManaged(ctx context.Context, name string) (bool, error) 
 	if name == "" {
 		return false, nil
 	}
-	ns := &corev1.Namespace{}
-	if err := d.Reader.Get(ctx, client.ObjectKey{Name: name}, ns); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
+	managed, err := d.NSFilter.Manages(ctx, d.Reader, name)
+	if err != nil {
 		return false, fmt.Errorf("read namespace %q: %w", name, err)
 	}
-	return d.NSFilter.IsManaged(ns), nil
+	return managed, nil
 }
