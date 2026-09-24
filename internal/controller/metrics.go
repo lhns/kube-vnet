@@ -96,13 +96,9 @@ func clearMembers(homeNS, name string) {
 	membersByNetwork.DeleteLabelValues(homeNS + "/" + name)
 }
 
-// MetricsCollector is a controller-runtime Runnable that periodically updates
-// gauges that are best computed cluster-wide rather than per-reconcile:
-//   - kube_vnet_networks_total
-//   - kube_vnet_managed_policies_total
-//
-// Doing this off a 30-second tick avoids biasing toward whichever VirtualNetwork
-// just reconciled and keeps the gauge cost off the hot path.
+// MetricsCollector is a Runnable that updates the cluster-wide gauges
+// (kube_vnet_networks_total, kube_vnet_managed_policies_total) on a tick,
+// which keeps their cost off the reconcile path.
 type MetricsCollector struct {
 	Client   client.Client
 	Interval time.Duration

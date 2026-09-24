@@ -134,7 +134,7 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// cluster vnet's home is the operator namespace, which cmd/main.go always
 	// disables as a privilege boundary. The system-vnet VAP keeps the
 	// managed-by label honest.
-	isSystem := vnet.Labels[LabelManagedBy] == LabelManagedByValue
+	isSystem := operatorManaged(vnet)
 	homeManaged, err := r.NSFilter.Manages(ctx, r.Client, vnet.Namespace)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -592,23 +592,17 @@ func resolvedGeneration(obj client.Object) string {
 // Namespaces. Bindings need no watch: this reconcile reads only the stamps
 // resolution derives from them, and a stamp change is a pod event.
 func (r *VirtualNetworkReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	podPredicate := JoinLabelChangedPredicate()
-
-	policyPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue
-	})
-
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vnetv1alpha1.VirtualNetwork{}).
 		Watches(
 			&corev1.Pod{},
 			handler.EnqueueRequestsFromMapFunc(r.podToVnets),
-			builder.WithPredicates(podPredicate),
+			builder.WithPredicates(JoinLabelChangedPredicate()),
 		).
 		Watches(
 			&networkingv1.NetworkPolicy{},
 			handler.EnqueueRequestsFromMapFunc(r.policyToVNet),
-			builder.WithPredicates(policyPredicate),
+			builder.WithPredicates(predicate.NewPredicateFuncs(operatorManaged)),
 		).
 		// Namespace managed-ness gates this reconcile twice: the home namespace
 		// decides whether the vnet is served at all, and each member's namespace

@@ -16,42 +16,23 @@ import (
 )
 
 // Resolver computes the operator-managed labels for a pod from current
-// cluster state. It is the single implementation of pod resolution, shared
-// by every caller that needs it:
-//
-//   - ResolutionReconciler, asynchronously after the pod is persisted.
-//   - The mutating admission webhook, synchronously during pod admission,
-//     so a pod is stamped before it ever runs (ADR 0034).
-//   - The validating admission webhook, to check that the system labels on
-//     an incoming pod are the ones resolution would produce.
-//
-// There is deliberately no second implementation: an admission-time copy
-// would drift from the reconciler's. internal/webhook/podresolution's
-// parity_test.go locks the paths together.
-//
-// Every method only reads, so Reader may be a cache-backed client.Reader.
+// cluster state. It is the only implementation of pod resolution: the
+// ResolutionReconciler and both admission webhooks (ADR 0034) share it, so
+// they cannot drift (podresolution's parity_test.go locks them together).
+// It only reads, so Reader may be a cache.
 type Resolver struct {
 	Reader client.Reader
 	// Recorder surfaces VirtualNetworkNotJoinable and InvalidDirection
-	// Warning Events. Optional; nil disables the
-	// diagnostic. The webhook passes nil — admission is not a place to
-	// write to the apiserver, and the reconciler emits the same Events
-	// moments later on its own pass.
+	// Warnings; nil disables them. The webhook passes nil: admission is no
+	// place to write, and the reconciler emits the same Events moments later.
 	Recorder events.EventRecorder
 }
 
 // DesiredLabels returns the complete set of operator-managed labels the pod
-// should carry: `kube-vnet.system/net.<homeNS>.<vnet>=<direction>` membership
-// stamps (ADR 0033) plus `kube-vnet.system/host-port.<port>.<proto>=true`
-// exposure stamps (ADR 0040).
-//
-// The returned map is the *desired* set, not a diff. Callers apply it with
-// SyncStamps, which also prunes stamps that are no longer desired; pruning is
-// part of the contract, since a stale membership stamp is a stale grant.
-//
-// The ResolutionResult is returned alongside for callers that need the
-// diagnostics (conflicts, rejected overrides); the labels alone are enough
-// to decide membership.
+// should carry: membership stamps (ADR 0033) and host-port stamps (ADR 0040).
+// It is the desired set, not a diff: SyncStamps also prunes what is no longer
+// desired, since a stale membership stamp is a stale grant. The
+// ResolutionResult carries the diagnostics (conflicts, rejected overrides).
 func (r *Resolver) DesiredLabels(ctx context.Context, pod *corev1.Pod) (map[string]string, ResolutionResult, error) {
 	layers, err := r.buildLayers(ctx, pod)
 	if err != nil {
@@ -280,24 +261,12 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 }
 
 // canonicalVnetKey turns a vnet reference into the VnetKey to check
-// permission against, using the pod's namespace as the resolution context.
-//
-// It is pure inference — it never validates and never special-cases a vnet
-// kind (ADR 0043). `ref.Namespace` is *honored* whenever it is set; it is
-// only inferred when omitted:
-//
-//   - omitted + `cluster` → bare `cluster`, the singleton's canonical key
-//     (ADR 0033 Amendment).
-//   - omitted + anything else (the per-NS `namespace` system vnet and user
-//     vnets alike) → the pod's own namespace.
-//   - set → used verbatim.
-//
-// A wrong namespace therefore names a vnet the pod cannot join, and is
-// denied by the ordinary permission path in filterPermittedRules — exactly
-// as a user vnet that doesn't allow the pod would be. It is never rewritten
-// to something that happens to work. A *qualified* `<ns>.cluster` key is
-// deliberately left qualified so Permits can verify it against the real CR;
-// it collapses to the bare canonical form after permission passes.
+// permission against. A set `ref.Namespace` is used verbatim; an omitted one
+// is the pod's namespace, except for `cluster`, whose key is bare `cluster`
+// (ADR 0033 Amendment). It never validates or special-cases a vnet kind (ADR
+// 0043): a wrong namespace names a vnet the pod cannot join and is denied by
+// filterPermittedRules. A qualified `<ns>.cluster` stays qualified so Permits
+// checks the real CR; it collapses to bare only after permission passes.
 func canonicalVnetKey(ref vnetv1alpha1.VirtualNetworkRef, podNS string) VnetKey {
 	if ref.Namespace == "" {
 		if ref.Name == SystemVnetCluster {

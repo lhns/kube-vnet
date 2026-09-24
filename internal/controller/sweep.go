@@ -59,6 +59,12 @@ func policyUpToDate(live, desired *networkingv1.NetworkPolicy) bool {
 		equality.Semantic.DeepEqual(live.Spec, desired.Spec)
 }
 
+// operatorManaged reports whether obj carries LabelManagedBy, the sole
+// ownership signal.
+func operatorManaged(obj client.Object) bool {
+	return obj.GetLabels()[LabelManagedBy] == LabelManagedByValue
+}
+
 // sweepStalePolicies deletes every NetworkPolicy matching listOpts that is
 // not in keep (nil deletes all) and not exempted by skip (nil exempts none).
 // Returns on the first delete error.

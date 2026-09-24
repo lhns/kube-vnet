@@ -24,16 +24,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// HostPortReconciler emits external-allow NetworkPolicies for pods that
-// declare `hostPort` (ADR 0040). NetworkPolicy can only select those pods by
-// label, so ResolutionReconciler stamps
-// `kube-vnet.system/host-port.<port>.<proto>=true` on them and this
-// reconciler emits one policy per (namespace, port, protocol) selecting that
-// stamp. Keying on the port rather than the pod means rollouts, which replace
-// pods, cause no policy churn.
-//
-// Opting a Namespace out (`kube-vnet/disabled=true` or
-// `kube-vnet/external-allow=false`) deletes its host-port policies.
+// HostPortReconciler emits one external-allow NetworkPolicy per (namespace,
+// port, protocol) that a pod declares as `hostPort` (ADR 0040), selecting
+// the host-port stamp resolution puts on those pods. Keying on the port, not
+// the pod, keeps rollouts from churning policies. A namespace opted out
+// (`kube-vnet/disabled=true` or `kube-vnet/external-allow=false`) gets none.
 type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme

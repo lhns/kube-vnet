@@ -83,18 +83,10 @@ const (
 	PolicyKindExternal   = "ext"
 )
 
-// Direction is the per-pod direction of a vnet membership. Set as the value
-// of a join label (or via a VirtualNetworkBinding's spec.direction).
-//
-// Valid values: `both`, `ingress`, `egress`, `none`, plus the four `default-*`
-// variants (`default-both`, `default-ingress`, `default-egress`, `default-none`)
-// used at baseline tiers to mark a value as override-able by lower tiers. See
-// ADR 0031. Bare values are enforced (no override permitted); `default-*`
-// values are advisory.
-//
-// Pod-tier values (pod label and `VirtualNetworkBinding.spec.direction`)
-// accept only the bare four (ParseBareDirection); `default-*` is meaningless
-// at the leaf tier. See ADR 0030 and ADR 0031.
+// Direction is the per-pod direction of a vnet membership: `both`,
+// `ingress`, `egress` or `none`. Baselines may also use the `default-*`
+// variants, which lower tiers may override; bare values are enforced (ADR
+// 0031). The pod tier (join labels, bindings) accepts only the bare four.
 type Direction string
 
 const (
@@ -159,11 +151,8 @@ type InvalidJoiner struct {
 	Reason       string
 }
 
-// GenerateInput is the pure input to the policy generator.
-//
-// MembersByNS is keyed by namespace, then by Direction. Every member is
-// selected by the one canonical system label (SystemLabelKey, ADR 0033),
-// whichever source — join label, binding, or baseline — stamped it.
+// GenerateInput is the pure input to the policy generator. MembersByNS is
+// keyed by namespace, then by Direction.
 type GenerateInput struct {
 	VNet        *vnetv1alpha1.VirtualNetwork
 	MembersByNS map[string]map[Direction][]string

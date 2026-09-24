@@ -43,18 +43,10 @@ const (
 	ResolvedByController = "controller"
 )
 
-// ResolutionReconciler resolves the inheritance lattice for each pod and
-// stamps `kube-vnet.system/net.<vnet>=<direction>` labels accordingly. Three
-// scopes per ADR 0031:
-//   - ScopeClusterBaseline: the ClusterVirtualNetworkBaseline named `default`.
-//   - ScopeNamespaceBaseline: the VirtualNetworkBaseline named `default` in
-//     the pod's namespace (if present).
-//   - ScopePod: VirtualNetworkBindings matching the pod, plus the pod's own
-//     `kube-vnet/net.<vnet>=<direction>` labels. All sources within this
-//     scope intersect on conflict (fail-closed).
-//
-// On change to any of those input sources, the affected pod(s) get
-// re-resolved. Pods in disabled namespaces have their stamps removed.
+// ResolutionReconciler resolves each pod's memberships through the Resolver
+// (the tiers of ADR 0031) and stamps them as `kube-vnet.system/net.*`
+// labels, re-resolving pods when any input changes. Pods in disabled
+// namespaces have their stamps removed.
 type ResolutionReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -238,13 +230,10 @@ func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
 	}
 }
 
-// bareJoinLabelHint returns the guidance to append when a *bare* pod join label
-// `kube-vnet/net.<X>` can't be honored: the bare form is only resolved against
-// the pod's own namespace, so a missing local vnet usually means the user meant
-// a vnet hosted elsewhere and should use the prefixed form. suffix is the label
-// key's tail (the part after `kube-vnet/net.`); a dot means it's already the
-// prefixed `<homeNS>.<name>` form (fully covered by notJoinableNote — no hint),
-// and the reserved system-vnet names are legitimately bare.
+// bareJoinLabelHint returns the guidance to append when a bare join label
+// `kube-vnet/net.<suffix>` can't be honored: the bare form resolves in the
+// pod's own namespace, so the user likely meant a vnet hosted elsewhere. The
+// prefixed form and the system vnets' bare names get no hint.
 func bareJoinLabelHint(labelKey, suffix string) string {
 	if strings.Contains(suffix, ".") ||
 		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
@@ -407,16 +396,11 @@ func (r *ResolutionReconciler) podsInObjectNamespace(ctx context.Context, obj cl
 	return r.podsIn(ctx, obj.GetNamespace())
 }
 
-// vnetToAffectedPods maps a VirtualNetwork event to the pods it could change.
-//
-// Vnet existence and allowedNamespaces are inputs to resolution: a rule
-// naming a not-yet-created vnet resolves to no stamp, and since the pod
-// predicate is change-based nothing else would revisit it.
-//
-// The affected set is the pods in the namespaces the vnet admits, which covers
-// every membership source without matching each one. On update the handler
-// maps both revisions, so narrowing allowedNamespaces also reaches the pods it
-// excluded. See ADR 0044.
+// vnetToAffectedPods maps a VirtualNetwork event to the pods in the
+// namespaces it admits (ADR 0044). Vnet existence and allowedNamespaces are
+// resolution inputs nothing else revisits: a rule naming a not-yet-created vnet
+// resolves to no stamp. On update both revisions are mapped, so narrowing
+// allowedNamespaces reaches the pods it excluded.
 func (r *ResolutionReconciler) vnetToAffectedPods(ctx context.Context, obj client.Object) []reconcile.Request {
 	vnet, ok := obj.(*vnetv1alpha1.VirtualNetwork)
 	if !ok || vnet == nil {

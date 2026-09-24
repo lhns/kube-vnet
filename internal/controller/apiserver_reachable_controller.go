@@ -21,14 +21,9 @@ import (
 )
 
 // ApiserverReachableReconciler emits "allow-from-anywhere" NetworkPolicies
-// for Services that the kube-apiserver reaches in-cluster. Per ADR 0041 —
-// the gap NetworkPolicy can't naturally close, because the apiserver
-// isn't a pod and its source IP (control-plane node IP or managed-control-
-// plane IP) doesn't match any namespaceSelector or podSelector.
-//
-// Trigger surface: four cluster-scoped Kubernetes resources that declare
-// "the apiserver dials this Service," plus an opt-in annotation on Services
-// for cases the four don't cover.
+// for Services the kube-apiserver reaches in-cluster (ADR 0041): the
+// apiserver isn't a pod, so no namespaceSelector or podSelector matches it.
+// These declare that the apiserver dials a Service:
 //
 //	ValidatingWebhookConfiguration  webhooks[].clientConfig.service
 //	MutatingWebhookConfiguration    webhooks[].clientConfig.service
@@ -36,11 +31,8 @@ import (
 //	CustomResourceDefinition        spec.conversion.webhook.clientConfig.service
 //	corev1.Service                  annotation kube-vnet/apiserver-reachable=true
 //
-// The policy is additive (NetworkPolicy union), so vnet isolation is
-// unchanged; the apiserver only gains a path to the webhook's targetPort.
-//
-// Default-on. Opt out with `kube-vnet/external-allow=false` on the Service or
-// its Namespace, the same annotation as ADR 0038.
+// The policy is additive, so vnet isolation is unchanged. Opt out with
+// `kube-vnet/external-allow=false` on the Service or its Namespace.
 type ApiserverReachableReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme

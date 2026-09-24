@@ -14,19 +14,12 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// Permits reports whether pods in podNS may join the vnet named by vnetKey.
-// Resolution uses it to decide which vnets to stamp on a pod, so a stamp
-// means the operator confirmed membership rather than that a user merely
-// asked for it; PermitsForVnet applies the same rule when generating policies.
-//
-// Returns (false, nil) when not permitted, including a missing vnet or a
-// malformed key, and an error only for transient failures the caller should
-// retry.
-//
-// The bare `cluster` key (ADR 0033 Amendment) has no home namespace to fetch
-// and is permitted directly; the cluster vnet allows all namespaces anyway.
-// A qualified `<ns>.cluster` key is not short-circuited: it names a concrete
-// vnet, and a wrong namespace must be denied like any missing vnet (ADR 0043).
+// Permits reports whether pods in podNS may join the vnet named by vnetKey,
+// so a stamp means the operator confirmed membership, not that a user asked
+// for it. A missing vnet or malformed key is (false, nil); errors are
+// transient. The bare `cluster` key has no home namespace to fetch and is
+// permitted (that vnet allows all namespaces); a qualified `<ns>.cluster`
+// names a concrete vnet and is checked like any other (ADR 0043).
 func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string) (bool, error) {
 	homeNS, vnetName, ok := splitVnetKey(vnetKey)
 	if !ok {
@@ -48,17 +41,10 @@ func Permits(ctx context.Context, c client.Reader, vnetKey VnetKey, podNS string
 	return PermitsForVnet(ctx, c, &v, podNS)
 }
 
-// NamespacesAdmittedBy is the inverse of Permits: given a vnet, which
-// namespaces may join it (`home ∪ allowedNamespaces`)?
-//
-// This is the blast radius of a VirtualNetwork. A pod's membership can only
-// change if its namespace may join, so a vnet event needs to reach exactly the
-// pods in these namespaces — whatever named the vnet (join label, binding, or
-// either baseline). Expressing fan-out this way means the four membership
-// sources don't each re-derive permission logic. See ADR 0044.
-//
-// It delegates to PermitsForVnet so `home ∪ allowedNamespaces` keeps one
-// definition; namespaces are few and the client is cached.
+// NamespacesAdmittedBy is the inverse of Permits: the namespaces that may
+// join vnet (`home ∪ allowedNamespaces`). It is a vnet's blast radius: only
+// pods there can change membership, whatever names the vnet, so the
+// membership sources need no fan-out logic of their own (ADR 0044).
 func NamespacesAdmittedBy(ctx context.Context, c client.Reader, vnet *vnetv1alpha1.VirtualNetwork) ([]string, error) {
 	if vnet == nil {
 		return nil, nil

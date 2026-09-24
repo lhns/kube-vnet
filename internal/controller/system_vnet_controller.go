@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -26,18 +25,10 @@ const (
 	SystemVnetCluster   = "cluster"
 )
 
-// SystemVnetReconciler ensures that the per-namespace `namespace` system vnet
-// exists in every managed namespace, and that the cluster-wide `cluster`
-// system vnet exists in the operator's own namespace. Both are drift-corrected
-// on delete.
-//
-// Reconciler is keyed on the cluster-scoped Namespace name. Two trigger paths:
-//   - Namespace events: ensure the per-namespace `namespace` vnet (if managed)
-//     and ensure the cluster vnet (if this is the operator's namespace).
-//   - VirtualNetwork events filtered by LabelManagedBy: re-enqueue the namespace
-//     so a deleted system vnet is recreated.
-//
-// See ADR 0030.
+// SystemVnetReconciler keeps the `namespace` system vnet in every managed
+// namespace and the `cluster` system vnet in the operator's namespace (ADR
+// 0030). It is keyed by Namespace; an event on a system vnet re-enqueues its
+// namespace, so a deleted one is recreated.
 type SystemVnetReconciler struct {
 	client.Client
 	Scheme            *runtime.Scheme
@@ -71,7 +62,10 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// (ADR 0033). The operator namespace is unmanaged but holds `cluster`,
 	// handled below.
 	if r.NSFilter.IsManaged(ns) {
-		if err := r.ensureNamespaceSystemVnet(ctx, ns.Name); err != nil {
+		desired := desiredSystemVnet(SystemVnetNamespace, ns.Name,
+			"Per-namespace system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.namespace.")
+		if err := r.applySystemVnet(ctx, desired,
+			"pods in this namespace that join `namespace` are not members of it until this is fixed"); err != nil {
 			logger.Error(err, "ensure namespace system vnet failed")
 			return ctrl.Result{}, err
 		}
@@ -86,19 +80,17 @@ func (r *SystemVnetReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// unmanaged, so VirtualNetworkReconciler exempts system vnets from its
 	// home-namespace check.
 	if ns.Name == r.OperatorNamespace {
-		if err := r.ensureClusterSystemVnet(ctx); err != nil {
+		desired := desiredSystemVnet(SystemVnetCluster, r.OperatorNamespace,
+			"Cluster-wide system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.cluster.")
+		desired.Spec.AllowedNamespaces = &vnetv1alpha1.NamespaceSelector{All: true}
+		if err := r.applySystemVnet(ctx, desired,
+			"pods that join `cluster` are not members of it until this is fixed"); err != nil {
 			logger.Error(err, "ensure cluster system vnet failed")
 			return ctrl.Result{}, err
 		}
 	}
 
 	return ctrl.Result{}, nil
-}
-
-func (r *SystemVnetReconciler) ensureNamespaceSystemVnet(ctx context.Context, ns string) error {
-	desired := desiredSystemVnet(SystemVnetNamespace, ns, "Per-namespace system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.namespace.")
-	return r.applySystemVnet(ctx, desired,
-		"pods in this namespace that join `namespace` are not members of it until this is fixed")
 }
 
 // deleteNamespaceSystemVnet deletes the per-namespace `namespace` system vnet
@@ -114,7 +106,7 @@ func (r *SystemVnetReconciler) deleteNamespaceSystemVnet(ctx context.Context, ns
 	}
 	// Only delete what the operator created, in case the reserved-name VAP
 	// is absent or disabled.
-	if v.Labels[LabelManagedBy] != LabelManagedByValue {
+	if !operatorManaged(v) {
 		return nil
 	}
 	if err := r.Delete(ctx, v); err != nil && !apierrors.IsNotFound(err) {
@@ -122,16 +114,6 @@ func (r *SystemVnetReconciler) deleteNamespaceSystemVnet(ctx context.Context, ns
 	}
 	logger.Info("deleted per-NS system vnet in disabled namespace", "vnet", v.Name)
 	return nil
-}
-
-func (r *SystemVnetReconciler) ensureClusterSystemVnet(ctx context.Context) error {
-	if r.OperatorNamespace == "" {
-		return fmt.Errorf("operator namespace is empty; cannot create cluster system vnet")
-	}
-	desired := desiredSystemVnet(SystemVnetCluster, r.OperatorNamespace, "Cluster-wide system vnet for kube-vnet (operator-managed). Pods join via kube-vnet/net.cluster.")
-	desired.Spec.AllowedNamespaces = &vnetv1alpha1.NamespaceSelector{All: true}
-	return r.applySystemVnet(ctx, desired,
-		"pods that join `cluster` are not members of it until this is fixed")
 }
 
 func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.VirtualNetwork {
@@ -169,20 +151,13 @@ func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vne
 }
 
 func (r *SystemVnetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Drift correction: an event on a system vnet re-enqueues its namespace,
-	// which recreates the vnet if it was deleted.
-	systemPredicate := predicate.NewPredicateFuncs(func(obj client.Object) bool {
-		l := obj.GetLabels()
-		return l[LabelManagedBy] == LabelManagedByValue
-	})
-
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("system-vnet").
 		For(&corev1.Namespace{}).
 		Watches(
 			&vnetv1alpha1.VirtualNetwork{},
 			handler.EnqueueRequestsFromMapFunc(objectNamespace),
-			builder.WithPredicates(systemPredicate),
+			builder.WithPredicates(predicate.NewPredicateFuncs(operatorManaged)),
 		).
 		Complete(r)
 }

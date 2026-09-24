@@ -109,7 +109,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 	// The vnet reconciler does not serve a vnet whose home namespace is
 	// unmanaged (system vnets exempt, as there), so no pod is a member of it
 	// whatever resolution stamps. The binding's own namespace was checked above.
-	if vnet.Labels[LabelManagedBy] != LabelManagedByValue && vnet.Namespace != b.Namespace {
+	if !operatorManaged(vnet) && vnet.Namespace != b.Namespace {
 		if managed, err := r.NSFilter.Manages(ctx, r.Client, vnet.Namespace); err != nil {
 			return ctrl.Result{}, err
 		} else if !managed {
