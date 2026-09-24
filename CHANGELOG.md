@@ -13,76 +13,58 @@ release. Pinning to an exact version is recommended.
 ### Added
 
 - **Optional admission webhook that stamps pod membership at admission
-  (`webhook.enabled`, default off).** Membership policies select pods by the
-  `kube-vnet.system/net.*` label the operator stamps *after* the apiserver
-  persists a pod; until then the deny-all baseline applies. That window is
-  under a second, but enough to fail the first connection of a client that
-  does not retry (on kube-router an immediate `Connection refused`). With the
-  webhook, resolution runs in the apiserver's write path, so a pod is a member
-  from the instant it exists, on create and relabel. This removes kube-vnet's
-  share of the startup delay, not the CNI's; for that, see the network wait
-  below. Implements [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
+  (`webhook.enabled`, default off).** Without it, a new pod gets only the
+  deny-all baseline until the operator stamps its `kube-vnet.system/net.*`
+  label, usually under a second but enough to fail a client's first
+  connection. With it, a pod is a member from the instant it exists, on create
+  and relabel. This removes kube-vnet's share of the startup delay, not the
+  CNI's (see the network wait below). [ADR 0034](docs/adr/0034-admission-webhook-for-pod-resolution.md).
 
   **Read before enabling.** The validating half is `failurePolicy: Fail`, so
-  `kube-vnet.system/*` labels stay unforgeable while the operator is
-  unreachable, at the cost that an operator outage blocks pod creation and
-  update in managed namespaces. `kube-system`, `kube-public`,
-  `kube-node-lease`, the release namespace and `operator.disabledNamespaces`
-  are exempt, so the cluster, the operator and what it doesn't manage can
-  always recover. Run 2+ replicas. The mutating half is `failurePolicy: Ignore`
-  and falls back to the previous behaviour.
+  `kube-vnet.system/*` labels stay unforgeable while the operator is down, but
+  an operator outage then blocks pod create and update in managed namespaces.
+  `kube-system`, `kube-public`, `kube-node-lease`, the release namespace and
+  `operator.disabledNamespaces` are exempt. Run 2+ replicas. The mutating half
+  is `failurePolicy: Ignore` and falls back to the previous behaviour.
 
-  For the pods it sees, the validating webhook takes over from the
-  system-labels `ValidatingAdmissionPolicy` and checks more: the labels must
-  equal what resolution produces. A forged stamp in the request is rejected
-  with a message, as without the webhook. The policy keeps covering the pods
-  the webhooks skip. With the webhook off the chart renders as before.
-
+  For the pods it sees, the validating webhook replaces the system-labels
+  `ValidatingAdmissionPolicy` and also requires the labels to equal what
+  resolution produces; the policy keeps covering the pods the webhooks skip.
   `helm uninstall` removes the webhook configurations before stopping the
   operator. With `certSource: helm` the serving certificate survives
-  `helm upgrade`; an unknown `certSource` fails the render.
+  `helm upgrade`; an unknown `certSource` fails the render. With the webhook
+  off the chart renders as before.
 
 - **Network wait for pods whose first connection must succeed
   (`webhook.networkWait.enabled`, default off, requires the webhook).** A pod
-  annotated `kube-vnet/network-max-wait: "30s"` gets an injected init
-  container that holds its app until every node has applied its NetworkPolicy
-  rules, and never longer than that maximum; then the app starts anyway. The
-  chart ships a small beacon DaemonSet, one TCP listener per node behind a
-  chart-owned NetworkPolicy open to every pod; the wait ends once every beacon
-  accepts the pod. On kube-router, which applies all of a node's rules in one
-  pass, that means the pod's vnet rules are live or follow within milliseconds;
-  on other CNIs it is a strong hint, still bounded by the maximum. An invalid value, or the annotation
-  with the webhook on but the wait off, gives a `kubectl` warning and no wait.
-  Implements [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
+  annotated `kube-vnet/network-max-wait: "30s"` gets an init container that
+  holds its app until a per-node beacon on every node accepts it, and never
+  longer than that maximum. On kube-router the pod's vnet rules are then live;
+  on other CNIs it is a strong hint. An invalid value, or the annotation without
+  the wait enabled, gives a `kubectl` warning and no wait.
+  [ADR 0045](docs/adr/0045-network-wait-for-opted-in-pods.md).
 
-- **A pod left out of a vnet by conflicting rules now says why.** When a
-  binding, baseline and pod label disagree, resolution intersects them or
-  keeps a baseline's pinned value — fail-closed, but until now silent. The pod
-  now gets a `ResolutionConflict` or `OverrideRejected` Warning naming the
-  rules and the result, visible in `kubectl describe pod`. This replaces the
-  annotation, metric and baseline conditions ADR 0031 described, which were
-  never built.
-
-- **Every failure now shows in the namespace of whoever has to act.** Many
-  users can read only their own namespace, and several problems were visible
-  only on a vnet in another namespace or in the operator log:
+- **Every problem now shows up in the namespace of whoever has to act**, for
+  users who can read only their own namespace
+  ([troubleshooting](docs/guides/troubleshooting.md#i-can-only-see-my-own-namespace)):
+  - A pod left out of a vnet by conflicting binding, baseline and label rules
+    gets a `ResolutionConflict` or `OverrideRejected` Warning naming the rules
+    and the result. (The annotation, metric and baseline conditions ADR 0031
+    described were never built.)
   - A membership policy that fails to apply gets an `ApplyFailed` Warning on
-    the policy in its member namespace (even though it doesn't exist), naming
-    only that namespace's failure. The vnet gets one summary per reconcile
-    instead of one Event per failed policy.
-  - Failures that were only logged now get an `ApplyFailed` Warning in the
-    affected namespace and an `apply_errors_total` kind: the baseline (the
-    namespace then has no default-deny; the message says so), the
-    per-namespace `namespace` system vnet (`system_vnet`), and external-allow
-    (`external_allow`, on the Service), apiserver-reachable
-    (`apiserver_reachable`, on the Service) and host-port (`host_port`, on the
-    policy) policies. A host-port apply failure no longer stops the other
-    ports.
-  - `PolicyRestored` is also emitted on the restored policy, for every kind:
+    the policy in its member namespace; the vnet gets one summary per
+    reconcile instead of one Event per failed policy.
+  - Apply failures that were only logged now get an `ApplyFailed` Warning in
+    the affected namespace and an `apply_errors_total` kind: the baseline (the
+    namespace then has no default-deny), the `namespace` system vnet
+    (`system_vnet`), and the external-allow (`external_allow`),
+    apiserver-reachable (`apiserver_reachable`) and host-port (`host_port`)
+    policies. A failed host-port policy no longer stops the other ports.
+  - `PolicyRestored` is emitted on the restored policy, for every kind;
     baseline and auto-allow restores were silent.
   - A pod that asks for the network wait but starts without it gets a
-    `NetworkWaitSkipped` Warning. The admission warning reaches only the pod's
-    direct creator, which for a Deployment or Job pod is a controller.
+    `NetworkWaitSkipped` Warning (the admission warning reaches only the pod's
+    direct creator, often a controller).
   - A pod with a `kube-vnet/net.*` label in a namespace kube-vnet does not
     manage gets a `NamespaceExcluded` Warning.
 
@@ -101,121 +83,78 @@ release. Pinning to an exact version is recommended.
   | `VirtualNetworkNotFound` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not exist" |
   | `NamespaceNotAllowed` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not permit" |
 
-  The binding's condition now uses the same reason as the
-  `VirtualNetworkNotJoinable` Event it already got.
-
-- **Clearer Event messages.** Every message names a vnet as
-  `<namespace>/<name>`. Previously some used the internal `<namespace>.<name>`
-  key. A pod label source reads `pod label kube-vnet/net.<x>` instead of
-  `<pod-label>`. `ResolutionConflict` and `OverrideRejected` name the rules
-  instead of internal tier names. Messages no longer cite ADR numbers, and the
-  join-label admission policy's message doesn't either. A vnet's `ApplyFailed`
+- **Clearer Event messages.** Vnets are named `<namespace>/<name>` (not the
+  internal `<namespace>.<name>` key), a pod label source reads
+  `pod label kube-vnet/net.<x>`, conflict messages name rules instead of
+  internal tiers, and no message cites ADR numbers. A vnet's `ApplyFailed`
   message lists failures as `namespace <ns>: <error>`.
-- **Removed the `Ready` column from `kubectl get vnbl` and
-  `kubectl get cvnbl`.** Baselines have no status conditions, so it was always
-  empty.
-
-- **Fewer auto-allow reconciles on pod churn.** The external-allow and
-  apiserver-reachable reconcilers now re-run a named-`targetPort` Service only
-  when a pod enters or leaves its selector, instead of on every pod create,
-  delete or relabel in the namespace. The operator's own membership stamp no
-  longer re-runs them. Emitted policies are unchanged.
-- **No write when a policy is already up to date.** Every `NetworkPolicy`
-  apply now compares with the live policy first and skips the server-side
-  apply if nothing the operator sets differs, so steady-state reconciles no
-  longer send a patch per policy. Edited policies are still restored.
-- Built against controller-runtime v0.25.0 (was v0.24.1) and the Kubernetes
-  v0.37 client libraries (was v0.36), with Go 1.27 (was 1.26). No behaviour
-  change is expected.
+- **Removed the always-empty `Ready` column from `kubectl get vnbl` and
+  `kubectl get cvnbl`.** Baselines have no status conditions.
+- **Fewer writes and reconciles.** Auto-allow reconcilers re-run a
+  named-`targetPort` Service only when a pod enters or leaves its selector, not
+  on every pod change in the namespace. A `NetworkPolicy` that already matches
+  is no longer re-applied. Emitted policies and drift correction are unchanged.
+- Built with controller-runtime v0.25.0 (was v0.24.1), Kubernetes v0.37 client
+  libraries (was v0.36) and Go 1.27 (was 1.26). No behaviour change expected.
 
 ### Fixed
 
-- **`PolicyRestored` fired when a membership policy was first created**, e.g.
-  for every namespace of a new vnet. It now fires only for a policy the vnet's
-  `status.generatedPolicies` listed.
-- **A membership policy that failed to apply in one namespace no longer
-  blocks the others.** The `VirtualNetwork` reconciler stopped at the first
-  failed apply (a quota, admission webhook or RBAC rejection), so every
-  namespace sorting after it got no policy, and the stale-policy sweep was
-  skipped, until the retry. It now applies every namespace, reports each
-  failure (`ApplyFailed` Event, `Ready=False`), sweeps stale policies outside
-  the failed namespaces, and retries.
-- **Two status conditions reported problems that did not exist.**
-  - A `VirtualNetworkBinding` that omits `virtualNetworkRef.namespace` — the
-    recommended form — reported `Ready=False, VirtualNetworkNotFound` while its
-    pods were joined, and never re-evaluated when the vnet changed. The status
-    now infers the namespace the same way resolution does.
-  - One pod with a malformed `kube-vnet/net.namespace` label turned the
-    `namespace` vnet of every managed namespace `Degraded`. Only the pod's own
-    namespace's vnet is affected now.
-
+- **A membership policy that failed to apply in one namespace blocked the
+  others** (a quota, admission webhook or RBAC rejection): namespaces sorting
+  after it got no policy and stale policies were not swept until the retry.
+  Every namespace is now applied, each failure reported, and the rest swept.
+- **Deleting a member namespace stalled its vnets.** The operator tried to
+  recreate the membership policy in the terminating namespace, which
+  Kubernetes refuses, so until the namespace was gone the vnet was
+  `Ready=False` with repeated `ApplyFailed` Warnings, and new members in
+  later namespaces stayed behind the deny-all baseline. Terminating namespaces
+  are now skipped; their pods count as members until gone.
+- **`PolicyRestored` fired when a membership policy was first created.** It
+  now fires only for a policy the vnet's `status.generatedPolicies` listed.
+- **`VirtualNetworkBinding` status was wrong.**
+  - Omitting `virtualNetworkRef.namespace` (the recommended form) reported
+    `Ready=False, VirtualNetworkNotFound` while the pods were joined, and the
+    status never re-evaluated when the vnet changed.
+  - `status.attachedPods` and `Ready=True, PodsAttached` listed every selected
+    pod, including non-members. They now list only members; the message
+    counts the rest ("2 of 3 selected pod(s) are members") and a selector
+    matching only non-members reports `NoPodsAttached`. A binding to a vnet
+    that is not served reports `Ready=False`: `HomeNamespaceExcluded` or
+    `VirtualNetworkTerminating`.
+- **One pod with a malformed `kube-vnet/net.namespace` label turned every
+  namespace's `namespace` vnet `Degraded`.** Only its own namespace's vnet is
+  affected now.
+- **A named targetPort served only by a native sidecar got no allow.** Named
+  targetPorts now resolve against init containers with
+  `restartPolicy: Always`, as the EndpointSlice controller does. A `hostPort`
+  on a sidecar still gets no allow: the kubelet never forwards it.
 - **The CoreDNS carve-out rendered into an unmanaged `kube-system`** when
-  `operator.disabledNamespaces` was `null`. The operator still disables
-  `kube-system` by default then, so the policy only restricted CoreDNS ingress
-  to `:53`, cutting off its metrics port.
-
+  `operator.disabledNamespaces` was `null`, restricting CoreDNS ingress to
+  `:53` and cutting off its metrics port.
 - **`release.yaml` ran whatever `ghcr.io/lhns/kube-vnet:latest` was at pull
-  time.** It was rendered from `config/default` unchanged, with
-  `imagePullPolicy: IfNotPresent`, so nodes also kept a stale `:latest`. The
-  release manifest now pins the image to its own version.
-
-- **`kubectl explain` described status conditions the operator never sets.**
-  The baseline CRDs listed `Ready`, `Conflicts` and `OverrideRejected`, and the
-  binding CRD `Degraded`. Baselines have no conditions yet; bindings only
-  `Ready`.
-
-- **A named targetPort declared only on a native sidecar got no allow.** A
-  Service whose named `targetPort` is served by an init container with
-  `restartPolicy: Always` stayed `Pending` and its traffic was denied. Named
-  targetPorts now resolve against native sidecars too, as the EndpointSlice
-  controller does; ordinary init containers still don't count. A `hostPort` on
-  a sidecar still gets no allow: the kubelet never forwards it.
-
-- **Deleting a member namespace stalled the VirtualNetwork.** The namespace
-  controller removes a terminating namespace's NetworkPolicies while its pods
-  are still shutting down; the operator then tried to recreate the membership
-  policy, which Kubernetes refuses in a terminating namespace. Each failure
-  aborted the reconcile, so until the namespace was gone the vnet was
-  `Ready=False` (`ApplyFailed`), emitted an `ApplyFailed` Warning on every
-  backoff retry, and applied no policy in any namespace sorting after the
-  terminating one: new members there were left behind the deny-all baseline.
-  Membership policies now skip terminating namespaces, as the other
-  reconcilers already did. Their pods still count as members until they are
-  gone.
-- **`VirtualNetworkBinding` status overclaimed.** `status.attachedPods` and
-  `Ready=True, PodsAttached` listed every pod the selector matched, including
-  pods resolution did not make members (a baseline or pod-label conflict,
-  direction `none`). They now list only pods stamped as members; the
-  condition message counts the rest ("2 of 3 selected pod(s) are members"),
-  and a selector whose pods are all non-members reports the new reason
-  `NoPodsAttached`. A binding to a vnet that is not served now reports
-  `Ready=False`: `HomeNamespaceExcluded` when the vnet's home namespace is
-  disabled or excluded, `VirtualNetworkTerminating` while it is being deleted.
+  time**, and nodes kept a stale `:latest` (`imagePullPolicy: IfNotPresent`).
+  It now pins the image to its own version.
+- **`kubectl explain` described status conditions the operator never sets**
+  (`Ready`, `Conflicts`, `OverrideRejected` on baselines, `Degraded` on
+  bindings). Baselines have no conditions yet; bindings only `Ready`.
 
 ### Security
 
-- **`kube-vnet.system/*` stamps could be written through `pods/status`.** A
-  status write keeps the request's labels, and the system-labels policy
-  checked only `pods`. Anyone allowed to write pod status — a node, or a
-  controller granted `pods/status` — could stamp a pod into a vnet or onto a
-  host-port policy until the operator stripped it. The policy now covers
-  `pods/status`; ordinary status writes are unaffected.
-- **Namespace editors could write kube-vnet status.** The chart's end-user
-  editor roles, aggregated into `admin` and `edit`, granted `patch` and
-  `update` on `/status`, so anyone with `edit` in a namespace could forge a
-  vnet's or binding's `Ready` condition or member list. Status gates no
-  traffic, but humans and alerts read it. The roles no longer grant `/status`;
-  only the operator writes it. Threat model F-14.
-- **Any tenant could degrade any vnet and write names into its status.**
-  Labelling a pod `kube-vnet/net.<ns>.<vnet>` for a vnet that doesn't admit
-  the pod's namespace turned that vnet `Degraded`, emitted a Warning on it and
-  put the tenant's namespace and pod name in its `Degraded` message. The vnet
-  now counts only pods in namespaces it admits; the pod still gets its
+- **`kube-vnet.system/*` stamps could be written through `pods/status`.**
+  Anyone allowed to write pod status (a node, or a controller granted
+  `pods/status`) could stamp a pod into a vnet or onto a host-port policy until
+  the operator stripped it. The system-labels policy now covers `pods/status`.
+- **Namespace editors could write kube-vnet status.** The chart's editor roles,
+  aggregated into `admin` and `edit`, granted `patch`/`update` on `/status`,
+  so anyone with `edit` could forge a vnet's or binding's conditions or member
+  list. Only the operator writes status now. Threat model F-14.
+- **Any tenant could degrade any vnet and write names into its status** by
+  labelling a pod for a vnet that doesn't admit the pod's namespace. The vnet
+  now counts only pods in namespaces it admits; the pod gets its
   `VirtualNetworkNotJoinable` Event in its own namespace.
 - **`VirtualNetworkNotJoinable` for a `ClusterVirtualNetworkBaseline` rule
-  landed in `default`**, where Events on cluster-scoped objects go, naming each
-  affected namespace to anyone who can read `default`. It is now emitted on the
-  pod.
+  landed in `default`**, naming each affected namespace to anyone who can read
+  `default`. It is now emitted on the pod.
 
 ## [0.7.3] — 2026-09-02
 

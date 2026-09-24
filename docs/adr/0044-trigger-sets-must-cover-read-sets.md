@@ -2,11 +2,10 @@
 
 **Status**: Accepted (2026-07-26)
 
-> **Amendment (2026-09-23) — two rows of the read/trigger table corrected.** `VirtualNetworkReconciler` never read `VirtualNetworkBinding`: it reads only the stamps resolution derives from bindings, and a stamp change is a pod event. Its binding watch was dead weight and has been removed, so the row now lists four inputs, not five. The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` fired on creates only, which missed a backing pod leaving (delete) or moving out of a Service's selector (label change). It now fires on creates, deletes and label changes; the rows say so.
-
-> **Amendment (2026-09-23, later) — the auto-allow Pod trigger narrowed to selector flips.** The Pod watch of `ExternalAllowReconciler` and `ApiserverReachableReconciler` enqueued every named-`targetPort` Service in the pod's namespace on any create, delete or label change, so each new pod, and the operator's own `kube-vnet.system/*` stamp on it, re-ran every such Service. Container ports are immutable, so a pod can change a Service's named-port resolution only by entering or leaving its selector. The watch now enqueues just the named-port Services whose selector the pod matches (create, delete) or whose match differs between old and new labels (update), using the `labelsMatchSelector` test that `resolveTargetPorts` applies. This narrows which changes fire, not which fields matter: a Service that selects on a `kube-vnet.system` label still flips.
-
-> **Amendment (2026-09-24) — the binding reads its vnet's home namespace and pod stamps.** `VirtualNetworkBindingReconciler` now counts only stamped members in `status.attachedPods` and reports `Ready=False, HomeNamespaceExcluded` when the target vnet's home namespace is unmanaged. The stamps are pod labels, already covered by its unfiltered Pod watch. The home namespace may differ from the binding's own, so the namespace → bindings mapper now also enqueues bindings whose target vnet lives in the changed namespace; the "collapse into one" note below no longer holds for it.
+> **Amendment (2026-09-23/24) — table rows corrected; the tables below are current.**
+> - `VirtualNetworkReconciler` never read `VirtualNetworkBinding` (it reads the stamps resolution derives from bindings, which are pod events), so its binding watch was removed: four inputs, not five.
+> - The auto-allow Pod watch (`ExternalAllowReconciler`, `ApiserverReachableReconciler`) fired on creates only and missed a backing pod leaving. It now enqueues only the named-`targetPort` Services whose selector the pod enters or leaves (create, delete, or a label change that flips `labelsMatchSelector`), since container ports are immutable. This narrows which changes fire, not which fields matter.
+> - `VirtualNetworkBindingReconciler` now reads pod stamps (covered by its Pod watch) and its vnet's home namespace, which may differ from its own; the namespace → bindings mapper also enqueues bindings targeting a vnet homed in the changed namespace, so the "collapse into one" note below no longer holds.
 
 ## Context
 

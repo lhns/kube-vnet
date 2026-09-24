@@ -2,6 +2,8 @@
 
 Status: Accepted (constrained further by [ADR 0031](0031-baseline-tier-resolution.md) — `podSelector` is required to be non-empty; the empty-selector case moves to `VirtualNetworkBaseline`, and the addendum's `ClusterVirtualNetworkBinding` is removed. Refined by [ADR 0033](0033-canonical-fq-system-labels.md) — per-binding membership policies are no longer emitted; bindings now stamp the canonical FQ `kube-vnet.system/net.<homeNS>.<vnet>` label on selected pods like everything else, and the regular per-vnet membership policy covers them.)
 
+> **Amendment (2026-09-24)**: the binding `Ready` reasons below were renamed to match the Events: `NamespaceNotAllowed` (and `VirtualNetworkNotFound`) is now `VirtualNetworkNotJoinable`, `UnknownDirection` is now `InvalidDirection`. Current reasons: [API reference](../reference/api.md).
+
 ## Context
 
 The primary mechanism for joining a `VirtualNetwork` is the join label on the pod (or, more usefully, on the pod template of a workload controller). That works when you own the manifests. It doesn't work when:

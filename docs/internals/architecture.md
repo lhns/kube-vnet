@@ -99,9 +99,9 @@ Each family is restored by the reconciler that owns it, triggered by a watch on 
 
 | Policy | Watch mapping | Restored by | Event |
 |---|---|---|---|
-| Membership (`kube-vnet.mem.*`) | `kube-vnet.system/network` label → owning vnet | `VirtualNetworkReconciler` | `PolicyRestored` if it had been deleted |
-| Baseline (`kube-vnet.base`) | `role=baseline` → its namespace | `NamespaceReconciler` | none |
-| Auto-allow (`kube-vnet.ext.*`) | owner reference → Service, or namespace for `ext.host` | the owning auto-allow reconciler | none |
+| Membership (`kube-vnet.mem.*`) | `kube-vnet.system/network` label → owning vnet | `VirtualNetworkReconciler` | `PolicyRestored` on the policy and the vnet, if `status.generatedPolicies` listed it |
+| Baseline (`kube-vnet.base`) | `role=baseline` → its namespace | `NamespaceReconciler` | `PolicyRestored` on the policy, unless the operator restarted since applying it |
+| Auto-allow (`kube-vnet.ext.*`) | owner reference → Service, or namespace for `ext.host` | the owning auto-allow reconciler | as for the baseline |
 | System vnets | `kube-vnet.system/managed-by` → namespace | `SystemVnetReconciler` | none |
 
 The window between deletion and restore is usually sub-second to a few seconds; during it, traffic the policy would have denied is allowed. Hard isolation against namespace owners with NetworkPolicy-delete RBAC requires `AdminNetworkPolicy` ([ADR 0019](../adr/0019-baseline-durability.md)).
@@ -110,7 +110,7 @@ The window between deletion and restore is usually sub-second to a few seconds; 
 
 ## Metrics collector
 
-`MetricsCollector` lists `VirtualNetwork`s and operator-managed `NetworkPolicy`s every 30 seconds and sets `kube_vnet_networks_total` and `kube_vnet_managed_policies_total`. These are cluster-wide properties, so they are kept off the per-vnet reconcile path. The other four are updated by the `VirtualNetworkReconciler`, except `kube_vnet_apply_errors_total{kind="baseline"}`, which the `NamespaceReconciler` increments. Full list: [`metrics-and-events.md`](../reference/metrics-and-events.md).
+`MetricsCollector` lists `VirtualNetwork`s and operator-managed `NetworkPolicy`s every 30 seconds and sets `kube_vnet_networks_total` and `kube_vnet_managed_policies_total`. These are cluster-wide properties, so they are kept off the per-vnet reconcile path. The `VirtualNetworkReconciler` updates the reconcile and member metrics; `kube_vnet_apply_errors_total` is incremented by whichever reconciler's apply failed. Full list: [`metrics-and-events.md`](../reference/metrics-and-events.md).
 
 ---
 

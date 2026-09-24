@@ -154,10 +154,7 @@ For deeper diagnosis, see Calico's [troubleshooting guide](https://docs.tigera.i
 
 Cilium translates `podSelector`s into "security identities" that it caches on each node. Newly-started pods can briefly hit a window where the identity hasn't been allocated yet, and policies select them inconsistently.
 
-**Symptom.** First few seconds after a pod starts, traffic that should be isolated isn't (or vice versa). After ~5–30 seconds, things settle.
-
-**The 5–30 s figure is Cilium's identity-allocation lag specifically — not a general CNI number,
-and not kube-vnet's own startup window** (pitfall 6). Do not carry it over to another CNI.
+**Symptom.** First few seconds after a pod starts, traffic that should be isolated isn't (or vice versa). After ~5–30 seconds, things settle. That figure is specific to Cilium's identity allocation; kube-vnet's own startup window is pitfall 6.
 
 This is documented behavior, not a bug. Cilium provides metrics (`cilium_identity_allocation_attempts_total`, `cilium_endpoint_state`) for visibility. See Cilium's [identity-management docs](https://docs.cilium.io/en/stable/network/concepts/security-identities/).
 
@@ -167,16 +164,10 @@ If pods routinely send hard traffic immediately on startup and you can't tolerat
 
 ## Pitfall 6: every CNI — kube-vnet's own startup window
 
-Distinct from pitfall 5: this happens on **every** CNI. A new pod is denied until the operator has
-stamped its membership label (under a second, measured on kube-router v2.10.0) and the CNI has
-programmed it (on kube-router a full iptables rewrite per pod event, 0.77–1.85 s each on one
-production cluster, growing with the number of NetworkPolicies). A client that connects once at
-startup fails, and on kube-router the denial is an immediate `Connection refused`, which reads like
-"nothing is listening".
-
-**Fix.** The admission webhook (`webhook.enabled`) removes kube-vnet's share; the network wait
-(`webhook.networkWait.enabled` plus the `kube-vnet/network-max-wait` pod annotation) covers the
-CNI's. Diagnosis and workarounds: [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
+On every CNI, a new pod is denied until the operator has stamped its membership label and the CNI
+has programmed it, so a client that connects once at startup can fail (on kube-router with an
+immediate `Connection refused`). The admission webhook removes kube-vnet's share and the network
+wait covers the CNI's: [troubleshooting](troubleshooting.md#a-job-or-one-shot-pod-fails-to-connect-on-startup-but-succeeds-on-retry).
 
 ---
 
@@ -188,10 +179,8 @@ changes/s), after their first success the probe pods still saw 59 failed attempt
 server and 17 to the network wait beacon. This fits brief drops while kube-router rebuilds its
 whole filter table on each change, but that cause is inferred, not proven.
 
-**What to do.** Clients should retry new connections. The network wait doesn't help here: it only
-covers a pod's startup. To reproduce, run the `e2e-experiment` workflow
-([development guide](../internals/development.md); the ordering results are in
-[ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)).
+**What to do.** Clients should retry new connections; the network wait only covers a pod's startup.
+To reproduce, run the `e2e-experiment` workflow ([development guide](../internals/development.md)).
 
 ---
 
