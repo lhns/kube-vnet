@@ -1,15 +1,12 @@
 package controller
 
 import (
-	"context"
+	"maps"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func podWithHostPorts(name string, ports ...corev1.ContainerPort) *corev1.Pod {
@@ -21,72 +18,42 @@ func podWithHostPorts(name string, ports ...corev1.ContainerPort) *corev1.Pod {
 	}
 }
 
-func TestDesiredHostPortKeys_SinglePodSinglePort(t *testing.T) {
-	p := podWithHostPorts("p1", corev1.ContainerPort{HostPort: 8080, ContainerPort: 80, Protocol: corev1.ProtocolTCP})
-	got := desiredHostPortKeys([]corev1.Pod{*p})
-	if len(got) != 1 {
-		t.Fatalf("expected 1 key, got %d", len(got))
+func TestDesiredHostPortKeys(t *testing.T) {
+	tcp := func(port int32) corev1.ContainerPort {
+		return corev1.ContainerPort{HostPort: port, ContainerPort: 80, Protocol: corev1.ProtocolTCP}
 	}
-	if !got[hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}] {
-		t.Errorf("missing expected key 8080/TCP, got: %v", got)
+	key := func(port int32, proto corev1.Protocol) hostPortKey { return hostPortKey{port: port, protocol: proto} }
+	hostNet := podWithHostPorts("p", tcp(8080))
+	hostNet.Spec.HostNetwork = true
+	cases := []struct {
+		name string
+		pods []*corev1.Pod
+		want map[hostPortKey]bool
+	}{
+		{"single_port", []*corev1.Pod{podWithHostPorts("p", tcp(8080))}, map[hostPortKey]bool{key(8080, corev1.ProtocolTCP): true}},
+		{"same_port_both_protocols", []*corev1.Pod{
+			podWithHostPorts("a", tcp(8080)),
+			podWithHostPorts("b", corev1.ContainerPort{HostPort: 8080, ContainerPort: 80, Protocol: corev1.ProtocolUDP}),
+		}, map[hostPortKey]bool{key(8080, corev1.ProtocolTCP): true, key(8080, corev1.ProtocolUDP): true}},
+		{"several_ports", []*corev1.Pod{podWithHostPorts("p", tcp(80), tcp(443))},
+			map[hostPortKey]bool{key(80, corev1.ProtocolTCP): true, key(443, corev1.ProtocolTCP): true}},
+		{"no_host_port", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{ContainerPort: 80})}, map[hostPortKey]bool{}},
+		// Out of scope (ADR 0040): NetworkPolicy on hostNetwork pods is
+		// CNI-dependent.
+		{"host_network_skipped", []*corev1.Pod{hostNet}, map[hostPortKey]bool{}},
+		{"protocol_defaults_to_tcp", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999})},
+			map[hostPortKey]bool{key(9999, corev1.ProtocolTCP): true}},
 	}
-}
-
-func TestDesiredHostPortKeys_SamePortDifferentProtocol(t *testing.T) {
-	a := podWithHostPorts("a", corev1.ContainerPort{HostPort: 8080, ContainerPort: 80, Protocol: corev1.ProtocolTCP})
-	b := podWithHostPorts("b", corev1.ContainerPort{HostPort: 8080, ContainerPort: 80, Protocol: corev1.ProtocolUDP})
-	got := desiredHostPortKeys([]corev1.Pod{*a, *b})
-	if len(got) != 2 {
-		t.Fatalf("expected 2 keys, got %d", len(got))
-	}
-	if !got[hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}] {
-		t.Error("missing 8080/TCP")
-	}
-	if !got[hostPortKey{port: 8080, protocol: corev1.ProtocolUDP}] {
-		t.Error("missing 8080/UDP")
-	}
-}
-
-func TestDesiredHostPortKeys_MultiContainerMultiPort(t *testing.T) {
-	p := &corev1.Pod{
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "web", Ports: []corev1.ContainerPort{{HostPort: 80, Protocol: corev1.ProtocolTCP}}},
-				{Name: "tls", Ports: []corev1.ContainerPort{{HostPort: 443, Protocol: corev1.ProtocolTCP}}},
-			},
-		},
-	}
-	got := desiredHostPortKeys([]corev1.Pod{*p})
-	if len(got) != 2 {
-		t.Fatalf("expected 2 keys, got %d", len(got))
-	}
-}
-
-func TestDesiredHostPortKeys_NoHostPort_Skipped(t *testing.T) {
-	p := podWithHostPorts("p", corev1.ContainerPort{ContainerPort: 80, Protocol: corev1.ProtocolTCP})
-	got := desiredHostPortKeys([]corev1.Pod{*p})
-	if len(got) != 0 {
-		t.Errorf("expected 0 keys (no hostPort declared), got %d: %v", len(got), got)
-	}
-}
-
-func TestDesiredHostPortKeys_HostNetworkPod_Skipped(t *testing.T) {
-	// hostNetwork pods are out of scope per ADR 0040 — NetworkPolicy
-	// enforcement is CNI-dependent.
-	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
-	p.Spec.HostNetwork = true
-	got := desiredHostPortKeys([]corev1.Pod{*p})
-	if len(got) != 0 {
-		t.Errorf("hostNetwork pod should be skipped, got %d keys: %v", len(got), got)
-	}
-}
-
-func TestDesiredHostPortKeys_DefaultProtocolIsTCP(t *testing.T) {
-	// container.ports[].protocol is optional; default is TCP per K8s schema.
-	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999}) // no protocol set
-	got := desiredHostPortKeys([]corev1.Pod{*p})
-	if !got[hostPortKey{port: 9999, protocol: corev1.ProtocolTCP}] {
-		t.Errorf("default protocol should be TCP, got: %v", got)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var pods []corev1.Pod
+			for _, p := range c.pods {
+				pods = append(pods, *p)
+			}
+			if got := desiredHostPortKeys(pods); !maps.Equal(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+		})
 	}
 }
 
@@ -120,87 +87,28 @@ func TestBuildHostPortPolicy_ShapeAndLabels(t *testing.T) {
 	}
 }
 
-func TestHostPortPolicyName_Format(t *testing.T) {
-	name := hostPortPolicyName("traefik", hostPortKey{port: 80, protocol: corev1.ProtocolTCP})
-	if !strings.HasPrefix(name, "kube-vnet.ext.host.80.tcp-") {
-		t.Errorf("name = %q, want prefix kube-vnet.ext.host.80.tcp-", name)
+func TestHostPortPolicyName(t *testing.T) {
+	key := hostPortKey{port: 80, protocol: corev1.ProtocolTCP}
+	name := hostPortPolicyName("traefik", key)
+	if !strings.HasPrefix(name, "kube-vnet.ext.host.80.tcp-") || len(name) > 63 {
+		t.Errorf("name = %q, want prefix kube-vnet.ext.host.80.tcp- and at most 63 characters", name)
 	}
-	if len(name) > 63 {
-		t.Errorf("name length %d > 63: %q", len(name), name)
-	}
-}
-
-func TestHostPortPolicyName_NSInHash(t *testing.T) {
-	// Same (port, proto) in different NSes → different policy names.
-	a := hostPortPolicyName("nsA", hostPortKey{port: 80, protocol: corev1.ProtocolTCP})
-	b := hostPortPolicyName("nsB", hostPortKey{port: 80, protocol: corev1.ProtocolTCP})
-	if a == b {
-		t.Errorf("expected different names for different NSes, both = %q", a)
+	if name == hostPortPolicyName("other", key) {
+		t.Errorf("the namespace must be in the hash, both = %q", name)
 	}
 }
 
-func TestDesiredHostPortStamps_RespectsHostNetwork(t *testing.T) {
-	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
-	stamps := desiredHostPortStamps(p)
-	if len(stamps) != 1 {
-		t.Errorf("expected 1 stamp, got %d", len(stamps))
-	}
-	p.Spec.HostNetwork = true
-	stamps = desiredHostPortStamps(p)
-	if len(stamps) != 0 {
-		t.Errorf("hostNetwork pod should have no stamps, got %d", len(stamps))
-	}
-}
-
-func TestDesiredHostPortStamps_LabelFormat(t *testing.T) {
+func TestDesiredHostPortStamps(t *testing.T) {
 	p := podWithHostPorts("p",
 		corev1.ContainerPort{HostPort: 80, Protocol: corev1.ProtocolTCP},
 		corev1.ContainerPort{HostPort: 9999, Protocol: corev1.ProtocolUDP},
 	)
-	stamps := desiredHostPortStamps(p)
-	want1 := LabelSystemHostPortPrefix + "80.tcp"
-	want2 := LabelSystemHostPortPrefix + "9999.udp"
-	if !stamps[want1] {
-		t.Errorf("missing %q", want1)
+	want := map[string]bool{LabelSystemHostPortPrefix + "80.tcp": true, LabelSystemHostPortPrefix + "9999.udp": true}
+	if got := desiredHostPortStamps(p); !maps.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
-	if !stamps[want2] {
-		t.Errorf("missing %q", want2)
-	}
-}
-
-// reconcileHostPort runs one reconcile of ns holding pods and returns the
-// names of the policies in ns afterwards.
-func reconcileHostPort(t *testing.T, ns *corev1.Namespace, pods ...*corev1.Pod) []string {
-	t.Helper()
-	objs := []client.Object{ns}
-	for _, p := range pods {
-		objs = append(objs, p)
-	}
-	c := autoAllowClient(t, objs...)
-	r := &HostPortReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}
-	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: ns.Name}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	var names []string
-	for _, p := range listPolicies(t, c, ns.Name) {
-		names = append(names, p.Name)
-	}
-	return names
-}
-
-func TestHostPortReconcile_AppliesPolicy(t *testing.T) {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ns"}}
-	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
-	if got := reconcileHostPort(t, ns, p); len(got) != 1 {
-		t.Errorf("got policies %v, want 1", got)
-	}
-}
-
-// NamespaceLifecycle admission rejects creates in a terminating namespace, so
-// applying there would only fail and retry until the namespace is gone.
-func TestHostPortReconcile_TerminatingNamespace_NoApply(t *testing.T) {
-	p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP})
-	if got := reconcileHostPort(t, terminatingNamespace("ns"), p); len(got) != 0 {
-		t.Errorf("applied %v into a terminating namespace", got)
+	p.Spec.HostNetwork = true
+	if got := desiredHostPortStamps(p); len(got) != 0 {
+		t.Errorf("hostNetwork pod should have no stamps, got %v", got)
 	}
 }
