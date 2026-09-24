@@ -41,7 +41,7 @@ A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored �
 
 > Pods in a `kube-vnet/disabled=true` (or `--disabled-namespaces`) namespace do not get this event. A pod there that carries a `kube-vnet/net.*` label gets one `NamespaceExcluded` Warning instead, saying the label has no effect; pods without one get nothing.
 >
-> Events are **best-effort** and expire after an hour. The vnet's own `Degraded`/`InvalidJoiners` condition (`kubectl describe vnet`) keeps the durable record for pods in namespaces the vnet admits, if you can read the vnet's namespace. A pod that asked to join from elsewhere is reported only by its own Event, and resolution re-emits it whenever the pod is re-resolved.
+> Events are best-effort and expire after an hour. For pods in namespaces the vnet admits, its `Degraded`/`InvalidJoiners` condition keeps a durable record; a pod that asked to join from elsewhere has only its Event, re-emitted whenever the pod is re-resolved.
 
 ### Bare label, no local vnet
 
@@ -51,7 +51,7 @@ A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored �
 Events:
   Type     Reason                       Age   From                 Message
   ----     ------                       ----  ----                 -------
-  Warning  VirtualNetworkNotJoinable    10s   kube-vnet-resolution  pod namespace "<this-pod-ns>" cannot join "<this-pod-ns>.X" (from <pod-label>): VirtualNetwork "X" does not exist in namespace "<this-pod-ns>". hint: the bare form "kube-vnet/net.X" is only honored in the vnet's home namespace; to join a vnet hosted in another namespace use the prefixed form "kube-vnet/net.<homeNS>.X".
+  Warning  VirtualNetworkNotJoinable    10s   kube-vnet-resolution  cannot join VirtualNetwork <this-pod-ns>/X (from pod label kube-vnet/net.X): VirtualNetwork <this-pod-ns>/X does not exist. hint: the bare form "kube-vnet/net.X" is only honored in the vnet's home namespace; to join a vnet hosted in another namespace use the prefixed form "kube-vnet/net.<homeNS>.X".
 ```
 
 **Cause.** No `VirtualNetwork` of name `<X>` exists in the pod's *own* namespace. The bare form only resolves against the pod's namespace.
@@ -75,7 +75,7 @@ metadata:
 
 ### Prefixed label, vnet doesn't exist
 
-**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>` and isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork "X" does not exist in namespace "<homeNS>"`.
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>` and isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork <homeNS>/X does not exist.`
 
 **Cause.** The vnet `<homeNS>/<X>` doesn't exist — either typo'd home-namespace, typo'd vnet name, or the vnet hasn't been created yet.
 
@@ -89,7 +89,7 @@ Either correct the label key, or apply the missing `VirtualNetwork` manifest.
 
 ### Prefixed label, namespace not allowed
 
-**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork <homeNS>/X does not permit namespace "<this-pod-ns>" (spec.allowedNamespaces)`.
+**Symptom.** The pod has `kube-vnet/net.<homeNS>.<X>`, the vnet `<homeNS>/<X>` exists, and the pod still isn't a member. The `VirtualNetworkNotJoinable` message reads `… VirtualNetwork <homeNS>/X does not permit namespace "<this-pod-ns>"; its owner can add it to spec.allowedNamespaces.`
 
 **Cause.** The vnet's `spec.allowedNamespaces` does not permit the pod's namespace. Only the pod owner is told: the vnet's `Degraded` status counts only pods in namespaces it admits, so a tenant can't mark someone else's vnet degraded by labelling a pod.
 
@@ -247,22 +247,19 @@ For the full design, see the [deny-all baseline section in `concepts.md`](../get
 
 ## A Job or one-shot pod fails to connect on startup, but succeeds on retry
 
-The classic shape: a migration or backup Job fails immediately, and the same Job with a `sleep`
-in front of it works. Adding the sleep is not the fix — it is a guess at a duration you do not
-control.
-
-**What is happening.** Two delays add up before a new pod's traffic is allowed:
+A migration or backup Job fails immediately, and the same Job with a `sleep` in front of it works.
+The sleep is a guess at a duration you do not control. Two delays add up before a new pod's traffic
+is allowed:
 
 1. **kube-vnet's.** Membership policies select pods by the `kube-vnet.system/net.*` label the
-   operator stamps *after* the apiserver persists the pod. Until that stamp lands, the pod
-   matches no membership policy and the deny-all baseline applies. Field-measured at under a
-   second; it stretches under load, during an operator restart, and with a slow apiserver. The
-   admission webhook (`webhook.enabled=true`, [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md))
-   removes this one: it stamps inside the apiserver's write path.
-2. **The CNI's.** The CNI then has to program the pod's IP into its rules. On kube-router this is
-   a full iptables rewrite on every pod event, measured at 2-4 s end to end on a production
-   cluster, and it grows with the number of NetworkPolicies. The network wait below holds the pod
-   until it is over.
+   operator stamps *after* the apiserver persists the pod; until then the deny-all baseline
+   applies. Usually under a second, longer under load, during an operator restart, or with a slow
+   apiserver. The admission webhook (`webhook.enabled=true`,
+   [ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)) removes it by stamping at
+   admission.
+2. **The CNI's.** The CNI then programs the pod's IP into its rules. On kube-router this is a full
+   iptables rewrite per pod event, 2–4 s end to end on one production cluster, growing with the
+   number of NetworkPolicies. The network wait below covers it.
 
 **The fix on kube-router: enable the webhook and the network wait** (`webhook.enabled=true`,
 `webhook.networkWait.enabled=true`), then annotate the pod template:
@@ -273,23 +270,23 @@ metadata:
     kube-vnet/network-max-wait: "30s"
 ```
 
-An injected init container holds the app until every node has applied the pod, and never longer
-than the maximum ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). Its log says how
-long each node took:
+An injected init container holds the app until every node's beacon accepts the pod, and never
+longer than the maximum ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md), which also has
+the per-CNI measurements). Its log says how long each node took:
 
 ```bash
 kubectl logs -n <ns> <pod> -c kube-vnet-network-wait
 ```
 
-`max wait ... reached; starting anyway` lists the beacon IPs (one beacon pod per node) that never accepted; `kubectl get pods -n kube-vnet-system -o wide -l app.kubernetes.io/component=network-beacon` maps them to nodes. Look for a node
-whose CNI is stuck, or an egress policy or mesh that blocks the probe to the
-`<release>-network-beacon` pods. If it says the beacon Service never resolved, the
-pod could not look up the beacons at all: check that the beacon DaemonSet is running
-and that the pod can reach cluster DNS. On other CNIs the wait is a strong hint rather than a
-guarantee; if the first connection still fails there, use the check below.
+`max wait ... reached; starting anyway` lists the beacon IPs that never accepted;
+`kubectl get pods -n kube-vnet-system -o wide -l app.kubernetes.io/component=network-beacon` maps
+them to nodes. Look for a node whose CNI is stuck, or an egress policy or mesh that blocks the probe
+to the `<release>-network-beacon` pods. If the beacon Service never resolved, check that the beacon
+DaemonSet is running and that the pod can reach cluster DNS. The pod gets a `NetworkWaitSkipped`
+Event if it started without the wait. On CNIs other than kube-router the wait is a strong hint, not
+a guarantee; if the first connection still fails there, use the checks below.
 
-**Before diagnosing, establish what a denial looks like on your CNI.** This is the step people
-skip, and getting it wrong sends you after the wrong bug — a refusal reads like "nothing is
+**First establish what a denial looks like on your CNI**, or a refusal will read like "nothing is
 listening" rather than "policy denied".
 
 ```bash
@@ -591,7 +588,7 @@ Check the `Ready` condition's reason:
 | `NoPodsAttached` | `Ready=True`; the selector matches pods but none is a member (a baseline or pod-label conflict, direction `none`, or not stamped yet). | Check the pods' events and `kube-vnet.system/net.*` labels. |
 | `HomeNamespaceExcluded` | The target vnet's home namespace is disabled or excluded, so the vnet is not served. | Re-enable the home namespace, or bind to a vnet in a managed namespace. |
 | `VirtualNetworkTerminating` | The target vnet is being deleted. | Recreate the vnet or point the binding elsewhere. |
-| `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
+| `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Check `spec.podSelector` against the pod labels. Bindings select only in their own namespace. |
 | `VirtualNetworkNotJoinable` | The target vnet does not exist, or its `spec.allowedNamespaces` does not permit the binding's namespace; the message says which. | "does not exist": check the target namespace and name. "does not permit": ask the vnet's owner to add the binding's namespace to `allowedNamespaces`, or move the binding. |
 | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |
 | `InvalidDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
@@ -626,7 +623,7 @@ The reason explains what to fix.
 | Reason | Meaning | Fix |
 |---|---|---|
 | `NoIssues` | (`Degraded=False`) — clean. | — |
-| `InvalidJoiners` | At least one pod in a namespace this vnet admits carries a join label for it that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>`: `InvalidDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (namespace disabled). Pods in namespaces the vnet doesn't admit are not listed; they get a `VirtualNetworkNotJoinable` Event in their own namespace. | Fix the value, or remove the join label if the pod shouldn't be a member. |
+| `InvalidJoiners` | A pod in a namespace this vnet admits has a join label for it that can't be honored. The message lists up to three as `<ns>/<pod>:<reason>` (`InvalidDirection` or `NamespaceExcluded`). Pods in namespaces the vnet doesn't admit get a `VirtualNetworkNotJoinable` Event instead. | Fix the value, or remove the join label if the pod shouldn't be a member. |
 | `InvalidName` | Same as Ready / `InvalidName` above. | Same fix. |
 | `HomeNamespaceExcluded` | Same as Ready. | Same fix. |
 
