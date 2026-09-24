@@ -2,17 +2,7 @@
 
 **Status**: Accepted (2026-09-23)
 
-> **Amendment (2026-09-23) — order of beacon and vnet rule, measured.** A manual experiment (the `e2e-experiment` workflow, `test/e2e/beacon_ordering_test.go`) measures the order directly. Probe pods join a vnet on the worker without the wait. From the pod's start, a sidecar dials the control-plane node's beacon and a vnet member on that node every few ms and records the first success of each; delta = vnet − beacon. 20 pods per CNI and run, under extra NetworkPolicy load and churn:
->
-> | run | kube-router | Calico | Cilium |
-> |---|---|---|---|
-> | 300 policies, 10/s churn, 20 ms probe | 0 to +23 ms; 7 pods one probe round late | 0 on every pod | 0 to +3 ms |
-> | 1000 policies, 20/s churn, 5 ms probe | −240 to −67 ms | −140 to +5 ms | no data (the load overflowed Cilium's policy map) |
-> | 1000 policies on 20 ports, 20/s churn, 5 ms probe | −3195 to 0 ms | −690 to 0 ms | 0 to +1 ms |
->
-> On kube-router the beacon and the vnet rule land in the same sync, but not at the same instant, and either can come first. In the one run where the vnet rule came second, it trailed by less than one 20 ms probe round. That is less than the kubelet takes to start the app container after the wait exits. On Calico the pod's own node usually opened all targets at once. Where the remote node came later, the vnet rule came before the beacon or within 5 ms of it. On Cilium every target was already open when the pod started. No run saw a vnet rule trail the beacon by more than one probe round. On Calico and Cilium the beacon remains a strong hint, not a proof, because both CNIs update each policy separately.
-
-> **Amendment (2026-09-23) — tested on Calico and Cilium.** CI now runs the network wait tests on Calico and Cilium (`e2e-network-wait`) as well as kube-router. Two runs gave the same results; all tests pass on all three and none is skipped.
+> **Amendment (2026-09-23) — measured on kube-router, Calico and Cilium.** CI runs the network wait tests on Calico and Cilium (`e2e-network-wait`) as well as kube-router (`e2e-helm`); in two runs every test passed and none was skipped:
 >
 > | | kube-router | Calico | Cilium |
 > |---|---|---|---|
@@ -20,7 +10,17 @@
 > | hostNetwork pod to its own node's beacon | accepted | accepted | accepted |
 > | wait released after (5 pods, 2 runs) | 3–241 ms | 1–97 ms | 2–119 ms |
 >
-> So the beacon is a witness on all three: a node admits a pod only once it knows the pod's IP as a pod. On kube-router that is the one-pass rebuild, so the vnet rules are live. On Calico (the pod in the selector's IP set) and Cilium (the pod's IP in the ipcache) it is the piece a vnet rule also needs, but those CNIs update each policy separately, so it stays a strong hint, not a proof. Because Calico and Cilium drop rather than reject, a beacon that has not yet accepted costs a round the 500 ms dial timeout instead of a quick refusal. The kind clusters in CI did not reproduce the race: all unwaited one-shot clients connected on every CNI, so the tests show the wait releases promptly and does not break the first connection; the evidence that it fixes the race is still the live kube-router cluster in Context.
+> So on all three a node's beacon admits a pod only once the node knows the pod's IP as a pod. On kube-router that is the one-pass rebuild, so the vnet rules are live. On Calico (the pod in the selector's IP set) and Cilium (the pod's IP in the ipcache) it is a piece a vnet rule also needs, but those CNIs update each policy separately, so the beacon stays a strong hint, not a proof. Calico and Cilium drop rather than reject, so an unready beacon costs the 500 ms dial timeout per round. The kind clusters did not reproduce the race (unwaited one-shot clients always connected), so CI shows the wait releases promptly and breaks nothing; the evidence that it fixes the race is the live kube-router cluster in Context.
+>
+> A manual experiment (`e2e-experiment` workflow, `test/e2e/beacon_ordering_test.go`) measured the order directly: probe pods on the worker, without the wait, join a vnet; from pod start a sidecar dials the control-plane node's beacon and a vnet member on that node every few ms; delta = first vnet success − first beacon success, 20 pods per CNI and run, under NetworkPolicy load and churn:
+>
+> | run | kube-router | Calico | Cilium |
+> |---|---|---|---|
+> | 300 policies, 10/s churn, 20 ms probe | 0 to +23 ms; 7 pods one probe round late | 0 on every pod | 0 to +3 ms |
+> | 1000 policies, 20/s churn, 5 ms probe | −240 to −67 ms | −140 to +5 ms | no data (the load overflowed Cilium's policy map) |
+> | 1000 policies on 20 ports, 20/s churn, 5 ms probe | −3195 to 0 ms | −690 to 0 ms | 0 to +1 ms |
+>
+> On kube-router the beacon and the vnet rule land in the same sync but either can come first; when the vnet rule came second it trailed by less than one 20 ms probe round, less than the kubelet takes to start the app after the wait exits. On Calico the vnet rule came before the beacon or within 5 ms of it; on Cilium every target was already open when the pod started. No run on any CNI saw a vnet rule trail the beacon by more than one probe round.
 
 Builds on: [ADR 0034](0034-admission-webhook-for-pod-resolution.md) (the stamping webhook injects the wait). Not a revival of [ADR 0028](0028-runtime-policy-verification.md)'s rejected Option C; see below.
 
