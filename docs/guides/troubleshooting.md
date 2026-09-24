@@ -592,10 +592,9 @@ Check the `Ready` condition's reason:
 | `HomeNamespaceExcluded` | The target vnet's home namespace is disabled or excluded, so the vnet is not served. | Re-enable the home namespace, or bind to a vnet in a managed namespace. |
 | `VirtualNetworkTerminating` | The target vnet is being deleted. | Recreate the vnet or point the binding elsewhere. |
 | `NoPodsMatch` | `Ready=True`, but the selector matches no pods in the binding's namespace. | Verify `spec.podSelector` against the actual pod labels in the namespace. The selector is **scoped to the binding's own namespace** — there is no cross-namespace binding. |
-| `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. | Check the target namespace and name. |
-| `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. | Either add the binding's namespace to the target vnet's `allowedNamespaces`, or move the binding. |
+| `VirtualNetworkNotJoinable` | The target vnet does not exist, or its `spec.allowedNamespaces` does not permit the binding's namespace; the message says which. | "does not exist": check the target namespace and name. "does not permit": ask the vnet's owner to add the binding's namespace to `allowedNamespaces`, or move the binding. |
 | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. | Remove the annotation, or move the binding to a managed namespace. |
-| `UnknownDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
+| `InvalidDirection` | `spec.direction` is not one of `both`, `ingress`, `egress`, `none`. | Fix the value. |
 | `InvalidSelector` | `spec.podSelector` cannot be parsed. | Fix the selector syntax. |
 
 Once the binding is `Ready=True`, the resolution controller stamps the canonical FQ system label `kube-vnet.system/net.<homeNS>.<vnet>` on each selected pod (per [ADR 0033](../adr/0033-canonical-fq-system-labels.md)). The pods are then covered by the regular per-`(vnet, namespace)` membership policy — no per-binding policy is emitted. To inspect:

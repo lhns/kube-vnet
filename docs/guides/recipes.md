@@ -383,7 +383,7 @@ spec:
 Effect:
 
 - The binding selects pods in `webapp` whose labels match `app: thirdparty-billing-agent`. Those pods are members of `platform/payments` for the binding's `direction` (default `both`).
-- The binding's status reports `Ready=True, PodsAttached` (or `NoPodsMatch`/`VirtualNetworkNotFound`/`NamespaceNotAllowed`/etc; see [`troubleshooting.md`](troubleshooting.md#my-virtualnetworkbinding-doesnt-attach-any-pods)).
+- The binding's status reports `Ready=True, PodsAttached` (or `NoPodsMatch`/`NoPodsAttached`/`VirtualNetworkNotJoinable`/etc; see [`troubleshooting.md`](troubleshooting.md#my-virtualnetworkbinding-doesnt-attach-any-pods)).
 - The resolution controller stamps `kube-vnet.system/net.platform.payments=both` on the selected pods. They are covered by the regular membership policy in `webapp`, `kube-vnet.mem.platform.payments-<8hex>` — there is no per-binding policy ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 
 ```bash
@@ -400,7 +400,7 @@ kubectl get networkpolicy -A -l kube-vnet.system/network=platform.payments
 Constraints worth knowing:
 
 - The selector is **scoped to the binding's own namespace**. There are no cross-namespace bindings.
-- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
+- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=VirtualNetworkNotJoinable`.
 - Bindings in `kube-vnet/disabled` (or operator-excluded) namespaces are inert.
 
 Bindings are an escape hatch — the join label is the recommended primary mechanism. Use them when you genuinely can't modify the pod template. See [ADR 0026](../adr/0026-virtualnetworkbinding-crd.md).

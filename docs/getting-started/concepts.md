@@ -168,7 +168,7 @@ spec:
 Behavior:
 
 - The selector is **scoped to the binding's own namespace**. There are no cross-namespace bindings.
-- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`.
+- The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=VirtualNetworkNotJoinable`.
 - A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert. The binding's status is `Ready=False, Reason=NamespaceExcluded`.
 - No per-binding policy is emitted: selected pods get the same stamp as label-driven members and are covered by the regular membership policy ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
 

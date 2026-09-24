@@ -299,7 +299,7 @@ status:
 | `direction` | string enum | `both` (default) \| `ingress` \| `egress` \| `none`. Same enum as the join label value. |
 | `podSelector` | `metav1.LabelSelector` | Required. **Scoped to the binding's own namespace** — there are no cross-namespace bindings. |
 
-The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=NamespaceNotAllowed`. A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert (`Ready=False, Reason=NamespaceExcluded`).
+The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permitted namespace surfaces `Ready=False, Reason=VirtualNetworkNotJoinable`. A binding in a `kube-vnet/disabled` (or operator-excluded) namespace is inert (`Ready=False, Reason=NamespaceExcluded`).
 
 ## status
 
@@ -310,12 +310,11 @@ The target vnet's `spec.allowedNamespaces` is enforced. A binding in a non-permi
 | True | `PodsAttached` | At least one selected pod is a member. `attachedPods` lists the members; if some selected pods are not, the message counts them. |
 | True | `NoPodsAttached` | The selector matches pods, but none is a member: resolution overrode the binding (a baseline or pod-label conflict, direction `none`) or has not stamped them yet. Check the pods' events and `kube-vnet.system/net.*` labels. |
 | True | `NoPodsMatch` | The binding is accepted, but the selector currently matches zero pods in the binding's namespace. |
-| False | `VirtualNetworkNotFound` | `spec.virtualNetworkRef` does not resolve. |
+| False | `VirtualNetworkNotJoinable` | The target vnet does not exist, or its `spec.allowedNamespaces` does not permit the binding's namespace; the message says which. The binding also gets a `VirtualNetworkNotJoinable` Event. |
 | False | `VirtualNetworkTerminating` | The target vnet is being deleted; its membership policies are gone. |
 | False | `HomeNamespaceExcluded` | The target vnet's home namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`, so the vnet is not served and grants nothing. System vnets are exempt. |
-| False | `NamespaceNotAllowed` | The target vnet's `spec.allowedNamespaces` does not permit the binding's namespace. |
 | False | `NamespaceExcluded` | The binding's namespace has `kube-vnet/disabled=true` or is in `--disabled-namespaces`. |
-| False | `UnknownDirection` | `spec.direction` is not one of the recognized values. |
+| False | `InvalidDirection` | `spec.direction` is not one of the recognized values. |
 | False | `InvalidSelector` | `spec.podSelector` is not a parseable label selector. |
 
 The Go-level reason constants live in `internal/controller/virtualnetworkbinding_controller.go` (the `ReasonBinding*` block).

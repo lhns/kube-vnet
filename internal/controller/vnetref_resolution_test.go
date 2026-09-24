@@ -284,7 +284,7 @@ func TestBareJoinLabelHint(t *testing.T) {
 // resolution infers it: the binding's own namespace, or the operator's
 // namespace for `cluster`. The binding's status and its vnet->binding mapper
 // must agree, or a binding that resolution honors reports
-// VirtualNetworkNotFound.
+// VirtualNetworkNotJoinable.
 func TestBinding_OmittedRefNamespace_IsInferred(t *testing.T) {
 	const opNS = "kube-vnet-system"
 	binding := func(name, vnet string) *vnetv1alpha1.VirtualNetworkBinding {

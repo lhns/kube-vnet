@@ -97,6 +97,12 @@ release. Pinning to an exact version is recommended.
   | `UnknownDirection` | `InvalidDirection` | per-pod reason in a vnet's `Degraded`/`InvalidJoiners` message |
   | `Pending` (Warning, every 30s) | `NamedPortUnresolved` (Normal, once when the wait starts) | Event on a Service |
   | `Skipped` (Normal) | `ServiceHasNoSelector` (Warning: the Service's pods stay blocked) | Event on a Service |
+  | `UnknownDirection` | `InvalidDirection` | `VirtualNetworkBinding` `Ready` reason |
+  | `VirtualNetworkNotFound` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not exist" |
+  | `NamespaceNotAllowed` | `VirtualNetworkNotJoinable` | `VirtualNetworkBinding` `Ready` reason; the message says "does not permit" |
+
+  The binding's condition now uses the same reason as the
+  `VirtualNetworkNotJoinable` Event it already got.
 
 - **Clearer Event messages.** Every message names a vnet as
   `<namespace>/<name>`. Previously some used the internal `<namespace>.<name>`
