@@ -66,6 +66,8 @@ By default (`rbac.aggregate: true`) the chart ships ClusterRoles aggregated into
 
 A matching viewer ClusterRole (`<release>-clustervirtualnetworkbaselines-viewer`) lets dashboards and audit tooling read the cluster baseline without write access.
 
+No end-user role grants the `/status` subresource: only the operator writes status.
+
 ## Defining a VirtualNetwork
 
 Once the chart is installed, the `VirtualNetwork` CRD is registered. Walkthrough and runnable examples:

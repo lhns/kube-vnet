@@ -88,6 +88,8 @@ The chart ships ClusterRoles aggregated into the upstream `admin`/`edit`/`view` 
 
 A matching `*-viewer` ClusterRole per CRD aggregates into `view` (or, for the cluster baseline, ships unbound).
 
+None of these roles grants the `/status` subresource: only the operator writes status, so a namespace editor cannot forge a `Ready` condition or `status.members` ([threat model F-14](threat-model.md#7-findings-register)). Status is still readable through `get` on the resource.
+
 The cluster baseline is a high-leverage knob — editing it changes every namespace's default ingress posture. Bind the editor role only to identities that already need cluster-wide policy authority. The reserved-name VAP (Kubernetes ≥ 1.30) prevents namespace-admins from sneaking around this by creating a `VirtualNetwork` named `cluster` or carrying `kube-vnet.system/managed-by=kube-vnet`.
 
 To skip the chart-shipped end-user RBAC entirely (managing it externally via Argo, GitOps, etc.), set `rbac.aggregate=false`.
