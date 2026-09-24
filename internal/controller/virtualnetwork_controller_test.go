@@ -50,6 +50,9 @@ func TestDiscoverMembers_EligibilityAndDiagnostics(t *testing.T) {
 		stamped("off", "stale", "both", prefixed("both")),
 		// A bad user label is reported but does not revoke a valid stamp.
 		stamped("allowed", "typo", "ingress", prefixed("bogus")),
+		// A namespace the vnet doesn't admit is not reported, whatever its
+		// label says: any tenant could otherwise degrade the vnet.
+		testutil.Pod("foreign", "prober", prefixed("bogus")),
 	)
 	vnet := &vnetv1alpha1.VirtualNetwork{}
 	if err := r.Get(context.Background(), client.ObjectKey{Namespace: "home", Name: "v"}, vnet); err != nil {
@@ -72,9 +75,8 @@ func TestDiscoverMembers_EligibilityAndDiagnostics(t *testing.T) {
 		gotInvalid[j.PodNamespace+"/"+j.PodName] = j.Reason
 	}
 	wantInvalid := map[string]string{
-		"foreign/stale": ReasonNamespaceNotAllowed,
-		"off/stale":     ReasonNamespaceExcluded,
-		"allowed/typo":  ReasonUnknownDirection,
+		"off/stale":    ReasonNamespaceExcluded,
+		"allowed/typo": ReasonUnknownDirection,
 	}
 	if !reflect.DeepEqual(gotInvalid, wantInvalid) {
 		t.Errorf("invalid = %v, want %v", gotInvalid, wantInvalid)

@@ -37,8 +37,9 @@ type ResolutionRule struct {
 	// `kube-vnet/net.<X>` toward the prefixed form when no local vnet X exists.
 	Hint string
 
-	// Owner is the object that declared this rule — the Baseline, Binding, or
-	// the Pod itself for join labels. A VirtualNetworkNotJoinable Warning
+	// Owner is the object that declared this rule — the namespace Baseline,
+	// Binding, or the Pod itself for join labels and for the cluster-scoped
+	// baseline (whose Events would land in `default`). A VirtualNetworkNotJoinable Warning
 	// Event is emitted on it when the rule is dropped. Never used for
 	// resolution logic.
 	Owner client.Object

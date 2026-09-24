@@ -117,6 +117,27 @@ func TestResolutionEvents_NoWarningWithoutDisagreement(t *testing.T) {
 	}
 }
 
+// An Event on the cluster-scoped baseline would land in `default` and name the
+// pod's namespace there; it goes on the pod instead.
+func TestResolutionEvents_ClusterBaselineNotJoinableGoesOnPod(t *testing.T) {
+	cb := &vnetv1alpha1.ClusterVirtualNetworkBaseline{
+		ObjectMeta: metav1.ObjectMeta{Name: "default"},
+		Spec: vnetv1alpha1.ClusterVirtualNetworkBaselineSpec{
+			Memberships: []vnetv1alpha1.BaselineMembership{{
+				VirtualNetworkRef: vnetv1alpha1.VirtualNetworkRef{Name: "missing", Namespace: "elsewhere"},
+				Direction:         "both",
+			}},
+		},
+	}
+	rec, _ := reconcileWithEvents(t, nil, cb)
+
+	only(t, rec, ReasonVirtualNetworkNotJoinable)
+	if got := rec.on(ReasonVirtualNetworkNotJoinable, &corev1.Pod{}, "app", "p"); len(got) != 1 ||
+		!strings.Contains(got[0], "ClusterVirtualNetworkBaseline/default") {
+		t.Fatalf("want the Event on the pod, naming the baseline as source; got %q", got)
+	}
+}
+
 func only(t *testing.T, rec *fakeRecorder, reason string) string {
 	t.Helper()
 	if len(rec.reasons) != 1 || rec.reasons[0] != reason {

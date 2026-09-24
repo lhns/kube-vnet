@@ -164,7 +164,7 @@ Two condition types are maintained: `Ready` and `Degraded`.
 | Status | Reason | Message gist | When it fires |
 |---|---|---|---|
 | False | `NoIssues` | "" | Reconcile clean; no issues observed. |
-| True | `InvalidJoiners` | "<N> invalid joiners: <ns>/<pod>:<reason>, …" (first three, then "(+N more)") | A pod carries a `kube-vnet/net.*` join label for this vnet that can't be honored. Per-pod reasons: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (pod's namespace is disabled), `NamespaceNotAllowed` (not permitted by `allowedNamespaces`). Advisory: a pod that is a member through another source (binding, baseline) keeps that membership. |
+| True | `InvalidJoiners` | "<N> invalid joiners: <ns>/<pod>:<reason>, …" (first three, then "(+N more)") | A pod in a namespace this vnet admits carries a `kube-vnet/net.*` join label for it that can't be honored. Per-pod reasons: `UnknownDirection` (value not `both`/`ingress`/`egress`/`none`), `NamespaceExcluded` (pod's namespace is disabled). Pods in namespaces the vnet doesn't admit are left out, so no tenant can degrade someone else's vnet or put names in its status; they get a `VirtualNetworkNotJoinable` Event instead. Advisory: a pod that is a member through another source (binding, baseline) keeps that membership. |
 | True | `InvalidName` | as above | Mirrors the Ready / `InvalidName` case. |
 | True | `HomeNamespaceExcluded` | as above | Mirrors the Ready / `HomeNamespaceExcluded` case. |
 

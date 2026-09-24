@@ -196,7 +196,10 @@ func (r *Resolver) clusterBaselineRules(ctx context.Context, pod *corev1.Pod) ([
 			Direction: dir,
 			Source:    "ClusterVirtualNetworkBaseline/default",
 			Ref:       m.VirtualNetworkRef,
-			Owner:     cb,
+			// The pod, not the baseline: an Event on a cluster-scoped
+			// object lands in `default`, where it would name this
+			// namespace to anyone who can read `default`.
+			Owner: pod,
 		})
 	}
 	return out, nil

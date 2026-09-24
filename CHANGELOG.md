@@ -179,6 +179,16 @@ release. Pinning to an exact version is recommended.
   vnet's or binding's `Ready` condition or member list. Status gates no
   traffic, but humans and alerts read it. The roles no longer grant `/status`;
   only the operator writes it. Threat model F-14.
+- **Any tenant could degrade any vnet and write names into its status.**
+  Labelling a pod `kube-vnet/net.<ns>.<vnet>` for a vnet that doesn't admit
+  the pod's namespace turned that vnet `Degraded`, emitted a Warning on it and
+  put the tenant's namespace and pod name in its `Degraded` message. The vnet
+  now counts only pods in namespaces it admits; the pod still gets its
+  `VirtualNetworkNotJoinable` Event in its own namespace.
+- **`VirtualNetworkNotJoinable` for a `ClusterVirtualNetworkBaseline` rule
+  landed in `default`**, where Events on cluster-scoped objects go, naming each
+  affected namespace to anyone who can read `default`. It is now emitted on the
+  pod.
 
 ## [0.7.3] — 2026-09-02
 
