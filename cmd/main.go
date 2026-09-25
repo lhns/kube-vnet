@@ -256,13 +256,41 @@ func main() {
 			"port", webhookPort, "certDir", webhookCertDir)
 	}
 
-	must(mgr.AddHealthzCheck("healthz", healthz.Ping), "unable to add healthz")
-	must(mgr.AddReadyzCheck("readyz", healthz.Ping), "unable to add readyz")
+	var webhookStarted healthz.Checker
+	if webhookEnabled {
+		webhookStarted = mgr.GetWebhookServer().StartedChecker()
+	}
+	must(addProbes(mgr, webhookStarted), "unable to add health probes")
 
 	setupLog.Info("starting kube-vnet operator",
 		"version", version, "commit", commit, "buildDate", date,
 		"disabled", fmt.Sprintf("%v", disabled))
 	must(mgr.Start(ctrl.SetupSignalHandler()), "manager exited with error")
+}
+
+// probeRegistrar is the part of manager.Manager that addProbes needs.
+type probeRegistrar interface {
+	AddHealthzCheck(name string, check healthz.Checker) error
+	AddReadyzCheck(name string, check healthz.Checker) error
+}
+
+// addProbes registers /healthz and /readyz. Liveness is a ping: restarting
+// the pod does not fix a missing serving cert or a taken port, it only adds
+// a crash loop. With the webhook enabled (webhookStarted non-nil), readiness
+// also requires the webhook server to accept TLS connections, so a replica
+// that cannot serve admission is taken out of the webhook Service instead of
+// failing pod creation (the validating webhook is failurePolicy: Fail).
+func addProbes(r probeRegistrar, webhookStarted healthz.Checker) error {
+	if err := r.AddHealthzCheck("healthz", healthz.Ping); err != nil {
+		return err
+	}
+	if err := r.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return err
+	}
+	if webhookStarted != nil {
+		return r.AddReadyzCheck("webhook", webhookStarted)
+	}
+	return nil
 }
 
 // must logs msg and exits if err is set.

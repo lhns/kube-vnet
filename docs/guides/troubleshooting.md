@@ -496,7 +496,7 @@ Since v0.4.0 kube-vnet auto-emits an allow on the webhook port whenever a `Valid
 
 Only with `webhook.enabled=true` ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md)). Two different errors:
 
-**`failed calling webhook "pods.systemlabels.kube-vnet.lhns.de"`** (connection refused, timeout, or a TLS error). The validating webhook is `failurePolicy: Fail`, so while no operator replica serves it, pod creation and update in managed namespaces is rejected. Check the operator:
+**`failed calling webhook "pods.systemlabels.kube-vnet.lhns.de"`** (connection refused, timeout, or a TLS error). The validating webhook is `failurePolicy: Fail`, so while no operator replica serves it, pod creation and update in managed namespaces is rejected. A replica whose webhook server is not serving (serving cert missing, port taken) reports not Ready and drops out of the `kube-vnet-webhook` endpoints, so no Ready replica usually means no endpoints. Check the operator:
 
 ```bash
 kubectl get deploy -n kube-vnet-system kube-vnet

@@ -96,6 +96,9 @@ release. Pinning to an exact version is recommended.
   is no longer re-applied. Emitted policies and drift correction are unchanged.
 - Built with controller-runtime v0.25.0 (was v0.24.1), Kubernetes v0.37 client
   libraries (was v0.36) and Go 1.27 (was 1.26). No behaviour change expected.
+- With `webhook.enabled=true`, the operator is Ready only once its webhook
+  server accepts TLS connections, so the webhook Service no longer routes
+  admission to a replica that cannot serve it. Liveness is unchanged.
 
 ### Fixed
 
