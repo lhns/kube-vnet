@@ -87,7 +87,8 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// A failed apply doesn't stop the loop, and its key stays kept so the
-	// sweep leaves a live policy of that port alone.
+	// sweep leaves a live policy of that port alone, and so its restore
+	// tracking survives until an apply succeeds.
 	keep := map[client.ObjectKey]bool{}
 	var applyErrs []error
 	for key := range desiredHostPortKeys(pods.Items) {
@@ -99,7 +100,6 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				"the host-port NetworkPolicy %s could not be applied: %v. Until this is fixed, traffic to hostPort %d/%s "+
 					"on pods in this namespace is blocked.", pol.Name, err, key.port, key.protocol)
 			applyErrs = append(applyErrs, fmt.Errorf("apply host-port policy %s: %w", key, err))
-			r.restores.forget(client.ObjectKeyFromObject(pol))
 			continue
 		}
 		if r.restores.applied(client.ObjectKeyFromObject(pol), created) {

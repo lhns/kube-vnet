@@ -161,17 +161,17 @@ func (s serviceSource) policy(svc *corev1.Service, name, cidr string, ports []ne
 func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r serviceReconciler,
 	desired func(context.Context, *corev1.Service) (*networkingv1.NetworkPolicy, error),
 ) (ctrl.Result, error) {
-	// A reconcile that leaves the policy unapplied (swept, or failed) must not
-	// make its next creation look like a restore.
-	applied := false
-	defer func() {
-		if !applied {
-			r.restores.forget(client.ObjectKey{Namespace: req.Namespace, Name: servicePolicyName(s.kind, req.Namespace, req.Name)})
-		}
-	}()
+	// A reconcile that removes the policy (Service or namespace gone, swept)
+	// must not make its next creation look like a restore. One that fails
+	// keeps the key: the policy is still wanted, and recreating it after a
+	// delete is a restore however many attempts it takes.
+	forget := func() {
+		r.restores.forget(client.ObjectKey{Namespace: req.Namespace, Name: servicePolicyName(s.kind, req.Namespace, req.Name)})
+	}
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		if apierrors.IsNotFound(err) {
+			forget()
 			r.pending.forget(req.NamespacedName)
 			return ctrl.Result{}, s.deleteByServiceKey(ctx, r.Client, req.Namespace, req.Name)
 		}
@@ -188,6 +188,7 @@ func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r servic
 	ns := &corev1.Namespace{}
 	if err := r.Get(ctx, client.ObjectKey{Name: req.Namespace}, ns); err != nil {
 		if apierrors.IsNotFound(err) {
+			forget()
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
@@ -197,6 +198,7 @@ func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r servic
 		return ctrl.Result{}, nil
 	}
 	if !r.nsFilter.IsManaged(ns) || ExternalAllowOptedOut(ns.Annotations) || ExternalAllowOptedOut(svc.Annotations) {
+		forget()
 		return ctrl.Result{}, s.sweep(ctx, r.Client, svc, "")
 	}
 
@@ -215,6 +217,7 @@ func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r servic
 		return ctrl.Result{}, err
 	}
 	if policy == nil {
+		forget()
 		return ctrl.Result{}, s.sweep(ctx, r.Client, svc, "")
 	}
 
@@ -230,7 +233,6 @@ func (s serviceSource) reconcile(ctx context.Context, req ctrl.Request, r servic
 			s.what, policy.Name, err, s.who)
 		return ctrl.Result{}, err
 	}
-	applied = true
 	if r.restores.applied(client.ObjectKeyFromObject(policy), created) {
 		policyRestored(r.rec, policy,
 			"this NetworkPolicy was deleted and has been recreated: kube-vnet lets %s reach Service %s through it. "+
