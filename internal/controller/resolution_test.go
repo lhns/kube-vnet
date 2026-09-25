@@ -1,7 +1,11 @@
 package controller
 
 import (
+	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Three-tier baseline lattice (ADR 0031): ClusterBaseline → NamespaceBaseline
@@ -275,26 +279,77 @@ func TestResolve_DeterministicConflictOrder(t *testing.T) {
 	}
 }
 
-// Cluster-singleton inversion (ADR 0033 Amendment): bare and prefixed
-// cluster inputs both collapse to bare `cluster`.
-
-func TestCanonicalSuffix_ClusterCollapses_BareInput(t *testing.T) {
+// Cluster-singleton inversion (ADR 0033 Amendment): bare `cluster` stays bare,
+// it never gains the pod's namespace.
+func TestCanonicalSuffix_ClusterStaysBare(t *testing.T) {
 	if got := CanonicalSuffix("cluster", "platform"); got != "cluster" {
 		t.Errorf("got %q, want cluster", got)
 	}
 }
 
-func TestCanonicalSuffix_ClusterCollapses_PrefixedInput(t *testing.T) {
-	if got := CanonicalSuffix("kube-vnet-system.cluster", "platform"); got != "cluster" {
-		t.Errorf("got %q, want cluster", got)
+// A prefixed `<X>.cluster` no longer collapses to the singleton (ADR 0033,
+// 2026-09-25 amendment): the pod-label path rejects it before canonicalizing,
+// and anything else prefixed passes through untouched.
+func TestCanonicalSuffix_PrefixedClusterDoesNotCollapse(t *testing.T) {
+	for _, in := range []string{"kube-vnet-system.cluster", "random.cluster"} {
+		if got := CanonicalSuffix(in, "platform"); got == "cluster" {
+			t.Errorf("CanonicalSuffix(%q) collapsed to bare cluster", in)
+		}
 	}
 }
 
-func TestCanonicalSuffix_ClusterCollapses_WrongPrefixInput(t *testing.T) {
-	// Reserved-name VAP forbids user-authored vnets named `cluster`, so
-	// `<anything>.cluster` is unambiguously the cluster system vnet.
-	if got := CanonicalSuffix("random.cluster", "platform"); got != "cluster" {
-		t.Errorf("got %q, want cluster", got)
+// Every namespaced cluster join label is dropped with a VirtualNetworkNotJoinable
+// Warning on the pod, including the operator's own namespace; the bare form
+// still joins.
+func TestPodLabelRules_PrefixedClusterLabelRejected(t *testing.T) {
+	rec := &fakeRecorder{}
+	r := &Resolver{Recorder: rec}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "shop", Name: "p",
+		Labels: map[string]string{
+			"kube-vnet/net.kube-vnet-system.cluster": "both",
+			"kube-vnet/net.shop.cluster":             "ingress",
+		},
+	}}
+
+	if rules := r.podLabelRules(pod); len(rules) != 0 {
+		t.Fatalf("prefixed cluster labels must not produce rules, got %v", rules)
+	}
+	notes := rec.on(ReasonVirtualNetworkNotJoinable, &corev1.Pod{}, "shop", "p")
+	if len(notes) != 2 {
+		t.Fatalf("want 2 %s Warnings on the pod, got %d (reasons %v)",
+			ReasonVirtualNetworkNotJoinable, len(notes), rec.reasons)
+	}
+	for i, typ := range rec.types {
+		if typ != corev1.EventTypeWarning {
+			t.Errorf("event %d type = %q, want Warning", i, typ)
+		}
+	}
+	for _, n := range notes {
+		if !strings.Contains(n, "the cluster network has no namespace; use kube-vnet/net.cluster") {
+			t.Errorf("note %q does not steer to the bare label", n)
+		}
+	}
+
+	pod.Labels = map[string]string{"kube-vnet/net.cluster": "both"}
+	rules := r.podLabelRules(pod)
+	if len(rules) != 1 || rules[0].Vnet != VnetKey(SystemVnetCluster) {
+		t.Fatalf("bare cluster label must still join as `cluster`, got %v", rules)
+	}
+}
+
+// A virtualNetworkRef that names the cluster vnet's real home namespace is
+// legitimate (ADR 0043) and still stamps the bare singleton key.
+func TestStampedVnetKey(t *testing.T) {
+	for in, want := range map[VnetKey]VnetKey{
+		"cluster":                  "cluster",
+		"kube-vnet-system.cluster": "cluster",
+		"shop.payments":            "shop.payments",
+		"shop.namespace":           "shop.namespace",
+	} {
+		if got := stampedVnetKey(in); got != want {
+			t.Errorf("stampedVnetKey(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

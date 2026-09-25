@@ -70,6 +70,20 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **BREAKING: the `cluster` vnet is joined only with the bare label
+  `kube-vnet/net.cluster`.** A namespaced `kube-vnet/net.<ns>.cluster` used to
+  collapse silently to the cluster vnet; the singleton has no namespace, so
+  that form is now invalid, the operator's namespace included. A pod carrying
+  one loses that `cluster` membership (its `kube-vnet.system/net.cluster`
+  stamp is removed unless another source grants it) and gets a
+  `VirtualNetworkNotJoinable` Warning. On Kubernetes ≥ 1.30 the join-label
+  ValidatingAdmissionPolicy rejects the label on pod create and when an
+  update adds it; pods that already carry it can still be updated. **Fix:**
+  find affected pods with
+  `kubectl get events -A --field-selector reason=VirtualNetworkNotJoinable`
+  and relabel their templates to `kube-vnet/net.cluster`. `virtualNetworkRef`s
+  naming the operator's namespace are unchanged.
+  [ADR 0033](docs/adr/0033-canonical-fq-system-labels.md).
 - **BREAKING: Event and condition reasons renamed so that one meaning has one
   name.** Update alerts and `--field-selector reason=…` queries:
 

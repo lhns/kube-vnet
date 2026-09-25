@@ -126,10 +126,10 @@ func (r *Resolver) filterPermittedRules(ctx context.Context, rules []ResolutionR
 			continue
 		}
 		// Permission is decided on the fully-qualified key so a wrong
-		// `<ns>.cluster` can be denied; identity is stamped in ADR 0033's
-		// canonical form, which collapses `<anything>.cluster` to bare
-		// `cluster`. Only survivors reach here, so the collapse is safe.
-		rule.Vnet = VnetKey(CanonicalSuffix(string(rule.Vnet), podNS))
+		// `<ns>.cluster` ref can be denied; identity is stamped in ADR 0033's
+		// canonical form, where the cluster singleton is bare `cluster`.
+		// Only survivors reach here, so the collapse is safe.
+		rule.Vnet = stampedVnetKey(rule.Vnet)
 		out = append(out, rule)
 	}
 	return out, nil
@@ -246,6 +246,18 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 			}
 			continue
 		}
+		if isPrefixedClusterSuffix(suffix) {
+			// The cluster vnet is a cluster-wide singleton: a namespace in its
+			// join label names nothing, so the label is invalid rather than
+			// silently collapsed (ADR 0033, 2026-09-25 amendment).
+			if r.Recorder != nil {
+				r.Recorder.Eventf(pod, nil, corev1.EventTypeWarning,
+					ReasonVirtualNetworkNotJoinable, "Resolve",
+					"pod label %s: the cluster network has no namespace; use %s%s. The label is ignored until fixed.",
+					k, userJoinPrefix, SystemVnetCluster)
+			}
+			continue
+		}
 		out = append(out, ResolutionRule{
 			Vnet:      VnetKey(CanonicalSuffix(suffix, pod.Namespace)),
 			Direction: dir,
@@ -258,6 +270,25 @@ func (r *Resolver) podLabelRules(pod *corev1.Pod) []ResolutionRule {
 		})
 	}
 	return out
+}
+
+// isPrefixedClusterSuffix reports whether a join-label suffix is the invalid
+// namespaced form `<X>.cluster` of the cluster singleton. Only the bare
+// `kube-vnet/net.cluster` joins it; vnet names contain no dots and `cluster`
+// is reserved, so the form cannot name any other vnet.
+func isPrefixedClusterSuffix(suffix string) bool {
+	return strings.HasSuffix(suffix, "."+SystemVnetCluster)
+}
+
+// stampedVnetKey maps a permitted rule's key to the identity stamped on the
+// pod (ADR 0033): the cluster singleton is bare `cluster` even when a
+// virtualNetworkRef named its home namespace (ADR 0043); every other key is
+// already canonical.
+func stampedVnetKey(k VnetKey) VnetKey {
+	if _, name, ok := splitVnetKey(k); ok && name == SystemVnetCluster {
+		return VnetKey(SystemVnetCluster)
+	}
+	return k
 }
 
 // canonicalVnetKey turns a vnet reference into the VnetKey to check

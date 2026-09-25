@@ -383,12 +383,16 @@ func awaitVAPActive(t *testing.T, c client.Client, probe func() client.Object) {
 func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 	ctx := context.Background()
 
+	ns := uniqueNS(t, "vapdir")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+	// Created before the policy exists: a pod admitted while namespaced
+	// cluster join labels were still accepted.
+	preexisting := makePod(ns, "preexisting", map[string]string{"kube-vnet/net.kube-vnet-system.cluster": "both"})
+	mustCreate(t, preexisting)
+
 	mustInstallKustomizeVAP(t, "validating-admission-policy.yaml")
 	mustGrantRBAC(t, "vap-test-pod-rw", "", "pods", "alice@example.com")
 	userClient := mustImpersonate(t, "alice@example.com")
-
-	ns := uniqueNS(t, "vapdir")
-	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
 
 	awaitVAPActive(t, userClient, func() client.Object {
 		return makePod(ns, "vap-probe", map[string]string{"kube-vnet/net.probe": "true"})
@@ -472,6 +476,58 @@ func TestIntegration_VAP_JoinLabelDirection(t *testing.T) {
 		patched.Annotations = map[string]string{AnnotationResolvedGeneration: "1"}
 		if err := userClient.Patch(ctx, patched, client.MergeFrom(p)); err != nil {
 			t.Fatalf("expected the annotation patch to be accepted, got: %v", err)
+		}
+	})
+
+	// The cluster vnet is a singleton with no namespace (ADR 0033, 2026-09-25
+	// amendment): only the bare join label is admitted.
+	t.Run("bare cluster join label is accepted", func(t *testing.T) {
+		p := makePod(ns, "barecluster", map[string]string{"kube-vnet/net.cluster": "both"})
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("expected accept, got: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+	})
+
+	for _, key := range []string{"kube-vnet/net.kube-vnet-system.cluster", "kube-vnet/net." + ns + ".cluster"} {
+		t.Run("namespaced cluster join label is rejected on create: "+key, func(t *testing.T) {
+			p := makePod(ns, "nscluster", map[string]string{key: "both"})
+			err := userClient.Create(ctx, p)
+			if err == nil {
+				_ = userClient.Delete(ctx, p)
+				t.Fatalf("expected the VAP to reject %s", key)
+			}
+			if !apierrors.IsInvalid(err) {
+				t.Fatalf("expected an admission rejection, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "bare label kube-vnet/net.cluster") {
+				t.Errorf("rejection should name the bare form, got: %v", err)
+			}
+		})
+	}
+
+	t.Run("adding a namespaced cluster join label on update is rejected", func(t *testing.T) {
+		p := makePod(ns, "addlater", nil)
+		if err := userClient.Create(ctx, p); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		t.Cleanup(func() { _ = userClient.Delete(context.Background(), p) })
+
+		patched := p.DeepCopy()
+		patched.Labels = map[string]string{"kube-vnet/net.kube-vnet-system.cluster": "both"}
+		err := userClient.Patch(ctx, patched, client.MergeFrom(p))
+		if err == nil || !apierrors.IsInvalid(err) {
+			t.Fatalf("expected an admission rejection, got: %v", err)
+		}
+	})
+
+	// A pod admitted before the rule must not be blocked from unrelated
+	// updates (finalizer removal, annotations) by a label it already had.
+	t.Run("existing namespaced cluster join label does not block updates", func(t *testing.T) {
+		patched := preexisting.DeepCopy()
+		patched.Annotations = map[string]string{"example.com/touched": "yes"}
+		if err := userClient.Patch(ctx, patched, client.MergeFrom(preexisting)); err != nil {
+			t.Fatalf("expected the unrelated patch to be accepted, got: %v", err)
 		}
 	})
 }

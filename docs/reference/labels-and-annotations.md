@@ -31,6 +31,7 @@ labels:
 | **Meaning** | "This pod joins the VirtualNetwork `<vnet-name>` in namespace `<homeNS>`, with the given direction." |
 | **Accepted in** | Any namespace, including the home namespace. Required outside it. |
 | **Honored only if** | The target vnet's `spec.allowedNamespaces` permits the pod's namespace. |
+| **Not for `cluster`** | The `cluster` system vnet is a cluster-wide singleton with no namespace: join it only with the bare `kube-vnet/net.cluster`. `kube-vnet/net.<anything>.cluster` (the operator's namespace included) is invalid. The join-label admission policy rejects it on create and when an update adds it; a pod that still carries one joins nothing through it and gets a `VirtualNetworkNotJoinable` Warning. |
 
 ```yaml
 labels:
