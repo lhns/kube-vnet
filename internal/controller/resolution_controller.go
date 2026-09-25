@@ -248,17 +248,16 @@ func bareJoinLabelHint(labelKey, suffix string) string {
 // or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
 // cluster-singleton exception per ADR 0033 (Amendment):
 //
-//   - cluster (bare or prefixed `<X>.cluster`) → `cluster`
-//     The reserved-name VAP forbids user-authored vnets named `cluster`, so
-//     any `<anything>.cluster` is the cluster singleton and collapses to bare.
+//   - bare `cluster`              → `cluster` (the singleton has no namespace)
 //   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
 //   - bare `namespace`            → `<scopeNS>.namespace`
 //   - bare user vnet `<name>`     → `<scopeNS>.<name>`
 //
-// `scopeNS` is the pod's namespace.
+// A prefixed `<X>.cluster` is not a join label at all: podLabelRules drops it
+// (isPrefixedClusterSuffix) before canonicalizing. `scopeNS` is the pod's
+// namespace.
 func CanonicalSuffix(suffix, scopeNS string) string {
-	if suffix == SystemVnetCluster ||
-		strings.HasSuffix(suffix, "."+SystemVnetCluster) {
+	if suffix == SystemVnetCluster {
 		return SystemVnetCluster
 	}
 	if strings.IndexByte(suffix, '.') >= 0 {

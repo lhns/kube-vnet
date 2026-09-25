@@ -33,12 +33,23 @@ spec:
     # turns into a denial. Same idiom as the sibling VAPs.
     - name: podLabels
       expression: 'object.metadata.?labels.orValue({})'
+    - name: clusterJoinKey
+      expression: '"kube-vnet/net.cluster"'
   validations:
     - expression: |
         variables.podLabels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           variables.podLabels[k] in variables.validValues)
       message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty values are no longer accepted. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+    # `kube-vnet/net.<ns>.cluster`: the key ends in `.cluster` but is not the
+    # bare form. A key the old object already had is let through.
+    - expression: |
+        variables.podLabels.all(k,
+          !k.startsWith(variables.joinKeyPrefix) ||
+          !k.endsWith(".cluster") ||
+          k == variables.clusterJoinKey ||
+          (oldObject != null && k in oldObject.metadata.?labels.orValue({})))
+      message: "the cluster VirtualNetwork has no namespace: join it with the bare label kube-vnet/net.cluster, not kube-vnet/net.<namespace>.cluster. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 # Source: kube-vnet/templates/validating-admission-policy.yaml
 apiVersion: admissionregistration.k8s.io/v1

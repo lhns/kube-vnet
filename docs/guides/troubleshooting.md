@@ -43,6 +43,12 @@ A `VirtualNetworkNotJoinable` Warning fires when a membership can't be honored â
 >
 > Events are best-effort and expire after an hour. For pods in namespaces the vnet admits, its `Degraded`/`InvalidJoiners` condition keeps a durable record; a pod that asked to join from elsewhere has only its Event, re-emitted whenever the pod is re-resolved.
 
+### Namespaced cluster label
+
+**Symptom.** The pod has `kube-vnet/net.<ns>.cluster` and isn't a `cluster` member. Its Event reads `pod label kube-vnet/net.<ns>.cluster: the cluster network has no namespace; use kube-vnet/net.cluster`. On Kubernetes â‰¥ 1.30 such a label is rejected at admission when a pod is created with it or an update adds it.
+
+**Fix.** The `cluster` vnet is a cluster-wide singleton; join it with the bare label `kube-vnet/net.cluster`. This holds in the operator's own namespace too.
+
 ### Bare label, no local vnet
 
 **Symptom.** The pod has `kube-vnet/net.<X>` (bare form) and isn't a member. `kubectl describe pod` shows:

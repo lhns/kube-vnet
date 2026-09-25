@@ -6,9 +6,18 @@ has a value outside the recognized direction enum: `both`, `ingress`,
 `egress`, `none`. Legacy aliases `true`, `false`, and the empty string
 were dropped per ADR 0030 (and the ADR 0021 2026-05-05 addendum).
 
+Also rejects a namespaced join label for the cluster singleton,
+`kube-vnet/net.<ns>.cluster`: the cluster vnet has no namespace, only the
+bare `kube-vnet/net.cluster` joins it (ADR 0033, 2026-09-25 amendment). On
+UPDATE only a newly added such key is rejected, so a pod that already
+carries one (it was accepted before) is not blocked from unrelated updates
+such as finalizer removal; resolution ignores the label and emits a
+VirtualNetworkNotJoinable Warning either way.
+
 Requires Kubernetes >= 1.30 (where ValidatingAdmissionPolicy is GA). On
 older clusters this template renders nothing; the operator's vnet-status
-`InvalidDirection` reason still catches bad values at reconcile time.
+`InvalidDirection` reason and the pod Events still catch both at reconcile
+time.
 
 See ADR 0027 and ADR 0030.
 */}}
@@ -41,12 +50,23 @@ spec:
     # turns into a denial. Same idiom as the sibling VAPs.
     - name: podLabels
       expression: 'object.metadata.?labels.orValue({})'
+    - name: clusterJoinKey
+      expression: '"kube-vnet/net.cluster"'
   validations:
     - expression: |
         variables.podLabels.all(k,
           !k.startsWith(variables.joinKeyPrefix) ||
           variables.podLabels[k] in variables.validValues)
       message: "kube-vnet join label values must be one of: both, ingress, egress, none. The legacy true/false/empty values are no longer accepted. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
+    # `kube-vnet/net.<ns>.cluster`: the key ends in `.cluster` but is not the
+    # bare form. A key the old object already had is let through.
+    - expression: |
+        variables.podLabels.all(k,
+          !k.startsWith(variables.joinKeyPrefix) ||
+          !k.endsWith(".cluster") ||
+          k == variables.clusterJoinKey ||
+          (oldObject != null && k in oldObject.metadata.?labels.orValue({})))
+      message: "the cluster VirtualNetwork has no namespace: join it with the bare label kube-vnet/net.cluster, not kube-vnet/net.<namespace>.cluster. See https://github.com/lhns/kube-vnet/blob/main/docs/reference/labels-and-annotations.md."
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

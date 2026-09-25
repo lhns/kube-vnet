@@ -51,6 +51,8 @@ The dot separator distinguishes the two forms. A single dot after `net.` means "
 
 **Long-form in the home namespace.** A pod in the vnet's home namespace can use *either* the bare or the prefixed form (or both). This makes templated workloads — e.g., a Helm chart deployed into multiple namespaces — usable with a single label key. See [ADR 0022](../adr/0022-long-form-join-label-in-home-namespace.md).
 
+**`cluster` is bare only.** The `cluster` system vnet is a cluster-wide singleton with no namespace, so its only join label is `kube-vnet/net.cluster`. A prefixed `kube-vnet/net.<ns>.cluster` is rejected at admission and ignored by resolution with a `VirtualNetworkNotJoinable` Warning ([ADR 0033](../adr/0033-canonical-fq-system-labels.md)).
+
 VirtualNetwork names cannot contain dots. The CRD enforces this at admission via a CEL rule (see [ADR 0017](../adr/0017-name-validation-via-cel-and-runtime-check.md)). The encoding is therefore unambiguous.
 
 Why one label per network rather than a comma-separated list? See [ADR 0003](../adr/0003-one-label-per-virtualnetwork.md) — three concrete reasons (selector simplicity; 63-character label-value limit; matches the "one label per category" Kubernetes convention).

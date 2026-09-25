@@ -60,7 +60,7 @@ if vnetName == SystemVnetCluster && homeNS == "" { return true, nil } // bare ca
 
 ### Permission on the qualified key; identity in canonical form
 
-An explicit `<ns>.cluster` must stay qualified long enough for `Permits` to verify it, but ADR 0033 mandates the bare `cluster` key for pod stamps and policy names. So the order is: **check permission on the fully-qualified key, then collapse to the canonical form** (`CanonicalSuffix`, which maps `<anything>.cluster` → `cluster`) for surviving rules only.
+An explicit `<ns>.cluster` must stay qualified long enough for `Permits` to verify it, but ADR 0033 mandates the bare `cluster` key for pod stamps and policy names. So the order is: **check permission on the fully-qualified key, then collapse to the canonical form** (`<ns>.cluster` → `cluster`) for surviving rules only. This applies to refs only: since ADR 0033's 2026-09-25 amendment a join label `kube-vnet/net.<ns>.cluster` is invalid and never reaches this step.
 
 ### Diagnostics: one mechanism, one reason, richer message
 
