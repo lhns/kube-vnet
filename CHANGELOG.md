@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-25
+
 ### Breaking changes
 
 Read these before upgrading; the entries below have the details.
