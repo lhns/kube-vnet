@@ -134,16 +134,29 @@ jobs:
 
       - name: render release.yaml
         env:
-          VERSION: ${{ steps.mode.outputs.version }}
+          VERSION:       ${{ steps.mode.outputs.version }}
+          CHART_VERSION: ${{ steps.mode.outputs.chart_version }}
         run: |
           kubectl_version=v1.31.0
           curl -sLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
           chmod +x kubectl
           # Pin the image this run pushed; config/manager uses :latest.
+          # Stamp the version labels too: config/admission is rendered from
+          # the chart at its source version (0.1.0), so its VAPs would
+          # otherwise claim helm.sh/chart: kube-vnet-0.1.0 in every release.
           ./kubectl kustomize config/default \
-            | sed "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${VERSION}|" \
+            | sed -e "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${VERSION}|" \
+                  -e "s|^\( *helm\.sh/chart:\) .*$|\1 kube-vnet-${CHART_VERSION}|" \
+                  -e "s|^\( *app\.kubernetes\.io/version:\) .*$|\1 \"${VERSION}\"|" \
             > release.yaml
           grep -q "image: ghcr.io/lhns/kube-vnet:${VERSION}$" release.yaml
+          # Every chart/version label must carry this build's version.
+          if grep -nE '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' release.yaml \
+              | grep -vE "(helm\.sh/chart: kube-vnet-${CHART_VERSION}|app\.kubernetes\.io/version: \"${VERSION}\")$"; then
+            echo "::error::release.yaml carries a chart/version label that was not stamped"
+            exit 1
+          fi
+          echo "stamped $(grep -c -E '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' release.yaml || true) labels"
 
       - name: package & push Helm chart
         id: helm_push
@@ -173,14 +186,42 @@ jobs:
             "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
 
       - name: generate chart SBOM
-        # syft can't introspect Helm OCI artifacts (layer media type
-        # application/vnd.cncf.helm.chart.content.v1.tar+gzip is unknown
-        # to the oci-registry source), so we point it at the local
-        # tarball produced by `helm package` above. The contents are
-        # identical to what was pushed to ghcr.io.
+        # syft sees nothing inside a Helm chart (neither the OCI artifact nor
+        # the tgz), so scripts/chart-sbom.py builds the SPDX document: the
+        # chart package plus every image it can deploy (rendered with
+        # defaults and with all optional features), with digests, and a
+        # link to the image SBOM above. See the script's docstring.
+        env:
+          VERSION:       ${{ steps.mode.outputs.version }}
+          CHART_VERSION: ${{ steps.helm_push.outputs.chart_version }}
+          MODE:          ${{ steps.mode.outputs.mode }}
         run: |
-          syft "kube-vnet-${{ steps.helm_push.outputs.chart_version }}.tgz" \
-            -o spdx-json=kube-vnet-chart.sbom.spdx.json
+          args=()
+          if [[ "$MODE" == release ]]; then
+            args+=(--download-location "https://github.com/lhns/kube-vnet/releases/download/${VERSION}/kube-vnet-${CHART_VERSION}.tgz")
+          fi
+          python3 scripts/chart-sbom.py \
+            --chart "kube-vnet-${CHART_VERSION}.tgz" \
+            --chart-ref oci://ghcr.io/lhns/charts/kube-vnet \
+            --chart-digest "${{ steps.helm_push.outputs.chart_digest }}" \
+            --digest "ghcr.io/lhns/kube-vnet:${VERSION}=${{ steps.build_image.outputs.digest }}" \
+            --image-sbom "ghcr.io/lhns/kube-vnet:${VERSION}=kube-vnet-image.sbom.spdx.json" \
+            --resolve-digests \
+            --created "${{ steps.meta.outputs.build_date }}" \
+            "${args[@]}" \
+            -o kube-vnet-chart.sbom.spdx.json
+          cat kube-vnet-chart.sbom.spdx.json
+
+      - name: validate chart SBOM
+        run: |
+          pipx run --spec spdx-tools==0.8.5 pyspdxtools -i kube-vnet-chart.sbom.spdx.json
+          # The script leaves out a digest it cannot resolve; ours must be there.
+          jq -e --arg d "${{ steps.build_image.outputs.digest }}" '
+            .spdxVersion == "SPDX-2.3"
+            and (.packages[] | select(.name == "ghcr.io/lhns/kube-vnet")
+                 | .checksums[0].checksumValue == ($d | ltrimstr("sha256:")))
+            and (.externalDocumentRefs | length == 1)
+          ' kube-vnet-chart.sbom.spdx.json
 
       - name: cosign attach chart SBOM as attestation
         env:

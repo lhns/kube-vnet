@@ -160,7 +160,7 @@ Dev builds are single-arch (`linux/amd64`) and use the GitHub Actions buildx cac
 
 ## `kubectl apply` install
 
-Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag. One file, no Helm:
+Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag and the release version stamped into the `helm.sh/chart` and `app.kubernetes.io/version` labels. One file, no Helm:
 
 ```bash
 kubectl apply -f https://github.com/lhns/kube-vnet/releases/latest/download/release.yaml
@@ -217,7 +217,7 @@ A successful verification prints the matching certificate, the issuer, and the d
 
 ## Verifying SBOMs
 
-Each release ships SPDX-JSON SBOMs for both the image and the chart. They're attached as Cosign attestations *and* uploaded as plain release assets.
+Each release ships SPDX-JSON SBOMs for both the image and the chart. They're attached as Cosign attestations *and* uploaded as plain release assets. The chart SBOM lists every image the chart deploys, with digests, and links to the image SBOM. See [SBOMs](../security/security.md#sboms).
 
 Pull and verify the image SBOM attestation:
 

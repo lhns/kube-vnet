@@ -10,6 +10,20 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Changed
+
+- **The chart SBOM (`kube-vnet-chart.sbom.spdx.json`) now lists what the chart
+  deploys.** It used to be a stub naming only the `.tgz`. It now describes the
+  chart with its OCI location and checksum, every image the chart can deploy
+  (the operator image and `registry.k8s.io/kubectl`) with its digest, and a
+  reference to the image SBOM.
+
+### Fixed
+
+- **`release.yaml` labelled its admission policies with version 0.1.0.** The
+  three ValidatingAdmissionPolicies carried `helm.sh/chart: kube-vnet-0.1.0`
+  and `app.kubernetes.io/version: v0.1.0`. They now carry the release version.
+
 ## [0.8.0] — 2026-09-25
 
 ### Breaking changes
