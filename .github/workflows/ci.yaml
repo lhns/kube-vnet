@@ -19,8 +19,19 @@ jobs:
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l $(git ls-files '*.go'))
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed:"; echo "$unformatted"; exit 1
+          fi
+      # Each build tag compiles a different file set; vet them all.
       - name: go vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          for tags in integration e2e e2e_webhook e2e_namespace e2e_experiment; do
+            go vet -tags "$tags" ./...
+          done
       - name: go build
         run: go build ./...
       - name: go test (unit)
