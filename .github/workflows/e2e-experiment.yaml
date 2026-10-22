@@ -59,7 +59,7 @@ jobs:
           version: v3.16.3
 
       - name: create kind cluster (no default CNI)
-        uses: helm/kind-action@v1.15.0
+        uses: helm/kind-action@v1.15.1
         with:
           cluster_name: ${{ env.CLUSTER }}
           config: test/e2e/kind-config.yaml
