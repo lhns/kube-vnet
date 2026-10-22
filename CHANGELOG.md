@@ -10,19 +10,36 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-10-22
+
+### Security
+
+- **Rebuilt on current base images.** The image uses
+  `gcr.io/distroless/static:nonroot` (Debian 13), whose CA bundle drops the
+  emSign roots compromised in the October 2026 eMudhra intermediate CA key
+  compromise, and Go 1.27 (1.27.3 or later), which also rejects the eight
+  compromised keys in `crypto/x509`.
+- **Dependencies:** `golang.org/x/net` v0.60.0 (CVE-2026-78669) and
+  `golang.org/x/text` v0.42.0 (CVE-2026-56851), both rated HIGH by trivy (#73).
+
 ### Changed
 
 - **The chart SBOM (`kube-vnet-chart.sbom.spdx.json`) now lists what the chart
   deploys.** It used to be a stub naming only the `.tgz`. It now describes the
   chart with its OCI location and checksum, every image the chart can deploy
   (the operator image and `registry.k8s.io/kubectl`) with its digest, and a
-  reference to the image SBOM.
+  reference to the image SBOM (#69).
+- **Kubernetes dependencies updated** (the Dependabot `kubernetes` group, 6
+  modules) (#70).
+- **`prometheus/client_golang` 1.25.0** (#72).
+- **CI:** `helm/kind-action` 1.15.1 (#71).
 
 ### Fixed
 
 - **`release.yaml` labelled its admission policies with version 0.1.0.** The
   three ValidatingAdmissionPolicies carried `helm.sh/chart: kube-vnet-0.1.0`
-  and `app.kubernetes.io/version: v0.1.0`. They now carry the release version.
+  and `app.kubernetes.io/version: v0.1.0`. They now carry the release version
+  (#69).
 
 ## [0.8.0] — 2026-09-25
 
