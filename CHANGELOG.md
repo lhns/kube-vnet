@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-11-20
+
 ### Fixed
 
 - **arm64 images contained an amd64 binary.** Every image from v0.4.0 through
@@ -21,6 +23,10 @@ release. Pinning to an exact version is recommended.
 ### Security
 
 - golang.org/x/net bumped to v0.62.0 (CVE-2026-78661).
+
+### Changed
+
+- Kubernetes libraries v0.37.2, controller-runtime v0.25.3.
 
 ## [0.8.1] — 2026-10-22
 
