@@ -10,6 +10,14 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- **arm64 images contained an amd64 binary.** Every image from v0.4.0 through
+  v0.8.1 shipped an x86-64 `/manager` in its arm64 variant, so the operator
+  and the network beacon failed with `exec format error` on arm64 nodes.
+  Images are now built per architecture, and the release checks each binary's
+  architecture before publishing. Older tags stay broken; upgrade.
+
 ## [0.8.1] — 2026-10-22
 
 ### Security
