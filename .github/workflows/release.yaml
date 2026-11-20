@@ -40,6 +40,7 @@ jobs:
     uses: ./.github/workflows/ci.yaml   # PER-REPO: the CI workflow file
     permissions:
       contents: read
+  # PER-REPO: further gates go here in the same shape, and into `needs` below.
   e2e:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/e2e.yaml
@@ -48,8 +49,9 @@ jobs:
 
   release:
     needs: [ci, e2e]                    # PER-REPO: the gate jobs
-    # always(): skipped gates (dev mode) must not skip this job; failed or cancelled ones still block it.
-    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # Skipped gates (dev mode) must not skip this job; failed or cancelled ones still block it.
+    # !cancelled(), not always(): always() is never cancelled, so a superseded dev run would keep tagging.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write   # the GitHub Release
@@ -202,6 +204,7 @@ jobs:
           echo "digest=$digest" | tee -a "$GITHUB_OUTPUT"
           cosign sign "$REGISTRY/charts/$CHART_NAME@$digest"
 
+      # PER-REPO: steps that put further release assets into dist/ go here (SPEC.md, "Deviations").
       # vnet-only: the kustomize install manifest with this build's image and version labels.
       - name: Render and stamp release.yaml
         env:

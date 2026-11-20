@@ -2,8 +2,7 @@
 # runtime stage has no RUN). The golang tag is go.mod's toolchain version; CI fails on a minor
 # mismatch, and the local setup-go action makes CI test with this exact Go.
 FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
-# PER-REPO: the line above; ha-surge and traefik-reflector use
-# golang:1.26.11@sha256:4165ee6bf3b7811fd7b40373290405c83d0167dcb87ee5f29c427cdcef45ff8f
+# PER-REPO: the line above (golang:<go.mod toolchain version>@sha256:<digest>).
 
 WORKDIR /workspace
 
