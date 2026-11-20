@@ -50,10 +50,7 @@ jobs:
       E2E_EXPERIMENT_OUT: ${{ github.workspace }}/experiment-out
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3

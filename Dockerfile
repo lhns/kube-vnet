@@ -1,37 +1,36 @@
-# syntax=docker/dockerfile:1.6
-# The Go toolchain runs on BUILDPLATFORM (native speed, no QEMU) and
-# cross-compiles to the target via GOOS/GOARCH. TARGETOS/TARGETARCH must be
-# declared without defaults: a default shadows BuildKit's per-platform value,
-# which shipped amd64 binaries in arm64 images up to v0.8.1.
-FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
+# The compiler runs natively ($BUILDPLATFORM) and cross-compiles, so no QEMU is needed (the
+# runtime stage has no RUN). The golang tag is go.mod's toolchain version; CI fails on a minor
+# mismatch, and the local setup-go action makes CI test with this exact Go.
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:205c7636d74e0ffbe3d007162df7d74f859f5a8c8322dfb9f907977686c126cf AS builder
+# PER-REPO: the line above; ha-surge and traefik-reflector use
+# golang:1.26.11@sha256:4165ee6bf3b7811fd7b40373290405c83d0167dcb87ee5f29c427cdcef45ff8f
+
 WORKDIR /workspace
 
 COPY go.mod go.sum ./
 RUN go mod download
 
+# PER-REPO: the source directories the build needs (traefik-reflector and ha-surge have no api/).
 COPY api/ api/
 COPY cmd/ cmd/
 COPY internal/ internal/
 
+# No defaults: a default overrides the per-platform value buildx sets, which once built every
+# platform for amd64. The :? guard fails a build that sets none (no BuildKit).
 ARG TARGETOS
 ARG TARGETARCH
-
-# Version stamps. Set by `docker build --build-arg VERSION=…` (the release
-# workflow sets these from the git tag); fall back to placeholders so local
-# builds still work.
 ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
+# PER-REPO: oci-composer adds `ARG CMD=oci-composer` and builds ./cmd/${CMD}.
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
-    go build -trimpath \
-      -ldflags="-s -w \
-        -X main.version=${VERSION} \
-        -X main.commit=${COMMIT} \
-        -X main.date=${BUILD_DATE}" \
+RUN : "${TARGETOS:?}" "${TARGETARCH:?}" && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
       -o /workspace/manager ./cmd
 
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
+
 WORKDIR /
 COPY --from=builder /workspace/manager /manager
 USER 65532:65532

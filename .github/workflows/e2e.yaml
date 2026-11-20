@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Callable, so the release gates on this pipeline.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A literal group: under workflow_call ${{ github.workflow }} is the caller's.
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
 
 # Every lane gets its own kind cluster and runs in parallel: wall-clock time
 # is the slowest lane rather than the sum, at the cost of extra CI minutes.
@@ -24,10 +34,7 @@ jobs:
       CLUSTER: kube-vnet-e2e-${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: ./.github/actions/setup-go
 
       - name: create kind cluster (no default CNI)
         uses: helm/kind-action@v1.15.2
@@ -85,10 +92,7 @@ jobs:
       E2E_CNI: ${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3
@@ -371,10 +375,7 @@ jobs:
       E2E_CNI: ${{ matrix.cni }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3
@@ -426,10 +427,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.26'
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: azure/setup-helm@v5
         with:
           version: v3.16.3
