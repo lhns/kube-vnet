@@ -90,6 +90,24 @@ jobs:
         run: |
           echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
+      # Build each platform's /manager to a directory and verify its CPU
+      # architecture before anything is pushed. Same args and cache as the
+      # push build below, so that build reuses these layers.
+      - name: verify binary architectures
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          platforms: ${{ steps.mode.outputs.platforms }}
+          outputs: type=local,dest=out,platform-split=true
+          cache-from: type=gha
+          build-args: |
+            VERSION=${{ steps.mode.outputs.version }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+      - name: check binary architectures
+        run: scripts/check-binary-arch.sh out $(echo "${{ steps.mode.outputs.platforms }}" | tr ',' ' ')
+
       - name: build & push image
         id: build_image
         uses: docker/build-push-action@v7
