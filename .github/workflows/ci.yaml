@@ -89,7 +89,8 @@ jobs:
           tags: ghcr.io/lhns/kube-vnet:ci
       - name: build per-platform binaries (no push)
         run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \n            --output type=local,dest=out,platform-split=true .
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --output type=local,dest=out,platform-split=true .
           find out -name manager -type f
       - name: check binary architectures
         run: scripts/check-binary-arch.sh out linux/amd64 linux/arm64
