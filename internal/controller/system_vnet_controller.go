@@ -140,7 +140,7 @@ func desiredSystemVnet(name, namespace, description string) *vnetv1alpha1.Virtua
 // Warning on the vnet, in its namespace; impact says what is broken meanwhile.
 func (r *SystemVnetReconciler) applySystemVnet(ctx context.Context, desired *vnetv1alpha1.VirtualNetwork, impact string) error {
 	desired.SetResourceVersion("")
-	err := r.Patch(ctx, desired, client.Apply,
+	err := r.Patch(ctx, desired, client.Apply, //nolint:staticcheck // SA1019: migrate to the typed apply configurations (client.Client.Apply), separate change
 		client.FieldOwner(FieldManager), client.ForceOwnership)
 	if err != nil {
 		applyFailed(r.Recorder, desired, ApplyErrorSystemVnet,
