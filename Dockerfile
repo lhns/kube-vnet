@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 # The Go toolchain runs on BUILDPLATFORM (native speed, no QEMU) and
 # cross-compiles to the target via GOOS/GOARCH. TARGETOS/TARGETARCH must be
-# declared WITHOUT defaults: a default shadows BuildKit's per-platform value,
+# declared without defaults: a default shadows BuildKit's per-platform value,
 # which shipped amd64 binaries in arm64 images up to v0.8.1.
 FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 WORKDIR /workspace
