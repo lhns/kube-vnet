@@ -32,7 +32,7 @@ for platform in "$@"; do
   # ELF e_machine: 2 bytes at offset 18 (little-endian for both targets).
   found=$(od -An -tx1 -j18 -N2 "$bin" | tr -d ' \n')
   if [ "$found" = "${want}00" ]; then
-    echo "ok   $platform: $name"
+    echo "ok   $platform: $name ($bin)"
   else
     echo "FAIL $platform: expected e_machine 0x${want} ($name), found 0x${found:0:2}${found:2:2} in $bin" >&2
     fail=1
