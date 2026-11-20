@@ -90,7 +90,7 @@ jobs:
       - name: build per-platform binaries (no push)
         run: |
           docker buildx build --platform linux/amd64,linux/arm64             --output type=local,dest=out,platform-split=true .
-          find out -type f
+          find out -name manager -type f
       - name: check binary architectures
         run: scripts/check-binary-arch.sh out linux/amd64 linux/arm64
       - name: run arm64 binary under QEMU

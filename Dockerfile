@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1.6
-# --platform=$BUILDPLATFORM keeps the Go toolchain native to the runner's
-# architecture even when buildx is producing a multi-arch image. Without
-# this, arm64 builds would run the toolchain under QEMU (~5–10× slower).
-# The `RUN go build` below cross-compiles via GOOS/GOARCH, so the actual
-# binary still targets ${TARGETARCH} correctly.
+# The Go toolchain runs on BUILDPLATFORM (native speed, no QEMU) and
+# cross-compiles to the target via GOOS/GOARCH. TARGETOS/TARGETARCH must be
+# declared WITHOUT defaults: a default shadows BuildKit's per-platform value,
+# which shipped amd64 binaries in arm64 images up to v0.8.1.
 FROM --platform=$BUILDPLATFORM golang:1.27 AS builder
 WORKDIR /workspace
 
@@ -14,8 +13,8 @@ COPY api/ api/
 COPY cmd/ cmd/
 COPY internal/ internal/
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 
 # Version stamps. Set by `docker build --build-arg VERSION=…` (the release
 # workflow sets these from the git tag); fall back to placeholders so local
@@ -24,7 +23,7 @@ ARG VERSION=dev
 ARG COMMIT=none
 ARG BUILD_DATE=unknown
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     go build -trimpath \
       -ldflags="-s -w \
         -X main.version=${VERSION} \
