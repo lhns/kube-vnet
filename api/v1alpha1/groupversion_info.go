@@ -11,7 +11,7 @@ import (
 var (
 	GroupVersion = schema.GroupVersion{Group: "kube-vnet.lhns.de", Version: "v1alpha1"}
 
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion} //nolint:staticcheck // SA1019: replace scheme.Builder with a runtime.SchemeBuilder, separate change
 
 	AddToScheme = SchemeBuilder.AddToScheme
 )
