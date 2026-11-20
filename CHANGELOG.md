@@ -18,6 +18,10 @@ release. Pinning to an exact version is recommended.
   Images are now built per architecture, and the release checks each binary's
   architecture before publishing. Older tags stay broken; upgrade.
 
+### Security
+
+- golang.org/x/net bumped to v0.62.0 (CVE-2026-78661).
+
 ## [0.8.1] — 2026-10-22
 
 ### Security
