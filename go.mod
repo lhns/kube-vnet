@@ -1,6 +1,8 @@
 module github.com/lhns/kube-vnet
 
-go 1.26.0
+go 1.27.0
+
+toolchain go1.27.4
 
 require (
 	github.com/evanphx/json-patch/v5 v5.9.11

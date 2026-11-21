@@ -1,160 +1,217 @@
+# .github/workflows/release.yaml -- copied verbatim into each operator repo (SPEC.md).
+# Only lines marked "# PER-REPO:" differ between repos; SPEC.md has the values.
 name: release
 
-# Two modes:
-#   - release: triggered by `v*` tag push. Multi-arch build, full
-#     image+chart sign + SBOM + attest, plus GitHub Release asset upload.
-#   - dev:     any other push (any branch) or manual workflow_dispatch.
-#     Single-arch (amd64) build, image+chart still signed + SBOM'd
-#     (those steps cost <5s each), GitHub Release upload skipped.
-#     Versioned `0.0.0-dev.<short-sha>` so users can `helm install
-#     --version 0.0.0-dev.abc1234` to test a specific commit.
+# Two modes, one code path:
+#   release - a `v*` tag: image tags <TAG_PREFIX>X.Y.Z and latest, chart X.Y.Z, GitHub Release.
+#   dev     - any other branch push, or run by hand: image tags 0.0.0-dev.g<sha7>, sha-<sha7> and
+#             the branch, chart 0.0.0-dev.g<sha7>. No GitHub Release.
+# Both build linux/amd64 and linux/arm64, push by digest, check each platform's binary, and only
+# then tag, sign and publish the chart.
 on:
   push:
-    tags:     ['v*']
-    # Not dependabot's branches. A dependabot-triggered run gets a read-only GITHUB_TOKEN,
-    # so the publish steps fail with a 403 from ghcr and the PR shows a red check that says
-    # nothing about the bump. Nobody wants a dev image of a dependency bump anyway.
+    tags: ['v*']
+    # Not Dependabot's: its runs get a read-only GITHUB_TOKEN and the ghcr push fails with 403.
     branches: ['**', '!dependabot/**']
   workflow_dispatch:
 
-# id-token: write — required for cosign keyless signing via the GitHub OIDC token.
-# packages:  write — push images and the OCI Helm chart to ghcr.io.
-# contents:  write — create the GitHub Release with assets (release mode only).
+# Cancel superseded dev runs only. A tag release cancelled part-way leaves a version that half exists.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/lhns
+  IMAGE: kube-vnet                 # PER-REPO: image name
+  BINARY: /manager                 # PER-REPO: entrypoint binary inside the image
+  CHART_NAME: kube-vnet            # PER-REPO: `name` in Chart.yaml
+  CHART_PATH: charts/kube-vnet     # PER-REPO: chart directory
+  TAG_PREFIX: v                    # PER-REPO: "v" or ""; release image tag and appVersion are <TAG_PREFIX>X.Y.Z
+  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+  # A tag cannot publish from a red commit: the release reuses the CI pipeline, not a subset of it.
+  # Tags only: a dev run would share ci's cancel-in-progress group with the push-triggered ci run.
+  ci:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yaml   # PER-REPO: the CI workflow file
+    permissions:
+      contents: read
+  # PER-REPO: further gates go here in the same shape, and into `needs` below.
+  e2e:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/e2e.yaml
+    permissions:
+      contents: read
 
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+  release:
+    needs: [ci, e2e]                    # PER-REPO: the gate jobs
+    # Skipped gates (dev mode) must not skip this job; failed or cancelled ones still block it.
+    # !cancelled(), not always(): always() is never cancelled, so a superseded dev run would keep tagging.
+    if: ${{ !cancelled() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the GitHub Release
+      packages: write   # images and chart on ghcr.io
+      id-token: write   # cosign keyless signing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # PER-REPO: pv-reaper only, its Dockerfile RUNs on the target platform:
+      # - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: install cosign
-        uses: sigstore/cosign-installer@v3
+      - uses: imjasonh/setup-crane@feee3b6bb0d4c68370f256a4502498c9227e5c6b # v0.7
         with:
-          cosign-release: v2.4.1
-
-      - name: install syft
-        uses: anchore/sbom-action/download-syft@v0
+          version: v0.20.6
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v2.6.5
+      - uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.14.0
-
-      - name: install Helm
-        uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
           version: v3.16.3
 
-      # ------ mode (release vs dev) ----------------------------------------
-
-      - name: compute mode
-        id: mode
+      - name: Derive mode, versions and tags
+        id: v
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            VERSION="${GITHUB_REF_NAME}"
-            CHART_VERSION="${VERSION#v}"
-            {
-              echo "mode=release"
-              echo "version=${VERSION}"
-              echo "chart_version=${CHART_VERSION}"
-              echo "platforms=linux/amd64,linux/arm64"
-              echo "extra_image_tags=ghcr.io/lhns/kube-vnet:latest"
-            } >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SHORT="${GITHUB_SHA::7}"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            MODE=release
+            CHART_VERSION="${GITHUB_REF_NAME#v}"
+            APP_VERSION="${TAG_PREFIX}${CHART_VERSION}"
+            EXTRA_TAGS=latest
           else
-            SHORT="${GITHUB_SHA::7}"
-            CHART_VERSION="0.0.0-dev.${SHORT}"
-            # Sanitize branch ref for use as an OCI tag (a-zA-Z0-9 plus -._).
-            BRANCH=$(echo "${GITHUB_REF_NAME}" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\+/-/g; s/^-\|-$//g')
-            {
-              echo "mode=dev"
-              echo "version=${CHART_VERSION}"
-              echo "chart_version=${CHART_VERSION}"
-              echo "platforms=linux/amd64"
-              echo "extra_image_tags=ghcr.io/lhns/kube-vnet:sha-${SHORT},ghcr.io/lhns/kube-vnet:${BRANCH}"
-            } >> "$GITHUB_OUTPUT"
+            MODE=dev
+            # The g is required: an all-digit sha with a leading zero (0054012) is an invalid
+            # numeric semver identifier and the chart push rejects it. Image tags keep the bare sha.
+            CHART_VERSION="0.0.0-dev.g${SHORT}"
+            APP_VERSION="$CHART_VERSION"
+            EXTRA_TAGS="sha-${SHORT}"
+            # The branch tag moves; depend on the sha tag. A branch called latest gets no branch tag.
+            BRANCH=$(echo "$GITHUB_REF_NAME" | tr -c 'a-zA-Z0-9-' '-' | sed 's/-\+/-/g; s/^-//; s/-$//' | cut -c1-128)
+            if [ -n "$BRANCH" ] && [ "$BRANCH" != latest ]; then EXTRA_TAGS+=",$BRANCH"; fi
           fi
-          echo "Mode resolved:" && cat "$GITHUB_OUTPUT"
+          {
+            echo "mode=$MODE"
+            echo "chart_version=$CHART_VERSION"
+            echo "app_version=$APP_VERSION"
+            echo "extra_tags=$EXTRA_TAGS"
+            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } | tee -a "$GITHUB_OUTPUT"
 
-      # ------ container image -----------------------------------------------
-
-      - name: capture build metadata
-        id: meta
-        run: |
-          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      # Build each platform's /manager to a directory and verify its CPU
-      # architecture before anything is pushed. Same args and cache as the
-      # push build below, so that build reuses these layers.
-      - name: verify binary architectures
-        uses: docker/build-push-action@v7
+      # By digest, no tag: nothing is tagged until the architecture check passes.
+      - name: Build and push ${{ env.IMAGE }} by digest
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
-          push: false
-          platforms: ${{ steps.mode.outputs.platforms }}
-          outputs: type=local,dest=out,platform-split=true
-          cache-from: type=gha
+          platforms: ${{ env.PLATFORMS }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
-            VERSION=${{ steps.mode.outputs.version }}
+            VERSION=${{ steps.v.outputs.app_version }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.build_date }}
-      - name: check binary architectures
-        run: scripts/check-binary-arch.sh out $(echo "${{ steps.mode.outputs.platforms }}" | tr ',' ' ')
+            BUILD_DATE=${{ steps.v.outputs.date }}
+          cache-from: type=gha,scope=${{ env.IMAGE }}
+          cache-to: type=gha,mode=max,scope=${{ env.IMAGE }}
+      # PER-REPO: one more build step per extra image, same shape with its own id, name and
+      # build-args (oci-composer: id build-builder, kube-oci-builder, CMD=oci-builder).
 
-      - name: build & push image
-        id: build_image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          platforms: ${{ steps.mode.outputs.platforms }}
-          # GitHub Actions cache backend — scoped per-repo, no extra setup.
-          # Massively shortens unchanged-Go-deps rebuilds.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            VERSION=${{ steps.mode.outputs.version }}
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.build_date }}
-          tags: |
-            ghcr.io/lhns/kube-vnet:${{ steps.mode.outputs.version }}
-            ${{ steps.mode.outputs.extra_image_tags }}
-
-      - name: cosign sign image (keyless)
+      - name: Collect the pushed digests
+        id: images
         env:
+          MAIN: ${{ env.REGISTRY }}/${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          # PER-REPO: one variable per extra image, e.g.
+          # BUILDER: ${{ env.REGISTRY }}/kube-oci-builder@${{ steps.build-builder.outputs.digest }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'refs<<EOF'
+            echo "$MAIN"
+            # PER-REPO: echo "$BUILDER"
+            echo EOF
+          } | tee -a "$GITHUB_OUTPUT"
+
+      - name: Verify every platform's binary architecture
+        env:
+          REFS: ${{ steps.images.outputs.refs }}
+        run: |
+          set -euo pipefail
+          mapfile -t refs <<< "$REFS"
+          for ref in "${refs[@]}"; do
+            bash scripts/check-binary-arch.sh "$ref" "$BINARY" "$PLATFORMS"
+          done
+
+      - name: Tag the verified digests
+        env:
+          REFS: ${{ steps.images.outputs.refs }}
+          APP_VERSION: ${{ steps.v.outputs.app_version }}
+          EXTRA_TAGS: ${{ steps.v.outputs.extra_tags }}
+        run: |
+          set -euo pipefail
+          mapfile -t refs <<< "$REFS"
+          IFS=, read -ra tags <<< "$APP_VERSION,$EXTRA_TAGS"
+          for ref in "${refs[@]}"; do
+            name=${ref%@*} digest=${ref#*@}
+            for t in "${tags[@]}"; do crane tag "$ref" "$t"; done
+            # Signing and the SBOM use the digest, so every tag must resolve to exactly it.
+            for t in "${tags[@]}"; do
+              got=$(crane digest "$name:$t")
+              [ "$got" = "$digest" ] || { echo "::error::$name:$t is $got, want $digest"; exit 1; }
+              echo "OK: $name:$t = $digest"
+            done
+          done
+
+      - name: Sign the images, attest their SBOMs
+        env:
+          REFS: ${{ steps.images.outputs.refs }}
           COSIGN_YES: "true"
         run: |
-          cosign sign \
-            "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}"
+          set -euo pipefail
+          mkdir -p dist
+          mapfile -t refs <<< "$REFS"
+          for ref in "${refs[@]}"; do
+            name=${ref%@*}
+            sbom="dist/${name##*/}-image.sbom.spdx.json"
+            cosign sign "$ref"
+            syft "$ref" -o "spdx-json=$sbom"
+            cosign attest --predicate "$sbom" --type spdx "$ref"
+          done
 
-      - name: generate image SBOM
-        run: |
-          syft "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}" \
-            -o spdx-json=kube-vnet-image.sbom.spdx.json
-
-      - name: cosign attach SBOM as attestation
+      - name: Package, push and sign the chart
+        id: chart
         env:
+          CHART_VERSION: ${{ steps.v.outputs.chart_version }}
+          APP_VERSION: ${{ steps.v.outputs.app_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_YES: "true"
         run: |
-          cosign attest \
-            --predicate kube-vnet-image.sbom.spdx.json \
-            --type spdx \
-            "ghcr.io/lhns/kube-vnet@${{ steps.build_image.outputs.digest }}"
+          set -euo pipefail
+          mkdir -p dist
+          helm package "$CHART_PATH" --version "$CHART_VERSION" --app-version "$APP_VERSION" --destination dist
+          echo "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "dist/$CHART_NAME-$CHART_VERSION.tgz" "oci://$REGISTRY/charts"
+          digest=$(crane digest "$REGISTRY/charts/$CHART_NAME:$CHART_VERSION")
+          echo "digest=$digest" | tee -a "$GITHUB_OUTPUT"
+          cosign sign "$REGISTRY/charts/$CHART_NAME@$digest"
 
-      # ------ Helm chart ----------------------------------------------------
-
-      - name: render release.yaml
+      # PER-REPO: steps that put further release assets into dist/ go here (SPEC.md, "Deviations").
+      # vnet-only: the kustomize install manifest with this build's image and version labels.
+      - name: Render and stamp release.yaml
         env:
-          VERSION:       ${{ steps.mode.outputs.version }}
-          CHART_VERSION: ${{ steps.mode.outputs.chart_version }}
+          APP_VERSION: ${{ steps.v.outputs.app_version }}
+          CHART_VERSION: ${{ steps.v.outputs.chart_version }}
         run: |
+          set -euo pipefail
           kubectl_version=v1.31.0
           curl -sLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
           chmod +x kubectl
@@ -163,118 +220,88 @@ jobs:
           # the chart at its source version (0.1.0), so its VAPs would
           # otherwise claim helm.sh/chart: kube-vnet-0.1.0 in every release.
           ./kubectl kustomize config/default \
-            | sed -e "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${VERSION}|" \
+            | sed -e "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${APP_VERSION}|" \
                   -e "s|^\( *helm\.sh/chart:\) .*$|\1 kube-vnet-${CHART_VERSION}|" \
-                  -e "s|^\( *app\.kubernetes\.io/version:\) .*$|\1 \"${VERSION}\"|" \
-            > release.yaml
-          grep -q "image: ghcr.io/lhns/kube-vnet:${VERSION}$" release.yaml
+                  -e "s|^\( *app\.kubernetes\.io/version:\) .*$|\1 \"${APP_VERSION}\"|" \
+            > dist/release.yaml
+          grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$" dist/release.yaml
           # Every chart/version label must carry this build's version.
-          if grep -nE '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' release.yaml \
-              | grep -vE "(helm\.sh/chart: kube-vnet-${CHART_VERSION}|app\.kubernetes\.io/version: \"${VERSION}\")$"; then
+          if grep -nE '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' dist/release.yaml \
+              | grep -vE "(helm\.sh/chart: kube-vnet-${CHART_VERSION}|app\.kubernetes\.io/version: \"${APP_VERSION}\")$"; then
             echo "::error::release.yaml carries a chart/version label that was not stamped"
             exit 1
           fi
-          echo "stamped $(grep -c -E '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' release.yaml || true) labels"
+          echo "stamped $(grep -c -E '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' dist/release.yaml || true) labels"
 
-      - name: package & push Helm chart
-        id: helm_push
+      # vnet-only: syft sees nothing inside a Helm chart, so scripts/chart-sbom.py builds the SPDX
+      # document: the chart plus every image it can deploy, with digests and a link to the image SBOM.
+      - name: Chart SBOM, validate, attest
         env:
-          CHART_VERSION: ${{ steps.mode.outputs.chart_version }}
-          APP_VERSION:   ${{ steps.mode.outputs.version }}
-        run: |
-          helm package charts/kube-vnet \
-            --version "$CHART_VERSION" \
-            --app-version "$APP_VERSION" \
-            --destination .
-          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
-            --username "${{ github.actor }}" --password-stdin
-          # `helm push` prints lines including "Digest: sha256:..." which we
-          # parse to feed cosign.
-          helm push "kube-vnet-${CHART_VERSION}.tgz" oci://ghcr.io/lhns/charts \
-            2>&1 | tee helm-push.log
-          DIGEST=$(grep -E '^Digest: ' helm-push.log | awk '{print $2}')
-          echo "chart_digest=$DIGEST" >> "$GITHUB_OUTPUT"
-          echo "chart_version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: cosign sign Helm chart (keyless)
-        env:
+          APP_VERSION: ${{ steps.v.outputs.app_version }}
+          CHART_VERSION: ${{ steps.v.outputs.chart_version }}
+          MODE: ${{ steps.v.outputs.mode }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+          CREATED: ${{ steps.v.outputs.date }}
           COSIGN_YES: "true"
         run: |
-          cosign sign \
-            "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
-
-      - name: generate chart SBOM
-        # syft sees nothing inside a Helm chart (neither the OCI artifact nor
-        # the tgz), so scripts/chart-sbom.py builds the SPDX document: the
-        # chart package plus every image it can deploy (rendered with
-        # defaults and with all optional features), with digests, and a
-        # link to the image SBOM above. See the script's docstring.
-        env:
-          VERSION:       ${{ steps.mode.outputs.version }}
-          CHART_VERSION: ${{ steps.helm_push.outputs.chart_version }}
-          MODE:          ${{ steps.mode.outputs.mode }}
-        run: |
+          set -euo pipefail
           args=()
           if [[ "$MODE" == release ]]; then
-            args+=(--download-location "https://github.com/lhns/kube-vnet/releases/download/${VERSION}/kube-vnet-${CHART_VERSION}.tgz")
+            args+=(--download-location "https://github.com/lhns/kube-vnet/releases/download/${GITHUB_REF_NAME}/kube-vnet-${CHART_VERSION}.tgz")
           fi
           python3 scripts/chart-sbom.py \
-            --chart "kube-vnet-${CHART_VERSION}.tgz" \
-            --chart-ref oci://ghcr.io/lhns/charts/kube-vnet \
-            --chart-digest "${{ steps.helm_push.outputs.chart_digest }}" \
-            --digest "ghcr.io/lhns/kube-vnet:${VERSION}=${{ steps.build_image.outputs.digest }}" \
-            --image-sbom "ghcr.io/lhns/kube-vnet:${VERSION}=kube-vnet-image.sbom.spdx.json" \
+            --chart "dist/kube-vnet-${CHART_VERSION}.tgz" \
+            --chart-ref "oci://$REGISTRY/charts/kube-vnet" \
+            --chart-digest "$CHART_DIGEST" \
+            --digest "$REGISTRY/kube-vnet:${APP_VERSION}=${IMAGE_DIGEST}" \
+            --image-sbom "$REGISTRY/kube-vnet:${APP_VERSION}=dist/kube-vnet-image.sbom.spdx.json" \
             --resolve-digests \
-            --created "${{ steps.meta.outputs.build_date }}" \
+            --created "$CREATED" \
             "${args[@]}" \
-            -o kube-vnet-chart.sbom.spdx.json
-          cat kube-vnet-chart.sbom.spdx.json
-
-      - name: validate chart SBOM
-        run: |
-          pipx run --spec spdx-tools==0.8.5 pyspdxtools -i kube-vnet-chart.sbom.spdx.json
+            -o dist/kube-vnet-chart.sbom.spdx.json
+          cat dist/kube-vnet-chart.sbom.spdx.json
+          pipx run --spec spdx-tools==0.8.5 pyspdxtools -i dist/kube-vnet-chart.sbom.spdx.json
           # The script leaves out a digest it cannot resolve; ours must be there.
-          jq -e --arg d "${{ steps.build_image.outputs.digest }}" '
+          jq -e --arg d "$IMAGE_DIGEST" '
             .spdxVersion == "SPDX-2.3"
             and (.packages[] | select(.name == "ghcr.io/lhns/kube-vnet")
                  | .checksums[0].checksumValue == ($d | ltrimstr("sha256:")))
             and (.externalDocumentRefs | length == 1)
-          ' kube-vnet-chart.sbom.spdx.json
+          ' dist/kube-vnet-chart.sbom.spdx.json
+          cosign attest --predicate dist/kube-vnet-chart.sbom.spdx.json --type spdx \
+            "$REGISTRY/charts/kube-vnet@$CHART_DIGEST"
 
-      - name: cosign attach chart SBOM as attestation
-        env:
-          COSIGN_YES: "true"
+      - name: Checksums of the release assets
         run: |
-          cosign attest \
-            --predicate kube-vnet-chart.sbom.spdx.json \
-            --type spdx \
-            "ghcr.io/lhns/charts/kube-vnet@${{ steps.helm_push.outputs.chart_digest }}"
-
-      # ------ GitHub Release ------------------------------------------------
-
-      - name: checksums for release assets
-        run: |
-          sha256sum release.yaml kube-vnet-*.tgz \
-            kube-vnet-image.sbom.spdx.json kube-vnet-chart.sbom.spdx.json \
-            > checksums.txt
+          set -euo pipefail
+          cd dist
+          sha256sum -- * > "$RUNNER_TEMP/checksums.txt"
+          mv "$RUNNER_TEMP/checksums.txt" checksums.txt
           cat checksums.txt
 
-      - name: attach release assets
-        # Release-mode only: dev pushes don't attach to any tag-named Release.
-        # The release is expected to already exist (the user creates it in the
-        # GitHub UI with hand-written notes that include their own "What's
-        # Changed" section). This step attaches the build artifacts to that
-        # existing release. If the release doesn't exist yet, softprops
-        # creates an empty one — also fine; the user fills in the body.
-        # `generate_release_notes` is deliberately NOT set: when it was, GitHub
-        # appended its auto-changelog to the user's hand-written notes,
-        # producing a duplicate "What's Changed" line.
-        if: steps.mode.outputs.mode == 'release'
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            release.yaml
-            kube-vnet-*.tgz
-            kube-vnet-image.sbom.spdx.json
-            kube-vnet-chart.sbom.spdx.json
-            checksums.txt
+      # Release mode only. A release created by hand first keeps its notes and gets the assets;
+      # otherwise the notes are this version's CHANGELOG section, or generated if it has none.
+      - name: GitHub Release
+        if: steps.v.outputs.mode == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.v.outputs.chart_version }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            exit 0
+          fi
+          # index(), not a regex: the brackets and dots in "## [1.2.3]" are literal.
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { p=1; next }
+            p && index($0, "## [") == 1 { exit }
+            p { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if [ -s "$RUNNER_TEMP/notes.md" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" dist/*
+          else
+            echo "::warning::CHANGELOG.md has no section for $VERSION; using generated notes"
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes dist/*
+          fi

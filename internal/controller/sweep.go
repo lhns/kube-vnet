@@ -32,7 +32,7 @@ func applyPolicy(ctx context.Context, c client.Client, reader client.Reader, des
 		return false, nil
 	}
 	desired.SetResourceVersion("")
-	return created, c.Patch(ctx, desired, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership)
+	return created, c.Patch(ctx, desired, client.Apply, client.FieldOwner(FieldManager), client.ForceOwnership) //nolint:staticcheck // SA1019: migrate to the typed apply configurations (client.Client.Apply), separate change
 }
 
 // policyUpToDate reports whether applying desired over live would change
