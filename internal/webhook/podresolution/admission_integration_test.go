@@ -11,9 +11,9 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
@@ -211,41 +211,75 @@ func TestIntegration_Webhook_MutatorOutputSurvivesValidator(t *testing.T) {
 	}
 }
 
-// Forging a membership stamp must be impossible: in the webhook's scope the
-// validator, not the system-labels VAP, is what prevents it.
-func TestIntegration_Webhook_ForgedStampRejected(t *testing.T) {
-	ns := webhookNS(t, "web")
+// A pod restored by Velero or applied from `kubectl get -o yaml` carries the
+// stamps of the namespace it came from. On create they are replaced with the
+// resolved set (ADR 0046), not denied, so the restore works in another
+// namespace. Forgery gains nothing: the stored stamps are always the resolved
+// ones.
+func TestIntegration_Webhook_CreateReplacesStaleStamps(t *testing.T) {
+	withVnet := webhookNS(t, "web")
+	// A namespace in the webhook's scope with no vnet at all.
+	bare := uniqueNS(t, "whbare")
+	mustCreate(t, makeNamespace(bare, nil, map[string]string{webhookOptInLabel: "true"}))
 
-	// A stamp for a vnet the pod does not resolve into.
-	pod := makePod(ns, "forged", map[string]string{
-		controller.LabelSystemNetPrefix + ns + ".secret": "both",
-	})
-	err := testClient.Create(context.Background(), pod)
-	if err == nil {
-		t.Fatal("a forged kube-vnet.system membership stamp was admitted")
-	}
-	if !apierrors.IsForbidden(err) && !apierrors.IsInvalid(err) {
-		t.Fatalf("expected a denial, got %T: %v", err, err)
+	for _, tc := range []struct {
+		name string
+		ns   string
+		join map[string]string
+		want map[string]string
+	}{
+		{"namespace with vnets", withVnet,
+			map[string]string{"kube-vnet/net.web": "both"},
+			map[string]string{controller.LabelSystemNetPrefix + withVnet + ".web": "both"}},
+		{"namespace without vnets", bare, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			labels := map[string]string{
+				controller.LabelSystemNetPrefix + "source-ns.web": "both", // another namespace's stamp
+			}
+			for k, v := range tc.join {
+				labels[k] = v
+			}
+			if tc.ns == withVnet {
+				labels[controller.LabelSystemNetPrefix+tc.ns+".web"] = "egress" // wrong direction
+			}
+			pod := makePod(tc.ns, "restored", labels)
+			if err := testClient.Create(context.Background(), pod); err != nil {
+				t.Fatalf("a pod with stale stamps was denied: %v", err)
+			}
+			got := controller.ResolutionStamps(pod)
+			if len(got) != len(tc.want) {
+				t.Fatalf("stamps = %v, want %v", got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Fatalf("stamps = %v, want %v", got, tc.want)
+				}
+			}
+		})
 	}
 }
 
-// A wrong value for a vnet the pod really is in is also forgery. Without the
-// webhook the admission policy rejects it; with it, the mutator leaves the
-// request's value alone so the validator rejects it the same way, rather than
-// the value being silently corrected.
-func TestIntegration_Webhook_WrongValueForMemberVnetRejected(t *testing.T) {
+// The replacement is announced to the client as a warning.
+func TestIntegration_Webhook_CreateStaleStampWarns(t *testing.T) {
 	ns := webhookNS(t, "web")
 
-	pod := makePod(ns, "wrong-value", map[string]string{
-		"kube-vnet/net.web":                           "both",
-		controller.LabelSystemNetPrefix + ns + ".web": "egress",
-	})
-	err := testClient.Create(context.Background(), pod)
-	if err == nil {
-		t.Fatalf("a wrong stamp value was admitted (labels %v)", pod.Labels)
+	rec := &warningRecorder{}
+	cfg := rest.CopyConfig(testCfg)
+	cfg.WarningHandlerWithContext = rec
+	cl, err := client.New(cfg, client.Options{Scheme: itScheme})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !apierrors.IsForbidden(err) || !strings.Contains(err.Error(), `resolves to "both"`) {
-		t.Fatalf("expected the validator's denial naming the resolved value, got %v", err)
+	stale := controller.LabelSystemNetPrefix + "source-ns.web"
+	pod := makePod(ns, "warned", map[string]string{stale: "both"})
+	if err := cl.Create(context.Background(), pod); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.messages) != 1 || !strings.Contains(rec.messages[0], stale) {
+		t.Fatalf("warnings = %q, want one naming %s", rec.messages, stale)
 	}
 }
 

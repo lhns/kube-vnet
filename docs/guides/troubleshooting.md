@@ -516,7 +516,7 @@ The operator's own namespace, `kube-system`, `kube-public`, `kube-node-lease` an
 kubectl delete mutatingwebhookconfiguration,validatingwebhookconfiguration kube-vnet-pod-resolution
 ```
 
-**`admission webhook "pods.systemlabels.kube-vnet.lhns.de" denied the request: labels under kube-vnet.system/ are managed by the kube-vnet operator ...`**. The request sets, changes or removes a `kube-vnet.system/*` label to something resolution does not produce, e.g. a manifest copied from `kubectl get pod -o yaml` with stale stamps. Remove the `kube-vnet.system/*` labels from the manifest and declare membership with a `kube-vnet/net.*` label instead.
+**`admission webhook "pods.systemlabels.kube-vnet.lhns.de" denied the request: labels under kube-vnet.system/ are managed by the kube-vnet operator ...`**. The request sets, changes or removes a `kube-vnet.system/*` label to something resolution does not produce, e.g. a manifest copied from `kubectl get pod -o yaml` with stale stamps. Remove the `kube-vnet.system/*` labels from the manifest and declare membership with a `kube-vnet/net.*` label instead. Since [ADR 0046](../adr/0046-rewrite-stamps-on-pod-create.md) this applies to updates only: on pod creation the webhook replaces stale stamps and warns. Restoring pods with Velero: see [Backup and restore](operations.md#backup-and-restore-velero).
 
 ---
 

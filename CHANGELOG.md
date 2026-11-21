@@ -12,6 +12,10 @@ release. Pinning to an exact version is recommended.
 
 ### Changed
 
+- **The admission webhook replaces stale `kube-vnet.system/*` labels on pod
+  creation instead of rejecting the pod.** Velero restores into another
+  namespace now work with the webhook on, and the client gets a warning naming
+  the replaced labels. Updates are unchanged. See ADR 0046.
 - Base image is distroless `static-debian13`; built with Go 1.27.4.
 - Dev builds include arm64, and their version is `0.0.0-dev.g<sha>` (was
   `0.0.0-dev.<sha>`).

@@ -326,6 +326,41 @@ See [`troubleshooting.md`](troubleshooting.md) — most common causes: CNI doesn
 
 ---
 
+## Backup and restore (Velero)
+
+Velero restores a pod with its backed-up labels, including the operator-owned `kube-vnet.system/*` stamps. Into another namespace they are stale.
+
+**Webhook on** ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md), [ADR 0046](../adr/0046-rewrite-stamps-on-pod-create.md)): restores into any namespace work. On pod creation the webhook recomputes the stamps and warns about the ones it replaced. If the vnets are restored after the pods, the reconciler stamps the pods once the vnets exist.
+
+**Webhook off** (the chart default): the `system-labels-vap` rejects any pod created with `kube-vnet.system/*` labels, so restored pods are denied and bare pods are lost. Enable the webhook, or strip the stamps during the restore with a [resource modifier](https://velero.io/docs/main/restore-resource-modifiers/). JSON patch removes one exact path, not a prefix, so name each key. `/` is escaped as `~1`:
+
+```yaml
+version: v1
+resourceModifierRules:
+- conditions:
+    groupResource: pods
+  patches:
+  - operation: remove
+    path: "/metadata/labels/kube-vnet.system~1net.<ns>.<vnet>"   # one rule per stamp
+```
+
+```bash
+kubectl create cm kube-vnet-strip-stamps --from-file strip-stamps.yaml -n velero
+velero restore create --from-backup <backup> --resource-modifier-configmap kube-vnet-strip-stamps
+```
+
+The Velero docs do not say what a `remove` does when the label is missing (RFC 6902 says it fails), so list only keys the backed-up pods carry. `kube-vnet.system/resolved-generation` and `resolved-by` are annotations, which the VAP does not check.
+
+**Generated objects.** NetworkPolicies and system VirtualNetworks made by kube-vnet carry `kube-vnet.system/managed-by=kube-vnet`. The VAP rejects them on restore, and the operator regenerates them anyway, so leave them out. Velero's restore filters accept the set-based selector `!<key>` ([resource filtering](https://velero.io/docs/main/resource-filtering/)):
+
+```bash
+velero restore create --from-backup <backup> --selector '!kube-vnet.system/managed-by'
+```
+
+Velero restores dependencies of selected items even if the selector excludes them, but nothing depends on these objects.
+
+---
+
 ## Resource overhead in the cluster
 
 Per managed **namespace** (owned by the `NamespaceReconciler`, independent of any vnet):

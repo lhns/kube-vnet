@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"sort"
+	"strings"
 
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -49,18 +51,33 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	out := r.pod.DeepCopy()
-	// Only stamps the request left untouched are ours to write or prune. A
-	// stamp the request supplied stays as submitted, so the Validator rejects
-	// a forged value with a message instead of it being silently rewritten -
-	// the same outcome as the admission policy without the webhook.
-	controller.SyncStamps(out, desired, r.untouched)
+	var warnings []string
+	if req.Operation == admissionv1.Create {
+		// A pod created with stamps was restored (Velero) or copied
+		// (`kubectl get -o yaml`) from elsewhere, so they are stale. Recompute
+		// them all and say so, instead of denying the pod (ADR 0046). A forged
+		// stamp gains nothing: the stored one is always the resolved one.
+		controller.SyncStamps(out, desired, nil)
+		if w := replacedStampsWarning(r.pod, out); w != "" {
+			warnings = append(warnings, w)
+		}
+	} else {
+		// On UPDATE only stamps the request left untouched are ours to write
+		// or prune. A stamp the request supplied stays as submitted, so the
+		// Validator rejects a forged value with a message instead of it being
+		// silently rewritten - the same outcome as the admission policy
+		// without the webhook.
+		controller.SyncStamps(out, desired, r.untouched)
+	}
 	controller.MarkResolved(out, controller.ResolvedByAdmission)
 
 	// Init containers can only be set at creation.
-	var warning string
 	if req.Operation == admissionv1.Create {
-		var wait *corev1.Container
-		if wait, warning = networkWait(out, m.NetworkWait); wait != nil {
+		wait, warning := networkWait(out, m.NetworkWait)
+		if warning != "" {
+			warnings = append(warnings, warning)
+		}
+		if wait != nil {
 			// First, so the kubelet publishes the pod IP while it runs and
 			// nothing else starts before the rules are live.
 			out.Spec.InitContainers = append([]corev1.Container{*wait}, out.Spec.InitContainers...)
@@ -72,8 +89,25 @@ func (m *Mutator) Handle(ctx context.Context, req admission.Request) admission.R
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 	resp := admission.PatchResponseFromRaw(req.Object.Raw, marshaled)
-	if warning != "" {
-		resp = resp.WithWarnings(warning)
+	if len(warnings) > 0 {
+		resp = resp.WithWarnings(warnings...)
 	}
 	return resp
+}
+
+// replacedStampsWarning names the stamps the request carried that out no
+// longer has as submitted (removed or rewritten), or "" if there are none.
+func replacedStampsWarning(in, out *corev1.Pod) string {
+	var keys []string
+	for k, v := range controller.ResolutionStamps(in) {
+		if got, ok := out.Labels[k]; !ok || got != v {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	sort.Strings(keys)
+	return "kube-vnet: replaced stale kube-vnet.system labels from the request: " +
+		strings.Join(keys, ", ") + " (restored or copied pod?)"
 }
