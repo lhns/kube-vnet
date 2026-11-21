@@ -179,6 +179,14 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
       - name: Verify every platform's binary architecture
         run: bash scripts/check-binary-arch.sh "localhost:5000/${{ matrix.image }}@${{ steps.build.outputs.digest }}" "$BINARY" "$PLATFORMS"
+      # PER-REPO: vnet only. The arch check reads the ELF header; this proves the arm64 binary starts.
+      - name: Run the arm64 binary under QEMU
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y qemu-user
+          crane export --platform linux/arm64 "localhost:5000/${{ matrix.image }}@${{ steps.build.outputs.digest }}" - \
+            | tar -xf - -C "$RUNNER_TEMP" "${BINARY#/}"
+          qemu-aarch64 "$RUNNER_TEMP/${BINARY#/}" --version
       - name: Build amd64 for the scan (loaded)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

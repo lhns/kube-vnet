@@ -10,6 +10,13 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Changed
+
+- Base image is distroless `static-debian13`; built with Go 1.27.4.
+- Dev builds include arm64, and their version is `0.0.0-dev.g<sha>` (was
+  `0.0.0-dev.<sha>`).
+- Releases are published only after CI and e2e pass.
+
 ## [0.8.2] — 2026-11-20
 
 ### Fixed
