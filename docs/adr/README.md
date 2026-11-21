@@ -51,6 +51,7 @@ For long-form background on the project, see [`../internals/design.md`](../inter
 43. [0043 — `virtualNetworkRef.namespace`: optional, inferred, or honored — never ignored](0043-virtualnetworkref-namespace-inferred-or-honored.md)
 44. [0044 — A reconciler's trigger set must cover its read set](0044-trigger-sets-must-cover-read-sets.md)
 45. [0045 — Network wait for opted-in pods](0045-network-wait-for-opted-in-pods.md)
+46. [0046 — Rewrite stamps on pod create](0046-rewrite-stamps-on-pod-create.md)
 
 ## Format
 

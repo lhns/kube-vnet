@@ -1,4 +1,4 @@
-# ADR 0046 — Rewrite stamps on pod create
+# ADR 0046 â€” Rewrite stamps on pod create
 
 **Status**: Accepted (2026-11-21)
 
