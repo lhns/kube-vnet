@@ -149,6 +149,34 @@ func TestIntegration_VAP_SystemVnetProtected(t *testing.T) {
 	})
 }
 
+// With the webhook off, the VAP is the only protection and rejects any pod
+// CREATE carrying kube-vnet.system labels, including a restored pod's stale
+// stamps. docs/guides/operations.md ("Backup and restore") documents this.
+func TestIntegration_VAP_SystemLabels_RestoredPodWithStampsDenied(t *testing.T) {
+	ctx := context.Background()
+	mustInstallKustomizeVAP(t, "system-labels-vap.yaml")
+	mustGrantRBAC(t, "vap-test-restore", "", "pods", "alice@example.com")
+	userClient := mustImpersonate(t, "alice@example.com")
+
+	ns := uniqueNS(t, "vap-restore")
+	mustCreate(t, makeNamespace(ns, map[string]string{"kube-vnet/disabled": "true"}, nil))
+	stamp := LabelSystemNetPrefix + "source-ns.web"
+
+	awaitVAPActive(t, userClient, func() client.Object {
+		return makePod(ns, "probe-"+rand.String(5), map[string]string{stamp: "both"})
+	})
+
+	p := makePod(ns, "restored", map[string]string{"kube-vnet/net.web": "both", stamp: "both"})
+	err := userClient.Create(ctx, p)
+	if err == nil {
+		_ = testClient.Delete(ctx, p)
+		t.Fatal("a pod carrying another namespace's stamps was admitted without the webhook")
+	}
+	if !apierrors.IsInvalid(err) {
+		t.Fatalf("expected a VAP denial, got %v", err)
+	}
+}
+
 // A status write keeps the request's labels, so the system-labels VAP must
 // cover pods/status as well: otherwise anyone who may write pod status (a
 // node, or a controller granted pods/status) can stamp a pod into a vnet.
