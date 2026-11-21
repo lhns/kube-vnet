@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-21
+
 ### Changed
 
 - **The admission webhook replaces stale `kube-vnet.system/*` labels on pod
