@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -157,4 +158,54 @@ func TestIntegration_HostPort_HostNetworkPod_NoEmission(t *testing.T) {
 	mustCreate(t, pod)
 
 	assertPolicyStaysAbsent(t, ns, hostPortPolicyName(ns, hostPortKey{port: 18087, protocol: corev1.ProtocolTCP}), 3*time.Second)
+}
+
+// policyAllowedPorts lists the "<port>/<proto>" entries of the policy's single
+// ingress rule.
+func policyAllowedPorts(pol *networkingv1.NetworkPolicy) []string {
+	var out []string
+	for _, p := range pol.Spec.Ingress[0].Ports {
+		out = append(out, fmt.Sprintf("%d/%s", p.Port.IntValue(), *p.Protocol))
+	}
+	return out
+}
+
+// NetworkPolicy ports are matched after the hostPort DNAT, so the policy must
+// allow the containerPort (443 -> 8443), not the hostPort.
+func TestIntegration_HostPort_PolicyAllowsContainerPort(t *testing.T) {
+	ns := uniqueNS(t, "hp-cport")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	pod := makeHostPortPod(ns, "web", 18091, corev1.ProtocolTCP)
+	pod.Spec.Containers[0].Ports[0].ContainerPort = 8443
+	mustCreate(t, pod)
+
+	pol := waitForPolicy(t, ns, hostPortPolicyName(ns, hostPortKey{port: 18091, protocol: corev1.ProtocolTCP}), 10*time.Second)
+	if got := policyAllowedPorts(pol); !slices.Equal(got, []string{"8443/TCP"}) {
+		t.Errorf("allowed ports = %v, want [8443/TCP]", got)
+	}
+}
+
+// Pods mapping one hostPort to different containerPorts (a rollout) make the
+// policy allow every one of them.
+func TestIntegration_HostPort_DifferingContainerPortsAllAllowed(t *testing.T) {
+	ns := uniqueNS(t, "hp-cports")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	a := makeHostPortPod(ns, "web-a", 18092, corev1.ProtocolTCP)
+	a.Spec.Containers[0].Ports[0].ContainerPort = 8443
+	b := makeHostPortPod(ns, "web-b", 18092, corev1.ProtocolTCP)
+	b.Spec.Containers[0].Ports[0].ContainerPort = 9443
+	mustCreate(t, a)
+	mustCreate(t, b)
+
+	name := hostPortPolicyName(ns, hostPortKey{port: 18092, protocol: corev1.ProtocolTCP})
+	eventually(t, 10*time.Second, func() error {
+		pol, err := findPolicy(context.Background(), ns, name)
+		if err != nil {
+			return err
+		}
+		if got := policyAllowedPorts(pol); !slices.Equal(got, []string{"8443/TCP", "9443/TCP"}) {
+			return fmt.Errorf("allowed ports = %v, want [8443/TCP 9443/TCP]", got)
+		}
+		return nil
+	})
 }

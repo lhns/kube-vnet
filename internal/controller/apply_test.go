@@ -121,7 +121,7 @@ func TestApplyPolicy_SkipsNoOpApplies(t *testing.T) {
 
 func TestPolicyUpToDate(t *testing.T) {
 	desired := func() *networkingv1.NetworkPolicy {
-		return buildHostPortPolicy("ns", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP})
+		return buildHostPortPolicy("ns", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}, []int32{80})
 	}
 	now := metav1.Now()
 	for _, tc := range []struct {

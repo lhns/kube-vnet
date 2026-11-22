@@ -124,7 +124,8 @@ func TestJoinLabelChangedPredicate_CreateDeleteUnchanged(t *testing.T) {
 // REGRESSION LOCK for the hostPort predicate. The old one asked "does this pod
 // have A hostPort?" — a boolean — so swapping 8080->9090 kept it true on both
 // sides and the emitted policy would have been left pointing at the old port
-// on a status-only requeue. Compare the derived key SET instead.
+// on a status-only requeue. Compare the derived key -> containerPorts mapping
+// instead (the policy allows the containerPort, so a change there matters).
 func TestHostPortChangedPredicate(t *testing.T) {
 	p := HostPortChangedPredicate()
 
@@ -136,6 +137,11 @@ func TestHostPortChangedPredicate(t *testing.T) {
 				Ports: []corev1.ContainerPort{{HostPort: port, Protocol: proto}},
 			}}
 		}
+		return pod
+	}
+	mapped := func(host, container int32) *corev1.Pod {
+		pod := mk(host, corev1.ProtocolTCP)
+		pod.Spec.Containers[0].Ports[0].ContainerPort = container
 		return pod
 	}
 	restarted := mk(8080, corev1.ProtocolTCP)
@@ -153,6 +159,8 @@ func TestHostPortChangedPredicate(t *testing.T) {
 		{"port swap", mk(8080, corev1.ProtocolTCP), mk(9090, corev1.ProtocolTCP), true},
 		{"protocol swap", mk(53, corev1.ProtocolTCP), mk(53, corev1.ProtocolUDP), true},
 		{"gaining a hostPort", mk(0, ""), mk(8080, corev1.ProtocolTCP), true},
+		{"containerPort-only change", mapped(443, 8443), mapped(443, 9443), true},
+		{"same mapping", mapped(443, 8443), mapped(443, 8443), false},
 		{"status-only update", mk(8080, corev1.ProtocolTCP), restarted, false},
 		{"hostNetwork pod", hostNetOld, hostNetNew, false},
 	} {

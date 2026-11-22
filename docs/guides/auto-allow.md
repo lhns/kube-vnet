@@ -55,7 +55,9 @@ Only the literal value `"false"` opts out. Opting out means you take over: write
 
 **Trigger** — any pod declaring `hostPort` on a container port. One policy per distinct `(namespace, port, protocol)` — stable across pod restarts and rollouts, because the identity is the port, not the pod.
 
-**Emitted** — `kube-vnet.ext.host.<port>.<proto>-<8hex>`: ingress `ipBlock 0.0.0.0/0` on that port/protocol, selecting pods via an operator-stamped marker label `kube-vnet.system/host-port.<port>.<proto>=true` (the resolution controller stamps it on every pod declaring that hostPort; the stamp is VAP-protected like all `kube-vnet.system/*` keys).
+**Emitted** — `kube-vnet.ext.host.<port>.<proto>-<8hex>`: ingress `ipBlock 0.0.0.0/0` on the pod-side `containerPort`(s) mapped to that hostPort (NetworkPolicy ports are evaluated after the hostPort DNAT, so a `443` → `8443` mapping allows `8443`), selecting pods via an operator-stamped marker label `kube-vnet.system/host-port.<port>.<proto>=true` (the resolution controller stamps it on every pod declaring that hostPort; the stamp is VAP-protected like all `kube-vnet.system/*` keys).
+
+If pods map one hostPort to different containerPorts (for example during a rollout), the policy allows all of them for every stamped pod in the namespace until the old pods are gone.
 
 Only `spec.containers` count: the kubelet doesn't forward a `hostPort` declared on an init container, native sidecars included, so it gets no policy.
 

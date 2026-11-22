@@ -251,6 +251,61 @@ jobs:
           fi
           echo "OK (negative): opt-out blocks external traffic (saw $http_code)."
 
+      - name: hostPort accessibility check (containerPort differs)
+        run: |
+          set -euxo pipefail
+
+          # ADR 0040: NetworkPolicy ports are evaluated after the hostPort
+          # DNAT, so the emitted policy must allow the containerPort. A pod
+          # mapping hostPort 18080 -> containerPort 8080 is the case the old
+          # hostPort-valued policy broke; it must be reachable from outside
+          # the cluster (the kind node IP, as in the check above).
+          kubectl create namespace host-port-e2e
+          kubectl apply -n host-port-e2e -f - <<'POD'
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: web
+          spec:
+            containers:
+              - name: web
+                image: nginxinc/nginx-unprivileged:alpine
+                ports:
+                  - containerPort: 8080
+                    hostPort: 18080
+          POD
+          kubectl wait --for=condition=Ready pod/web -n host-port-e2e --timeout=120s
+
+          # The policy's port is the containerPort.
+          for i in {1..30}; do
+            port=$(kubectl get netpol -n host-port-e2e \
+              -l kube-vnet.system/role=external-allow \
+              -o jsonpath='{.items[0].spec.ingress[0].ports[*].port}' 2>/dev/null || true)
+            [ -n "$port" ] && break
+            sleep 2
+          done
+          if [ "$port" != "8080" ]; then
+            echo "FAIL: host-port policy allows '$port', expected the containerPort 8080"
+            kubectl get netpol -n host-port-e2e -o yaml
+            exit 1
+          fi
+
+          NODE_IP=$(kubectl get pod web -n host-port-e2e -o jsonpath='{.status.hostIP}')
+          http_code=000
+          for i in {1..15}; do
+            http_code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 \
+              "http://$NODE_IP:18080/" || echo "000")
+            [ "$http_code" = "200" ] && break
+            sleep 2
+          done
+          if [ "$http_code" != "200" ]; then
+            echo "FAIL: external HTTP to hostPort 18080 returned $http_code (expected 200)"
+            kubectl get netpol -n host-port-e2e -o yaml
+            kubectl describe pod web -n host-port-e2e
+            exit 1
+          fi
+          echo "OK: hostPort 18080 -> containerPort 8080 reachable from outside."
+
       - name: DNS survives kube-system enrollment (ADR 0042)
         run: |
           set -euxo pipefail

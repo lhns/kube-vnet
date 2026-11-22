@@ -95,7 +95,7 @@ Stripped when the namespace becomes disabled. See [ADR 0030](../adr/0030-unified
 |---|---|
 | **On** | Pods declaring `hostPort` — one label per distinct `(port, protocol)` (protocol lowercase: `tcp`/`udp`/`sctp`). |
 | **Set by** | Same writers as the membership stamp. |
-| **Meaning** | Marks the pod as a hostPort exposer so the per-`(namespace, port, protocol)` policy `kube-vnet.ext.host.<port>.<proto>-<8hex>` can select it. Keying the policy on the port rather than the pod keeps it stable across rollouts. |
+| **Meaning** | Marks the pod as a hostPort exposer so the per-`(namespace, port, protocol)` policy `kube-vnet.ext.host.<port>.<proto>-<8hex>` can select it. Keying the policy on the port rather than the pod keeps it stable across rollouts. The policy allows the pod-side `containerPort`(s), not the hostPort. |
 | **Used by** | The `HostPortReconciler`'s podSelector. `hostNetwork: true` pods are never stamped. See [ADR 0040](../adr/0040-auto-allow-hostport-pods.md). |
 
 ### `kube-vnet.system/resolved-generation` (annotation)
