@@ -233,7 +233,7 @@ jobs:
           # It must deploy this release's image, and no other.
           grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$" dist/release.yaml \
             || { echo "::error::release.yaml does not deploy kube-vnet:${APP_VERSION}"; exit 1; }
-          if grep -nE '^ *image: ' dist/release.yaml | grep -v "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$"; then
+          if grep -nE '^ *(- )?image: ' dist/release.yaml | grep -v "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$"; then
             echo "::error::release.yaml deploys an image other than kube-vnet:${APP_VERSION}"
             exit 1
           fi

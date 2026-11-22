@@ -195,13 +195,13 @@ This is equivalent to `release.yaml` but always tracks `main` and runs the `ghcr
 
 ## Verifying signatures
 
-Every released image and Helm chart is signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless via the GitHub OIDC token (no long-lived keys). The signing identity is the release workflow itself.
+Every released image and Helm chart is signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless via the GitHub OIDC token (no long-lived keys). The signing identity is the release workflow run for the release tag; dev builds are not signed.
 
 Verify the container image:
 
 ```bash
 cosign verify ghcr.io/lhns/kube-vnet:v<version> \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 
@@ -209,7 +209,7 @@ Verify the Helm chart artifact:
 
 ```bash
 cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 
@@ -224,7 +224,7 @@ Pull and verify the image SBOM attestation:
 ```bash
 cosign verify-attestation ghcr.io/lhns/kube-vnet:v<version> \
   --type spdx \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   | jq -r '.payload | @base64d | fromjson | .predicate' \
   > image.sbom.spdx.json
