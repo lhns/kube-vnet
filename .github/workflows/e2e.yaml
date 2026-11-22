@@ -290,6 +290,14 @@ jobs:
             exit 1
           fi
 
+          # kube-router's CNI chain has no portmap plugin, so the kubelet's hostPort
+          # is never forwarded and the node refuses the connection (a policy
+          # drop would time out). The policy assertion above still holds.
+          if [ "$E2E_CNI" = "kube-router" ]; then
+            echo "OK: policy allows the containerPort; CNI has no hostPort support, skipping curl."
+            exit 0
+          fi
+
           NODE_IP=$(kubectl get pod web -n host-port-e2e -o jsonpath='{.status.hostIP}')
           http_code=000
           for i in {1..15}; do
