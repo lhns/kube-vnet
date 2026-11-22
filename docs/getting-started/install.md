@@ -136,11 +136,11 @@ kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 
 ### Testing a dev build
 
-Every push to any branch (and every `workflow_dispatch` run of the release workflow) publishes a development image and chart tagged `0.0.0-dev.<short-sha>`. These are signed and SBOM'd just like releases — no GitHub Release is created — so you can install a specific commit on your cluster without waiting for a tag:
+Every push to any branch (and every `workflow_dispatch` run of the release workflow) publishes a development image and chart tagged `0.0.0-dev.g<short-sha>`. They are not signed (only releases are) and no GitHub Release is created, so you can install a specific commit on your cluster without waiting for a tag:
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.0.0-dev.abc1234 \
+  --version 0.0.0-dev.gabc1234 \
   --namespace kube-vnet-system --create-namespace
 ```
 
@@ -152,9 +152,9 @@ gh api repos/lhns/kube-vnet/actions/runs --jq \
   | head -1
 ```
 
-The image is also tagged `:sha-<short>` (raw SHA alias) and `:<branch>` (a moving "latest from this branch" tag, useful for ephemeral test environments). The chart only carries the immutable `0.0.0-dev.<short-sha>` version — never overwritten.
+The image is also tagged `:sha-<short>` (raw SHA alias) and `:<branch>` (a moving "latest from this branch" tag, useful for ephemeral test environments). The chart only carries the immutable `0.0.0-dev.g<short-sha>` version — never overwritten.
 
-Dev builds are single-arch (`linux/amd64`) and use the GitHub Actions buildx cache, so they typically finish in 2–4 minutes versus the ~10–15 minutes of a multi-arch tagged release.
+Dev builds are multi-arch (`linux/amd64`, `linux/arm64`) like releases, and use the GitHub Actions buildx cache.
 
 ---
 

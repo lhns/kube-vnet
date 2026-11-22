@@ -7,7 +7,8 @@ name: release
 #   dev     - any other branch push, or run by hand: image tags 0.0.0-dev.g<sha7>, sha-<sha7> and
 #             the branch, chart 0.0.0-dev.g<sha7>. No GitHub Release.
 # Both build linux/amd64 and linux/arm64, push by digest, check each platform's binary, and only
-# then tag, sign and publish the chart.
+# then tag and publish the chart. Only release mode signs and attests: nothing verifies dev builds,
+# and each signature is a public Rekor entry plus .sig/.att tags on ghcr.
 on:
   push:
     tags: ['v*']
@@ -56,7 +57,7 @@ jobs:
     permissions:
       contents: write   # the GitHub Release
       packages: write   # images and chart on ghcr.io
-      id-token: write   # cosign keyless signing
+      id-token: write   # cosign keyless signing (release mode only)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # PER-REPO: pv-reaper only, its Dockerfile RUNs on the target platform:
@@ -78,7 +79,7 @@ jobs:
           syft-version: v1.14.0
       - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
         with:
-          version: v3.16.3
+          version: v3.22.1
 
       - name: Derive mode, versions and tags
         id: v
@@ -171,9 +172,11 @@ jobs:
             done
           done
 
-      - name: Sign the images, attest their SBOMs
+      # syft runs in dev mode too, so the SBOM step stays exercised.
+      - name: Image SBOMs; in release mode, sign the images and attest the SBOMs
         env:
           REFS: ${{ steps.images.outputs.refs }}
+          MODE: ${{ steps.v.outputs.mode }}
           COSIGN_YES: "true"
         run: |
           set -euo pipefail
@@ -182,16 +185,19 @@ jobs:
           for ref in "${refs[@]}"; do
             name=${ref%@*}
             sbom="dist/${name##*/}-image.sbom.spdx.json"
-            cosign sign "$ref"
             syft "$ref" -o "spdx-json=$sbom"
-            cosign attest --predicate "$sbom" --type spdx "$ref"
+            if [ "$MODE" = release ]; then
+              cosign sign "$ref"
+              cosign attest --predicate "$sbom" --type spdx "$ref"
+            fi
           done
 
-      - name: Package, push and sign the chart
+      - name: Package and push the chart; in release mode, sign it
         id: chart
         env:
           CHART_VERSION: ${{ steps.v.outputs.chart_version }}
           APP_VERSION: ${{ steps.v.outputs.app_version }}
+          MODE: ${{ steps.v.outputs.mode }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_YES: "true"
         run: |
@@ -202,7 +208,7 @@ jobs:
           helm push "dist/$CHART_NAME-$CHART_VERSION.tgz" "oci://$REGISTRY/charts"
           digest=$(crane digest "$REGISTRY/charts/$CHART_NAME:$CHART_VERSION")
           echo "digest=$digest" | tee -a "$GITHUB_OUTPUT"
-          cosign sign "$REGISTRY/charts/$CHART_NAME@$digest"
+          if [ "$MODE" = release ]; then cosign sign "$REGISTRY/charts/$CHART_NAME@$digest"; fi
 
       # PER-REPO: steps that put further release assets into dist/ go here (SPEC.md, "Deviations").
       # vnet-only: the kustomize install manifest with this build's image and version labels.
@@ -224,7 +230,13 @@ jobs:
                   -e "s|^\( *helm\.sh/chart:\) .*$|\1 kube-vnet-${CHART_VERSION}|" \
                   -e "s|^\( *app\.kubernetes\.io/version:\) .*$|\1 \"${APP_VERSION}\"|" \
             > dist/release.yaml
-          grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$" dist/release.yaml
+          # It must deploy this release's image, and no other.
+          grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$" dist/release.yaml \
+            || { echo "::error::release.yaml does not deploy kube-vnet:${APP_VERSION}"; exit 1; }
+          if grep -nE '^ *image: ' dist/release.yaml | grep -v "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$"; then
+            echo "::error::release.yaml deploys an image other than kube-vnet:${APP_VERSION}"
+            exit 1
+          fi
           # Every chart/version label must carry this build's version.
           if grep -nE '^ *(helm\.sh/chart|app\.kubernetes\.io/version):' dist/release.yaml \
               | grep -vE "(helm\.sh/chart: kube-vnet-${CHART_VERSION}|app\.kubernetes\.io/version: \"${APP_VERSION}\")$"; then
@@ -235,7 +247,7 @@ jobs:
 
       # vnet-only: syft sees nothing inside a Helm chart, so scripts/chart-sbom.py builds the SPDX
       # document: the chart plus every image it can deploy, with digests and a link to the image SBOM.
-      - name: Chart SBOM, validate, attest
+      - name: Chart SBOM, validate; in release mode, attest
         env:
           APP_VERSION: ${{ steps.v.outputs.app_version }}
           CHART_VERSION: ${{ steps.v.outputs.chart_version }}
@@ -269,8 +281,10 @@ jobs:
                  | .checksums[0].checksumValue == ($d | ltrimstr("sha256:")))
             and (.externalDocumentRefs | length == 1)
           ' dist/kube-vnet-chart.sbom.spdx.json
-          cosign attest --predicate dist/kube-vnet-chart.sbom.spdx.json --type spdx \
-            "$REGISTRY/charts/kube-vnet@$CHART_DIGEST"
+          if [[ "$MODE" == release ]]; then
+            cosign attest --predicate dist/kube-vnet-chart.sbom.spdx.json --type spdx \
+              "$REGISTRY/charts/kube-vnet@$CHART_DIGEST"
+          fi
 
       - name: Checksums of the release assets
         run: |

@@ -156,7 +156,7 @@ Three workflows under `.github/workflows/`:
   - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with the webhook and network wait on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds the `e2e_webhook` tests and a cert-survives-upgrade check
   - `e2e-helm-namespace` — the `namespace` isolation preset
 - `e2e-experiment.yaml` — manual only (`workflow_dispatch`): measurements, not pass/fail tests. The beacon-ordering experiment (`test/e2e/beacon_ordering_test.go`, build tag `e2e_experiment`) measures, per CNI, whether a remote network wait beacon accepting a new pod means that node's vnet rule for the pod is live too ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). A sidecar in each probe pod (`test/e2e/probe`) dials both every 20 ms from the pod's start. Run it from the Actions tab or with `gh workflow run e2e-experiment.yaml -f cni=all -f policies=300 -f churn=10`; the inputs set the probe pods, burst size, extra NetworkPolicies (load) and probe interval. It fails only on infrastructure errors. The job summary has the per-CNI table, and the raw data is uploaded as an artifact.
-- `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
+- `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes an unsigned dev build `0.0.0-dev.g<short-sha>` for both platforms, without a GitHub Release. In release mode:
   - Builds + pushes multi-arch image to `ghcr.io/lhns/kube-vnet:<tag>`
   - Cosign signs the image (keyless via GitHub OIDC)
   - syft generates SPDX SBOM, attached as cosign attestation + release asset
@@ -164,7 +164,7 @@ Three workflows under `.github/workflows/`:
   - Cosign signs the chart artifact, SBOM attached too
   - Renders `release.yaml` via `kubectl kustomize config/default`, replacing the `:latest` operator image with the release tag
   - Generates `checksums.txt` for all assets
-  - Attaches the assets to the tag's GitHub Release (creating an empty one if none exists; it sets no release notes)
+  - Attaches the assets to the tag's GitHub Release; if none exists, creates it with this version's CHANGELOG section as notes
 
 ---
 
