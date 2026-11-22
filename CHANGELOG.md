@@ -10,6 +10,15 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-11-22
+
+### Changed
+
+- Dev builds are no longer cosign-signed or attested; releases still are.
+- The chart is packaged with Helm v3.22.1 (was v3.16.3).
+- A release fails if its `release.yaml` asset deploys any image other than that
+  release's.
+
 ## [0.9.0] — 2026-11-21
 
 ### Changed

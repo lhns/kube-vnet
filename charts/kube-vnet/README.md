@@ -19,11 +19,11 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
 
 ```bash
 cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 
 cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 

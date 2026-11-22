@@ -136,11 +136,11 @@ kubectl delete networkpolicy -A -l kube-vnet.system/managed-by=kube-vnet
 
 ### Testing a dev build
 
-Every push to any branch (and every `workflow_dispatch` run of the release workflow) publishes a development image and chart tagged `0.0.0-dev.<short-sha>`. These are signed and SBOM'd just like releases — no GitHub Release is created — so you can install a specific commit on your cluster without waiting for a tag:
+Every push to any branch (and every `workflow_dispatch` run of the release workflow) publishes a development image and chart tagged `0.0.0-dev.g<short-sha>`. They are not signed (only releases are) and no GitHub Release is created, so you can install a specific commit on your cluster without waiting for a tag:
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.0.0-dev.abc1234 \
+  --version 0.0.0-dev.gabc1234 \
   --namespace kube-vnet-system --create-namespace
 ```
 
@@ -152,9 +152,9 @@ gh api repos/lhns/kube-vnet/actions/runs --jq \
   | head -1
 ```
 
-The image is also tagged `:sha-<short>` (raw SHA alias) and `:<branch>` (a moving "latest from this branch" tag, useful for ephemeral test environments). The chart only carries the immutable `0.0.0-dev.<short-sha>` version — never overwritten.
+The image is also tagged `:sha-<short>` (raw SHA alias) and `:<branch>` (a moving "latest from this branch" tag, useful for ephemeral test environments). The chart only carries the immutable `0.0.0-dev.g<short-sha>` version — never overwritten.
 
-Dev builds are single-arch (`linux/amd64`) and use the GitHub Actions buildx cache, so they typically finish in 2–4 minutes versus the ~10–15 minutes of a multi-arch tagged release.
+Dev builds are multi-arch (`linux/amd64`, `linux/arm64`) like releases, and use the GitHub Actions buildx cache.
 
 ---
 
@@ -195,13 +195,13 @@ This is equivalent to `release.yaml` but always tracks `main` and runs the `ghcr
 
 ## Verifying signatures
 
-Every released image and Helm chart is signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless via the GitHub OIDC token (no long-lived keys). The signing identity is the release workflow itself.
+Every released image and Helm chart is signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless via the GitHub OIDC token (no long-lived keys). The signing identity is the release workflow run for the release tag; dev builds are not signed.
 
 Verify the container image:
 
 ```bash
 cosign verify ghcr.io/lhns/kube-vnet:v<version> \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 
@@ -209,7 +209,7 @@ Verify the Helm chart artifact:
 
 ```bash
 cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```
 
@@ -224,7 +224,7 @@ Pull and verify the image SBOM attestation:
 ```bash
 cosign verify-attestation ghcr.io/lhns/kube-vnet:v<version> \
   --type spdx \
-  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@.*' \
+  --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   | jq -r '.payload | @base64d | fromjson | .predicate' \
   > image.sbom.spdx.json

@@ -143,20 +143,24 @@ so it belongs in review.
 
 ## CI
 
-Three workflows under `.github/workflows/`:
+Four workflows under `.github/workflows/`:
 
-- `ci.yaml` — runs on pushes to `main` and on PRs:
+- `ci.yaml` — runs on pushes to `main` and on PRs, and gates every tag release:
+  - `go-version` — go.mod's `go`/`toolchain` lines against the Dockerfile's golang tag
   - `unit` — `go vet`, `go build`, `go test ./...`, `make generate manifests render-kustomize-vaps` and fail on any diff or untracked file (catches forgot-to-regenerate)
   - `integration` — envtest suite
   - `helm` — `helm lint --strict`; `helm template` piped through `kubeconform -strict` (kube-vnet CRs against `schemas/`) for each isolation preset, explicit memberships with the optional extras, the webhook with both cert sources, the network wait, `kube-system` enrolled, everything optional off, and Kubernetes 1.29 (no VAPs); and each value combination the chart refuses must fail with the chart's own message
-  - `docker` — builds the image (no push) + Trivy image scan (CRITICAL/HIGH gates the build)
+  - `image` — builds both platforms into a local registry, checks each platform's binary architecture (`scripts/check-binary-arch.sh`), runs the arm64 binary under QEMU, then Trivy image scan (CRITICAL/HIGH gates the build)
+  - `arch-check-fails` — proves the architecture check rejects an arm64 image holding an amd64 binary
+  - `lint` — golangci-lint
   - `trivy-fs` — Trivy filesystem scan over sources + go.sum
-- `e2e.yaml` — runs on pushes to `main` and on PRs, lanes in parallel:
+- `e2e.yaml` — runs on pushes to `main` and on PRs, and gates every tag release; lanes in parallel:
   - `e2e-kustomize` — install via kustomize (webhook off), a matrix over kube-router and Calico
   - `e2e-helm` — install via the chart, a matrix over both modes: Calico with the webhook off, kube-router with the webhook and network wait on. Both run the full suite plus the external-allow, DNS-enrollment and uninstall checks; the webhook entry adds the `e2e_webhook` tests and a cert-survives-upgrade check
+  - `e2e-network-wait` — the network wait tests on Calico and Cilium
   - `e2e-helm-namespace` — the `namespace` isolation preset
 - `e2e-experiment.yaml` — manual only (`workflow_dispatch`): measurements, not pass/fail tests. The beacon-ordering experiment (`test/e2e/beacon_ordering_test.go`, build tag `e2e_experiment`) measures, per CNI, whether a remote network wait beacon accepting a new pod means that node's vnet rule for the pod is live too ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)). A sidecar in each probe pod (`test/e2e/probe`) dials both every 20 ms from the pod's start. Run it from the Actions tab or with `gh workflow run e2e-experiment.yaml -f cni=all -f policies=300 -f churn=10`; the inputs set the probe pods, burst size, extra NetworkPolicies (load) and probe interval. It fails only on infrastructure errors. The job summary has the per-CNI table, and the raw data is uploaded as an artifact.
-- `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes a single-arch dev build `0.0.0-dev.<short-sha>` without a GitHub Release. In release mode:
+- `release.yaml` — on a `v*` tag it publishes a release; on any other branch push (except `dependabot/**`) or manual dispatch it publishes an unsigned dev build `0.0.0-dev.g<short-sha>` for both platforms, without a GitHub Release. In release mode:
   - Builds + pushes multi-arch image to `ghcr.io/lhns/kube-vnet:<tag>`
   - Cosign signs the image (keyless via GitHub OIDC)
   - syft generates SPDX SBOM, attached as cosign attestation + release asset
@@ -164,7 +168,7 @@ Three workflows under `.github/workflows/`:
   - Cosign signs the chart artifact, SBOM attached too
   - Renders `release.yaml` via `kubectl kustomize config/default`, replacing the `:latest` operator image with the release tag
   - Generates `checksums.txt` for all assets
-  - Attaches the assets to the tag's GitHub Release (creating an empty one if none exists; it sets no release notes)
+  - Attaches the assets to the tag's GitHub Release; if none exists, creates it with this version's CHANGELOG section as notes
 
 ---
 
