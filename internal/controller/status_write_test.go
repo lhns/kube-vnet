@@ -30,7 +30,7 @@ func newStatusReconciler(objs ...client.Object) (*VirtualNetworkReconciler, clie
 		WithObjects(objs...).
 		WithStatusSubresource(&vnetv1alpha1.VirtualNetwork{}).
 		Build()
-	return &VirtualNetworkReconciler{Client: c, Scheme: scheme, NSFilter: NewNamespaceFilter(nil)}, c
+	return &VirtualNetworkReconciler{Client: c, NSFilter: NewNamespaceFilter(nil)}, c
 }
 
 func rv(t *testing.T, c client.Client, ns, name string) string {

@@ -84,7 +84,6 @@ func TestMain(m *testing.M) {
 	r := &VirtualNetworkReconciler{
 		Client:            mgr.GetClient(),
 		APIReader:         mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
 		Recorder:          mgr.GetEventRecorder("kube-vnet-test"),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
@@ -97,7 +96,6 @@ func TestMain(m *testing.M) {
 
 	nsReconciler := &NamespaceReconciler{
 		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
 		Recorder: mgr.GetEventRecorder("kube-vnet-namespace-test"),
 	}
@@ -109,7 +107,6 @@ func TestMain(m *testing.M) {
 
 	resReconciler := &ResolutionReconciler{
 		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
 		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
 	}
@@ -121,7 +118,6 @@ func TestMain(m *testing.M) {
 
 	bindingReconciler := &VirtualNetworkBindingReconciler{
 		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
 	}
@@ -133,7 +129,6 @@ func TestMain(m *testing.M) {
 
 	sysVnetReconciler := &SystemVnetReconciler{
 		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
 		NSFilter:          NewNamespaceFilter(nil),
 		OperatorNamespace: "kube-vnet-system-test",
 		Recorder:          mgr.GetEventRecorder("kube-vnet-system-vnet-test"),
@@ -158,7 +153,6 @@ func TestMain(m *testing.M) {
 
 	hostPortReconciler := &HostPortReconciler{
 		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
 		NSFilter: NewNamespaceFilter(nil),
 		Recorder: mgr.GetEventRecorder("kube-vnet-host-port-test"),
 	}

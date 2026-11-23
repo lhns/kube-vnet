@@ -10,7 +10,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -46,7 +45,6 @@ const (
 // selected pods.
 type VirtualNetworkBindingReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
 	// OperatorNamespace is where the `cluster` system vnet lives; a ref to it
 	// that omits the namespace resolves there.
