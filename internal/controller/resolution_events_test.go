@@ -37,13 +37,7 @@ func reconcileWithEvents(t *testing.T, labels map[string]string, extra ...client
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(pod), &got); err != nil {
 		t.Fatalf("get pod: %v", err)
 	}
-	stamps := map[string]string{}
-	for k, v := range got.Labels {
-		if IsResolutionManagedLabel(k) {
-			stamps[k] = v
-		}
-	}
-	return rec, stamps
+	return rec, ResolutionStamps(&got)
 }
 
 // A binding and a pod label that disagree intersect to none. The pod is

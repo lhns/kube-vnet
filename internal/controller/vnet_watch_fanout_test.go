@@ -45,7 +45,6 @@ func fanoutReconciler(objs ...k8sruntime.Object) *ResolutionReconciler {
 	scheme := fanoutScheme()
 	return &ResolutionReconciler{
 		Client:   fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build(),
-		Scheme:   scheme,
 		NSFilter: NewNamespaceFilter(nil),
 	}
 }
@@ -242,7 +241,6 @@ func TestBindingsInNamespaceOf(t *testing.T) {
 				Spec:       vnetv1alpha1.VirtualNetworkBindingSpec{VirtualNetworkRef: ref("v", "webapp")},
 			},
 		).Build(),
-		Scheme:   scheme,
 		NSFilter: NewNamespaceFilter(nil),
 	}
 

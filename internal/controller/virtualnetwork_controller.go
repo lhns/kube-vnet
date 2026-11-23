@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -16,13 +15,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -69,7 +66,6 @@ type VirtualNetworkReconciler struct {
 	// was absent before we applied it (PolicyRestored). Nil falls back to
 	// the cached client.
 	APIReader client.Reader
-	Scheme    *runtime.Scheme
 	Recorder  events.EventRecorder
 	NSFilter  *NamespaceFilter
 	// OperatorNamespace is where the `cluster` system vnet lives. Pod events
@@ -119,14 +115,20 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	priorDegraded := conditionStatus(vnet, "Degraded")
 	storedStatus := vnet.Status.DeepCopy()
 
-	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
-	if !nameRegex.MatchString(vnet.Name) {
-		setReady(vnet, metav1.ConditionFalse, ReasonInvalidName,
-			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name))
-		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidName,
-			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
+	// reject marks the vnet not Ready and Degraded for reason, writes the
+	// status (best effort) and emits the transition events.
+	reject := func(reason, readyMsg, degradedMsg string) {
+		setReady(vnet, metav1.ConditionFalse, reason, readyMsg)
+		setDegraded(vnet, metav1.ConditionTrue, reason, degradedMsg)
 		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
+	}
+
+	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
+	if !nameRegex.MatchString(vnet.Name) {
+		reject(ReasonInvalidName,
+			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name),
+			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
 		return ctrl.Result{}, nil
 	}
 
@@ -140,12 +142,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !isSystem && !homeManaged {
-		setReady(vnet, metav1.ConditionFalse, ReasonHomeNamespaceExcluded,
-			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
-		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,
+		reject(ReasonHomeNamespaceExcluded,
+			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace),
 			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
-		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
-		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		setMembers(vnet.Namespace, vnet.Name, 0)
 		// Remove policies from earlier reconciles; a failure must retry, or
 		// the stale grants stay.
@@ -334,8 +333,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		nsAdmitted[ns] = ok
 		return ok, err
 	}
-	// ineligible returns why pods in ns cannot be members, or "" if they can.
 	nsReason := map[string]string{}
+	// ineligible returns why pods in ns cannot be members, or "" if they can.
 	ineligible := func(ns string) (string, error) {
 		if reason, seen := nsReason[ns]; seen {
 			return reason, nil
@@ -384,10 +383,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		}
 		if len(userVals) > 0 {
 			reason := ""
-			for _, v := range userVals {
-				if _, ok := ParseBareDirection(v); !ok {
-					reason = ReasonInvalidDirection
-				}
+			if slices.ContainsFunc(userVals, func(v string) bool { _, ok := ParseBareDirection(v); return !ok }) {
+				reason = ReasonInvalidDirection
 			}
 			if reason == "" {
 				if reason, err = ineligible(p.Namespace); err != nil {
@@ -526,65 +523,6 @@ func pluralize(n int, singular, plural string) string {
 		return singular
 	}
 	return fmt.Sprintf(plural, n)
-}
-
-// userJoinPrefix is the prefix of the user join labels, `kube-vnet/net.*`.
-const userJoinPrefix = DefaultLabelPrefix + "net."
-
-// isJoinLabel reports whether k is a user `kube-vnet/net.*` or an operator
-// `kube-vnet.system/net.*` label. The generator selects on the latter and the
-// diagnostics read the former, so a change in either must enqueue.
-func isJoinLabel(k string) bool {
-	return strings.HasPrefix(k, userJoinPrefix) || strings.HasPrefix(k, LabelSystemNetPrefix)
-}
-
-// HasJoinLabel reports whether obj carries a join label (isJoinLabel).
-func HasJoinLabel(obj client.Object) bool {
-	return len(joinLabelSet(obj)) > 0
-}
-
-// joinLabelSet extracts obj's join labels (isJoinLabel).
-func joinLabelSet(obj client.Object) map[string]string {
-	out := map[string]string{}
-	if obj == nil {
-		return out
-	}
-	for k, v := range obj.GetLabels() {
-		if isJoinLabel(k) {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-// JoinLabelChangedPredicate is the change-based pod predicate for the
-// VirtualNetworkReconciler. On Update it fires only when the join-label set
-// or the resolution marker changed: each reconcile lists every pod, and
-// nothing in it depends on pod status, so status churn must not enqueue.
-//
-// The resolved-generation annotation matters because for a pod whose
-// membership is denied, resolution writes only that annotation and no stamp.
-// Without it, a vnet reconcile that raced the pod's resolution would leave
-// the InvalidJoiners diagnostic stale until the periodic requeue.
-//
-// Create/Delete/Generic fire for any pod carrying a join label.
-func JoinLabelChangedPredicate() predicate.Predicate {
-	return predicate.Funcs{
-		CreateFunc: func(e event.CreateEvent) bool { return HasJoinLabel(e.Object) },
-		DeleteFunc: func(e event.DeleteEvent) bool { return HasJoinLabel(e.Object) },
-		UpdateFunc: func(e event.UpdateEvent) bool {
-			return !maps.Equal(joinLabelSet(e.ObjectOld), joinLabelSet(e.ObjectNew)) ||
-				resolvedGeneration(e.ObjectOld) != resolvedGeneration(e.ObjectNew)
-		},
-		GenericFunc: func(e event.GenericEvent) bool { return HasJoinLabel(e.Object) },
-	}
-}
-
-func resolvedGeneration(obj client.Object) string {
-	if obj == nil {
-		return ""
-	}
-	return obj.GetAnnotations()[AnnotationResolvedGeneration]
 }
 
 // SetupWithManager wires the watches: VirtualNetwork (primary), Pods (join-label

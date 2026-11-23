@@ -42,16 +42,6 @@ func apiserverReachablePolicyNameFor(ns, name string) string {
 	})
 }
 
-func waitForApiserverReachablePolicy(t *testing.T, ns, svcName string, timeout time.Duration) *networkingv1.NetworkPolicy {
-	t.Helper()
-	return waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, svcName), timeout)
-}
-
-func waitForApiserverReachablePolicyAbsent(t *testing.T, ns, svcName string, timeout time.Duration) {
-	t.Helper()
-	waitForPolicyAbsent(t, ns, apiserverReachablePolicyNameFor(ns, svcName), timeout)
-}
-
 // serviceWebhookClientConfig points a webhook at port 443 of Service ns/svc.
 func serviceWebhookClientConfig(ns, svc string) admissionregistrationv1.WebhookClientConfig {
 	port := int32(443)
@@ -88,7 +78,7 @@ func TestIntegration_ApiserverReachable_ValidatingWHC_PolicyAppears(t *testing.T
 
 	mustCreateValidatingWebhook(t, "ar-vwhc-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
-	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 	if pol.Labels[LabelSourceKind] != LabelSourceKindApiserver {
 		t.Errorf("source-kind label = %q, want %q", pol.Labels[LabelSourceKind], LabelSourceKindApiserver)
 	}
@@ -129,7 +119,7 @@ func TestIntegration_ApiserverReachable_MutatingWHC_PolicyAppears(t *testing.T) 
 			&admissionregistrationv1.MutatingWebhookConfiguration{ObjectMeta: metav1.ObjectMeta{Name: "ar-mwhc-" + ns}})
 	})
 
-	waitForApiserverReachablePolicy(t, ns, "injector", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "injector"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_APIService_PolicyAppears(t *testing.T) {
@@ -157,7 +147,7 @@ func TestIntegration_ApiserverReachable_APIService_PolicyAppears(t *testing.T) {
 			&apiregistrationv1.APIService{ObjectMeta: metav1.ObjectMeta{Name: "v1beta1.example.com"}})
 	})
 
-	waitForApiserverReachablePolicy(t, ns, "metrics", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "metrics"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_CRDConversion_PolicyAppears(t *testing.T) {
@@ -200,7 +190,7 @@ func TestIntegration_ApiserverReachable_CRDConversion_PolicyAppears(t *testing.T
 			&apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "widgets.example.com"}})
 	})
 
-	waitForApiserverReachablePolicy(t, ns, "converter", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "converter"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_AnnotationOptIn_PolicyAppears(t *testing.T) {
@@ -212,7 +202,7 @@ func TestIntegration_ApiserverReachable_AnnotationOptIn_PolicyAppears(t *testing
 	mustCreate(t, svc)
 
 	// No discovery resource — only the annotation. Should still get a policy.
-	pol := waitForApiserverReachablePolicy(t, ns, "annotated", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "annotated"), 10*time.Second)
 	if pol.Labels[LabelSourceKind] != LabelSourceKindApiserver {
 		t.Errorf("source-kind label = %q, want %q", pol.Labels[LabelSourceKind], LabelSourceKindApiserver)
 	}
@@ -235,12 +225,12 @@ func TestIntegration_ApiserverReachable_DiscoveryDeleted_PolicySwept(t *testing.
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
 	whc := mustCreateValidatingWebhook(t, "ar-delete-"+ns, serviceWebhookClientConfig(ns, "webhook"))
-	waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 
 	if err := testClient.Delete(context.Background(), whc); err != nil {
 		t.Fatalf("delete WHC: %v", err)
 	}
-	waitForApiserverReachablePolicyAbsent(t, ns, "webhook", 10*time.Second)
+	waitForPolicyAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_OptOut_ServiceAnnotation(t *testing.T) {
@@ -250,12 +240,12 @@ func TestIntegration_ApiserverReachable_OptOut_ServiceAnnotation(t *testing.T) {
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
 	mustCreateValidatingWebhook(t, "ar-optout-svc-"+ns, serviceWebhookClientConfig(ns, "webhook"))
-	waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 
 	updateService(t, ns, "webhook", func(s *corev1.Service) {
 		metav1.SetMetaDataAnnotation(&s.ObjectMeta, AnnotationExternalAllow, "false")
 	})
-	waitForApiserverReachablePolicyAbsent(t, ns, "webhook", 10*time.Second)
+	waitForPolicyAbsent(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_DriftCorrection(t *testing.T) {
@@ -265,13 +255,13 @@ func TestIntegration_ApiserverReachable_DriftCorrection(t *testing.T) {
 	mustCreate(t, makeWebhookService(ns, "webhook"))
 
 	mustCreateValidatingWebhook(t, "ar-drift-"+ns, serviceWebhookClientConfig(ns, "webhook"))
-	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 
 	// Delete the policy by hand. Operator should recreate it.
 	if err := testClient.Delete(context.Background(), pol); err != nil {
 		t.Fatalf("delete policy: %v", err)
 	}
-	waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 }
 
 func TestIntegration_ApiserverReachable_URLOnlyWebhook_NoEmission(t *testing.T) {
@@ -313,7 +303,7 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_ResolvedFromPod(t *testi
 
 	mustCreateValidatingWebhook(t, "ar-named-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
-	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
 		t.Errorf("named targetPort `webhook-tls` should resolve to containerPort 10250, got %d; policy=%+v",
 			got, pol.Spec.Ingress[0].Ports)
@@ -342,7 +332,7 @@ func TestIntegration_ApiserverReachable_NamedTargetPort_Pending_Then_PodAppears(
 		corev1.ContainerPort{Name: "webhook-tls", ContainerPort: 10250},
 	))
 
-	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 10250 {
 		t.Errorf("after Pod create, named targetPort should resolve to 10250, got %d", got)
 	}
@@ -364,7 +354,7 @@ func TestIntegration_ApiserverReachable_SurvivesExternalAllowReconcile(t *testin
 
 	mustCreateValidatingWebhook(t, "ar-coexist-"+ns, serviceWebhookClientConfig(ns, "webhook"))
 
-	pol := waitForApiserverReachablePolicy(t, ns, "webhook", 10*time.Second)
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
 	originalUID := pol.UID
 
 	// Force several ExternalAllowReconciler passes via inert annotation
@@ -404,8 +394,8 @@ func TestIntegration_ApiserverReachable_CoexistsWithExtSvcPolicy_LBWebhookServic
 
 	mustCreateValidatingWebhook(t, "ar-lbwh-"+ns, serviceWebhookClientConfig(ns, "gateway"))
 
-	apiserverPol := waitForApiserverReachablePolicy(t, ns, "gateway", 10*time.Second)
-	extSvcPol := waitForExternalAllowPolicy(t, ns, "gateway", 10*time.Second)
+	apiserverPol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "gateway"), 10*time.Second)
+	extSvcPol := waitForPolicy(t, ns, extAllowPolicyName(ns, "gateway"), 10*time.Second)
 	apiserverUID := apiserverPol.UID
 	extSvcUID := extSvcPol.UID
 

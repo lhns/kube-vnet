@@ -3,14 +3,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -28,7 +27,7 @@ const (
 	// namespace: the same reason as the binding's Event, the message says
 	// which.
 	ReasonBindingVNetNotJoinable   = ReasonVirtualNetworkNotJoinable
-	ReasonBindingNamespaceExcluded = "NamespaceExcluded"
+	ReasonBindingNamespaceExcluded = ReasonNamespaceExcluded
 	ReasonBindingInvalidDirection  = ReasonInvalidDirection
 	ReasonBindingInvalidSelector   = "InvalidSelector"
 	// The selector matches pods, but resolution made none of them a member
@@ -36,7 +35,7 @@ const (
 	ReasonBindingNoPodsAttached = "NoPodsAttached"
 	// The target vnet's home namespace is excluded or disabled, so the vnet
 	// is not served and has no membership policies.
-	ReasonBindingHomeNamespaceExcluded = "HomeNamespaceExcluded"
+	ReasonBindingHomeNamespaceExcluded = ReasonHomeNamespaceExcluded
 	// The target vnet is being deleted; its membership policies are gone.
 	ReasonBindingVNetTerminating = "VirtualNetworkTerminating"
 )
@@ -46,7 +45,6 @@ const (
 // selected pods.
 type VirtualNetworkBindingReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
 	NSFilter *NamespaceFilter
 	// OperatorNamespace is where the `cluster` system vnet lives; a ref to it
 	// that omits the namespace resolves there.
@@ -149,7 +147,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 			names = append(names, pods.Items[i].Name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	selected, attached := len(pods.Items), len(names)
 	switch {
@@ -187,17 +185,6 @@ func (r *VirtualNetworkBindingReconciler) writeStatus(
 		return nil
 	}
 	return r.Status().Update(ctx, b)
-}
-
-// isStampedMember reports whether resolution has made pod a member of the vnet
-// whose stamp key is stampKey: resolved, and stamped with a direction other
-// than none.
-func isStampedMember(pod *corev1.Pod, stampKey string) bool {
-	if pod.Annotations[AnnotationResolvedGeneration] == "" {
-		return false
-	}
-	dir, ok := ParseBareDirection(pod.Labels[stampKey])
-	return ok && dir != DirectionNone
 }
 
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {

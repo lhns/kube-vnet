@@ -113,6 +113,7 @@ func TestNetworkWait_ContainerSpec(t *testing.T) {
 	sc := wait.SecurityContext
 	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot ||
 		sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation ||
+		sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem ||
 		sc.Capabilities == nil || !reflect.DeepEqual(sc.Capabilities.Drop, []corev1.Capability{"ALL"}) ||
 		sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
 		t.Errorf("security context is not PodSecurity-restricted: %+v", sc)

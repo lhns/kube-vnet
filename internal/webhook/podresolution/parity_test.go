@@ -170,7 +170,6 @@ func reconcilerLabels(t *testing.T, objects []client.Object, p *corev1.Pod) map[
 	c := newClient(t, objects, p)
 	r := &controller.ResolutionReconciler{
 		Client:   c,
-		Scheme:   testScheme(t),
 		NSFilter: controller.NewNamespaceFilter(nil),
 	}
 	if _, err := r.Reconcile(context.Background(), ctrl.Request{

@@ -250,3 +250,59 @@ func TestPermitsForVnet_ClusterNameIsNotAPass(t *testing.T) {
 		t.Errorf("Permits=%v PermitsForVnet=%v, want both false", byKey, byVnet)
 	}
 }
+
+// Only the bare `cluster` key may short-circuit Permits; a qualified
+// `<ns>.cluster` key must be checked against the real vnet, or a wrong
+// `cluster` ref could never be caught.
+func TestPermits_ClusterVnet_ForeignNamespace_NotPermitted(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(schemeForPermits(t)).
+		WithObjects(
+			mkNamespace("app", nil),
+			// The real cluster vnet lives only in the operator's namespace.
+			mkVnet(SystemVnetCluster, "kube-vnet-system", &vnetv1alpha1.NamespaceSelector{All: true}),
+		).Build()
+
+	ok, err := Permits(context.Background(), c, VnetKey("bogus."+SystemVnetCluster), "app")
+	if err != nil {
+		t.Fatalf("Permits: %v", err)
+	}
+	if ok {
+		t.Fatal("bogus.cluster was permitted; a non-existent cluster vnet must be denied like any other not-found vnet")
+	}
+}
+
+// The bare canonical form must still short-circuit to permitted — narrowing
+// the short-circuit must not break the form every stamp/policy actually uses.
+func TestPermits_ClusterVnet_BareKey_StillPermitted(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(schemeForPermits(t)).
+		WithObjects(mkNamespace("app", nil)).Build()
+
+	ok, err := Permits(context.Background(), c, VnetKey(SystemVnetCluster), "app")
+	if err != nil {
+		t.Fatalf("Permits: %v", err)
+	}
+	if !ok {
+		t.Fatal("bare `cluster` key must remain permitted")
+	}
+}
+
+// An explicit, correct cluster namespace resolves via a real Get against the
+// operator-namespace CR (allowedNamespaces.All) — the singleton's home is
+// discovered, never hardcoded.
+func TestPermits_ClusterVnet_OperatorNamespace_Permitted(t *testing.T) {
+	c := fake.NewClientBuilder().
+		WithScheme(schemeForPermits(t)).
+		WithObjects(
+			mkNamespace("app", nil),
+			mkVnet(SystemVnetCluster, "kube-vnet-system", &vnetv1alpha1.NamespaceSelector{All: true}),
+		).Build()
+
+	ok, err := Permits(context.Background(), c, VnetKey("kube-vnet-system."+SystemVnetCluster), "app")
+	if err != nil {
+		t.Fatalf("Permits: %v", err)
+	}
+	if !ok {
+		t.Fatal("kube-vnet-system.cluster must be permitted (vnet exists, allowedNamespaces.All)")
+	}
+}

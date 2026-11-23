@@ -19,7 +19,6 @@ func newReconciler(objs ...runtime.Object) *VirtualNetworkReconciler {
 	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
 	return &VirtualNetworkReconciler{
 		Client:   c,
-		Scheme:   scheme,
 		NSFilter: NewNamespaceFilter(nil),
 	}
 }

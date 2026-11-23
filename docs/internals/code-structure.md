@@ -49,6 +49,17 @@ kube-vnet/
 │                                             all accept or the max runs out)
 │                                             and the beacon listener
 │
+├── internal/testutil/ ...................... test helpers shared by the controller
+│                                             and webhook suites (scheme, fixtures;
+│                                             envtest.go starts envtest under the
+│                                             `integration` tag). Imports neither
+│                                             package, so no import cycle
+│
+├── test/e2e/probe/ ......................... probe binary the e2e beacon-ordering
+│                                             experiment runs in a pod: times when
+│                                             each TCP target first accepts
+│                                             (ADR 0045)
+│
 └── internal/controller/ .................... operator logic
     │
     │   --- Pure functions and shared helpers ---
@@ -88,11 +99,32 @@ kube-vnet/
     │                                         kube-vnet.system/* labels; shared
     │                                         by the ResolutionReconciler and
     │                                         the mutating webhook. Hosts
-    │                                         canonicalVnetKey
-    ├── stamps.go ............................ SyncStamps / MarkResolved /
+    │                                         canonicalVnetKey, CanonicalSuffix
+    │                                         and the not-joinable hints
+    ├── stamps.go ............................ the stamp label/annotation
+    │                                         constants; SyncStamps / MarkResolved /
     │                                         ClearResolved: the one way both
     │                                         the reconciler and the webhook
     │                                         write stamps onto a pod
+    ├── joinlabels.go ........................ join-label helpers (isJoinLabel,
+    │                                         JoinLabelChangedPredicate,
+    │                                         isStampedMember) shared by the
+    │                                         vnet and binding reconcilers
+    ├── signals.go ........................... Event helpers (eventf, applyFailed,
+    │                                         policyRestored), policyTracker
+    │                                         (restore detection) and onceSet
+    │                                         (one Event per object and reason)
+    ├── network_wait.go ...................... network-wait opt-in annotation and
+    │                                         NetworkWaitWarning: why a pod will
+    │                                         not get the wait (ADR 0045)
+    ├── pod_ports.go ......................... named-port lookup over pod specs
+    │                                         (namedPortContainers) and Service
+    │                                         targetPort resolution
+    ├── service_policy.go .................... machinery shared by the two
+    │                                         Service-owned policy reconcilers
+    │                                         (external-allow, apiserver-
+    │                                         reachable): reconcile loop, sweep,
+    │                                         policy builder, watches
     ├── sweep.go ............................. sweepStalePolicies: label-scoped
     │                                         deletion of policies not in the
     │                                         desired set
@@ -108,8 +140,8 @@ kube-vnet/
     │                                         the Resolver and patches
     │                                         kube-vnet.system/* labels +
     │                                         resolved-generation/resolved-by
-    │                                         annotations onto pods. Hosts
-    │                                         CanonicalSuffix
+    │                                         annotations onto pods, plus its
+    │                                         watch fan-out
     ├── virtualnetwork_controller.go ......... VirtualNetworkReconciler: watches
     │                                         VirtualNetwork + Pod +
     │                                         NetworkPolicy +
@@ -144,7 +176,8 @@ kube-vnet/
     │                                         bindings stamp via resolution
     │                                         per ADR 0033
     ├── external_allow_controller.go ......... ExternalAllowReconciler:
-    │                                         kube-vnet.ext.svc.* (ADR 0038)
+    │                                         kube-vnet.ext.svc.* (ADR 0038;
+    │                                         shared logic in service_policy.go)
     ├── hostport_controller.go ............... HostPortReconciler:
     │                                         kube-vnet.ext.host.* (ADR 0040)
     └── apiserver_reachable_controller.go .... ApiserverReachableReconciler:

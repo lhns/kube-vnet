@@ -109,21 +109,6 @@ func TestHostPortPolicyName(t *testing.T) {
 	}
 }
 
-func TestDesiredHostPortStamps(t *testing.T) {
-	p := podWithHostPorts("p",
-		corev1.ContainerPort{HostPort: 80, Protocol: corev1.ProtocolTCP},
-		corev1.ContainerPort{HostPort: 9999, Protocol: corev1.ProtocolUDP},
-	)
-	want := map[string]bool{LabelSystemHostPortPrefix + "80.tcp": true, LabelSystemHostPortPrefix + "9999.udp": true}
-	if got := desiredHostPortStamps(p); !maps.Equal(got, want) {
-		t.Errorf("got %v, want %v", got, want)
-	}
-	p.Spec.HostNetwork = true
-	if got := desiredHostPortStamps(p); len(got) != 0 {
-		t.Errorf("hostNetwork pod should have no stamps, got %v", got)
-	}
-}
-
 // NetworkPolicy ports are evaluated after the hostPort DNAT, so a 443 -> 8443
 // mapping must allow 8443 and nothing else; the key and names stay on 443.
 func TestBuildHostPortPolicy_AllowsContainerPorts(t *testing.T) {
@@ -138,5 +123,20 @@ func TestBuildHostPortPolicy_AllowsContainerPorts(t *testing.T) {
 	}
 	if pol.Name != hostPortPolicyName("ns", key) || pol.Spec.PodSelector.MatchLabels[LabelSystemHostPortPrefix+"443.tcp"] != "true" {
 		t.Errorf("name and selector must stay on the hostPort, got %q %v", pol.Name, pol.Spec.PodSelector.MatchLabels)
+	}
+}
+
+// The kubelet maps hostPorts from spec.containers only, so a hostPort on any
+// init container, native sidecar or not, is never forwarded and gets no
+// allow.
+func TestDesiredHostPortKeys_InitContainersNotCounted(t *testing.T) {
+	for _, always := range []bool{true, false} {
+		p := podWithHostPorts("p")
+		p.Spec.InitContainers = []corev1.Container{
+			initContainerWithPort(corev1.ContainerPort{HostPort: 8080, ContainerPort: 80}, always),
+		}
+		if got := desiredHostPortKeys([]corev1.Pod{*p}); len(got) != 0 {
+			t.Errorf("restartPolicy Always=%v: got %v, want no keys", always, got)
+		}
 	}
 }

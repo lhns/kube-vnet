@@ -177,7 +177,6 @@ func main() {
 	must((&controller.VirtualNetworkReconciler{
 		Client:            c,
 		APIReader:         mgr.GetAPIReader(),
-		Scheme:            scheme,
 		Recorder:          mgr.GetEventRecorder("kube-vnet"),
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
@@ -185,19 +184,16 @@ func main() {
 	must(mgr.Add(&controller.MetricsCollector{Client: c}), "unable to register metrics collector")
 	must((&controller.NamespaceReconciler{
 		Client:   c,
-		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-namespace"),
 	}).SetupWithManager(mgr), "unable to set up namespace reconciler")
 	must((&controller.VirtualNetworkBindingReconciler{
 		Client:            c,
-		Scheme:            scheme,
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
 	}).SetupWithManager(mgr), "unable to set up binding reconciler")
 	must((&controller.ResolutionReconciler{
 		Client:   c,
-		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-resolution"),
 		// The wait is injected by the webhook only.
@@ -205,7 +201,6 @@ func main() {
 	}).SetupWithManager(mgr), "unable to set up resolution reconciler")
 	must((&controller.SystemVnetReconciler{
 		Client:            c,
-		Scheme:            scheme,
 		NSFilter:          nsFilter,
 		OperatorNamespace: operatorNS,
 		Recorder:          mgr.GetEventRecorder("kube-vnet-system-vnet"),
@@ -225,7 +220,6 @@ func main() {
 	}).SetupWithManager(mgr), "unable to set up apiserver-reachable reconciler")
 	must((&controller.HostPortReconciler{
 		Client:   c,
-		Scheme:   scheme,
 		NSFilter: nsFilter,
 		Recorder: mgr.GetEventRecorder("kube-vnet-host-port"),
 	}).SetupWithManager(mgr), "unable to set up host-port reconciler")

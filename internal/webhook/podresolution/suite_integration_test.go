@@ -103,7 +103,6 @@ func TestMain(m *testing.M) {
 	// without the webhook the stamp still arrives, just late.
 	resolutionReconciler := &controller.ResolutionReconciler{
 		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
 		NSFilter: nsFilter,
 	}
 	if err := resolutionReconciler.SetupWithManager(mgr); err != nil {

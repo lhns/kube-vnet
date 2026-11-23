@@ -399,7 +399,7 @@ func TestExternalAllowReconcilers_TerminatingNamespace_NoApply(t *testing.T) {
 		}},
 		{"host_port", podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, Protocol: corev1.ProtocolTCP}), "ns",
 			func(c client.Client) reconcileFunc {
-				return (&HostPortReconciler{Client: c, Scheme: c.Scheme(), NSFilter: NewNamespaceFilter(nil)}).Reconcile
+				return (&HostPortReconciler{Client: c, NSFilter: NewNamespaceFilter(nil)}).Reconcile
 			}},
 	}
 	for _, tc := range cases {
