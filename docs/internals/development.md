@@ -10,7 +10,7 @@ For the *what* and *why* of design choices, see the [ADRs](../adr/README.md) (es
 
 | Tool | Why | Install |
 |---|---|---|
-| Go 1.26+ | Compiler. The `go.mod` declares `go 1.26`. | https://go.dev/dl/ |
+| Go 1.27+ | Compiler. The `go.mod` declares `go 1.27.0`. | https://go.dev/dl/ |
 | Docker | Build the image; required for kind / e2e. | https://docs.docker.com/get-docker/ |
 | kind | Local Kubernetes for e2e. | https://kind.sigs.k8s.io/ |
 | kubectl 1.25+ | CRD CEL validation needs ≥ 1.25. | https://kubernetes.io/docs/tasks/tools/ |

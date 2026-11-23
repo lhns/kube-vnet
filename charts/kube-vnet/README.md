@@ -8,21 +8,21 @@ standard `NetworkPolicy` resources.
 
 ```bash
 helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
-  --version 0.1.0 \
+  --version <version> \
   --namespace kube-vnet-system --create-namespace \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster   # required: pod | namespace | cluster
 ```
 
-`operator.clusterBaseline.ingressIsolationLevel` (or an explicit `operator.clusterBaseline.memberships` map) is required; the chart fails without one. To install a specific image tag, add `--set image.tag=<tag>`.
+`<version>` is a release tag without the `v`. `operator.clusterBaseline.ingressIsolationLevel` (or an explicit `operator.clusterBaseline.memberships` map) is required; the chart fails without one. To install a specific image tag, add `--set image.tag=<tag>`.
 
 ## Verify the chart and image (cosign keyless)
 
 ```bash
-cosign verify ghcr.io/lhns/kube-vnet:v0.1.0 \
+cosign verify ghcr.io/lhns/kube-vnet:v<version> \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 
-cosign verify ghcr.io/lhns/charts/kube-vnet:0.1.0 \
+cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
   --certificate-identity-regexp '^https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/v.*' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
 ```

@@ -21,7 +21,7 @@ Defined in `cmd/main.go`. The chart sets them from the `operator.*` and `webhook
 | `--webhook-port` | int | `9443` | Port of the webhook server. |
 | `--webhook-cert-dir` | string | `/tmp/k8s-webhook-server/serving-certs` | Directory holding `tls.crt` and `tls.key`. |
 | `--service-account-name` | string | `kube-vnet-controller` | The operator's own ServiceAccount name. The validating webhook exempts this identity so the operator's own pod patches are not judged as user writes. The chart passes its ServiceAccount name when `webhook.enabled=true`. |
-| `--network-wait-beacons` | string (host:port) | `""` | The network beacons' headless Service. Non-empty enables the network wait: pods annotated `kube-vnet/network-max-wait` get the wait container. Requires `--webhook-enabled` and `--network-wait-image`. The chart sets both when `webhook.networkWait.enabled=true`. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md). |
+| `--network-wait-beacons` | string (host:port) | `""` | The network beacons' headless Service. Non-empty enables the network wait: pods annotated `kube-vnet/network-max-wait` get the wait container. Has no effect without `--webhook-enabled` and `--network-wait-image`. The chart sets both when `webhook.networkWait.enabled=true`. See [ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md). |
 | `--network-wait-image` | string | `""` | Image of the injected wait container: the operator image, which runs its `network-wait` subcommand. |
 | `--version` | bool | `false` | Print version info and exit. |
 
@@ -53,7 +53,7 @@ If you run the binary outside Kubernetes (`make run`), `POD_NAMESPACE` is unset 
 
 ## Helm chart values
 
-Mirror of `charts/kube-vnet/values.yaml`, plus `nameOverride`/`fullnameOverride`, which the templates read but `values.yaml` leaves unset. Pass any of these via `--set <key>=<value>` or a values file.
+Mirror of `charts/kube-vnet/values.yaml`, including `nameOverride`/`fullnameOverride`, which default to the empty string. Pass any of these via `--set <key>=<value>` or a values file.
 
 ### `image.*`
 
@@ -120,13 +120,13 @@ When `rbac.aggregate=true`, the chart emits eight ClusterRoles:
 
 | ClusterRole | Aggregates into | Grants |
 |---|---|---|
-| `<release>-virtualnetworks-editor` | `admin`, `edit` | CRUD on `virtualnetworks` (+ `/status`) |
+| `<release>-virtualnetworks-editor` | `admin`, `edit` | CRUD on `virtualnetworks` |
 | `<release>-virtualnetworks-viewer` | `view` | read on `virtualnetworks` |
-| `<release>-virtualnetworkbindings-editor` | `admin`, `edit` | CRUD on `virtualnetworkbindings` (+ `/status`) |
+| `<release>-virtualnetworkbindings-editor` | `admin`, `edit` | CRUD on `virtualnetworkbindings` |
 | `<release>-virtualnetworkbindings-viewer` | `view` | read on `virtualnetworkbindings` |
-| `<release>-virtualnetworkbaselines-editor` | `admin`, `edit` | CRUD on `virtualnetworkbaselines` (+ `/status`) |
+| `<release>-virtualnetworkbaselines-editor` | `admin`, `edit` | CRUD on `virtualnetworkbaselines` |
 | `<release>-virtualnetworkbaselines-viewer` | `view` | read on `virtualnetworkbaselines` |
-| `<release>-clustervirtualnetworkbaselines-editor` | (none — unbound) | CRUD on `clustervirtualnetworkbaselines` (+ `/status`); cluster-admin binds explicitly to delegate |
+| `<release>-clustervirtualnetworkbaselines-editor` | (none — unbound) | CRUD on `clustervirtualnetworkbaselines`; cluster-admin binds explicitly to delegate |
 | `<release>-clustervirtualnetworkbaselines-viewer` | (none — unbound) | read on `clustervirtualnetworkbaselines`; cluster-admin binds explicitly |
 
 See [`security.md`](../security/security.md#who-can-write-what) for the trust-model rationale.

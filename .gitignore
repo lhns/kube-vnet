@@ -15,7 +15,8 @@ go.work.sum
 
 # Build artifacts
 dist/
-release.yaml.bak
+/release.yaml
+config/manager/manager.yaml.bak
 
 # envtest assets
 testbin/

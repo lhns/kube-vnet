@@ -248,7 +248,7 @@ The operator binary needs:
 1. The container image (`ghcr.io/lhns/kube-vnet:<tag>`) — pull, retag, and push to your internal registry.
 2. The CRD and manifests (`release.yaml`) — copy and apply.
 
-The runtime image is `gcr.io/distroless/static:nonroot` (the binary is statically linked Go). No external runtime dependencies; once the image is in your registry, the operator runs offline.
+The runtime image is `gcr.io/distroless/static-debian13:nonroot` (the binary is statically linked Go). No external runtime dependencies; once the image is in your registry, the operator runs offline.
 
 If you use Helm, mirror `oci://ghcr.io/lhns/charts/kube-vnet:<chart-version>` to your internal OCI registry too, plus the uninstall hook's `registry.k8s.io/kubectl` image (`cleanup.image.*`):
 
