@@ -19,7 +19,7 @@ Every policy kube-vnet emits is `policyTypes: [Ingress]`. Egress — DNS, the ap
 - **Accidentally-too-open ingress.** The default-allow Kubernetes posture for ingress is the bug; kube-vnet flips it to membership-based ingress allow with the uniform ingress-deny baseline `kube-vnet.base` (how much of it bites is set by the [baseline tier](../getting-started/concepts.md#the-deny-all-baseline) — the `pod`/`namespace`/`cluster` presets and their per-namespace overrides).
 - **Drift on operator-managed `NetworkPolicy` resources** (deletion, hand-edit). The watch + reconcile loop restores the desired state within seconds; a re-created policy also gets a `PolicyRestored` Event, on the policy itself (and, for a membership policy, on its vnet).
 - **Misconfiguration via wrong namespace.** Pods that try to join a vnet from a non-permitted namespace get a `VirtualNetworkNotJoinable` event in their own namespace rather than silently failing. They do not appear on the vnet, so a tenant cannot degrade another team's vnet or write names into its status.
-- **Forged membership.** The `kube-vnet.system/*` labels the policies select on are admission-protected: by a `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30, and, when `webhook.enabled=true`, by the validating webhook for the pods it sees (the policy still covers the rest).
+- **Forged membership.** The `kube-vnet.system/*` labels the policies select on are admission-protected: by a `ValidatingAdmissionPolicy` on Kubernetes ≥ 1.30, and, when `webhook.enabled=true`, by the webhooks for the pods they see (the policy still covers the rest): on pod creation the mutator replaces any stamps the request carried with the resolved ones ([ADR 0046](../adr/0046-rewrite-stamps-on-pod-create.md)), and the validator rejects any other stamp that does not match resolution.
 - **Cross-namespace surprise.** `allowedNamespaces` is explicit; foreign namespaces don't get to join unless the vnet says so.
 
 ### What kube-vnet does NOT defend against
@@ -100,9 +100,21 @@ To skip the chart-shipped end-user RBAC entirely (managing it externally via Arg
 
 ### Image and chart signing (cosign keyless)
 
-Released images and the OCI Helm chart are signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless, using the GitHub OIDC token — no long-lived keys. The signing identity is the release workflow: `https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/<tag>`. A successful verify proves the artifact was built and pushed by that workflow; if it fails, do not deploy.
+Released images and the OCI Helm chart are signed with [Cosign](https://docs.sigstore.dev/cosign/) keyless, using the GitHub OIDC token — no long-lived keys. The signing identity is the release workflow: `https://github.com/lhns/kube-vnet/.github/workflows/release.yaml@refs/tags/<tag>`. A successful verify proves the artifact was built and pushed by that workflow for a `v*` tag; if it fails, do not deploy.
 
 Verify commands: [`install.md` § Verifying signatures](../getting-started/install.md#verifying-signatures).
+
+Only releases are signed. Dev builds (`0.0.0-dev.g<sha>`, `sha-<sha>`, `:<branch>`) are published to the same repositories unsigned, from any branch push, without the CI gates; use them only for testing.
+
+What a signature does not cover ([threat model F-19–F-21](threat-model.md#7-findings-register)):
+
+- It does not prove the tagged commit is on `main` or was reviewed: the release gates come from the tagged commit's own workflow files.
+- The chart and `release.yaml` reference the image by tag, and tags can be moved. A verify at install time does not bind what a node pulls later. To bind it, pin the digest (`image.tag: v<version>@sha256:<digest>`) or enforce the signature at admission (sigstore policy-controller, Kyverno).
+- `config/manager` (the from-source install) runs `:latest`, which moves with every release tag.
+
+### Build and release pipeline
+
+`.github/workflows/release.yaml` builds `linux/amd64` and `linux/arm64`, pushes by digest, checks that each platform's binary has the right architecture (`scripts/check-binary-arch.sh`), and only then tags the digest with `crane`, failing if any tag does not resolve to exactly that digest. A `v*` tag first runs the full `ci.yaml` and `e2e.yaml` pipelines (`workflow_call`); a failed or cancelled gate blocks the release. The rendered `release.yaml` asset must deploy this release's image and no other. Actions are pinned by commit SHA, the Go and distroless base images by digest. Two downloads in the release job are not pinned to content yet ([threat model F-20](threat-model.md#7-findings-register)).
 
 ### SBOMs
 
@@ -123,10 +135,10 @@ syft ghcr.io/lhns/kube-vnet:v<version> -o spdx-json
 
 ### Vulnerability scanning
 
-CI runs Trivy on every PR:
+CI runs Trivy on every PR, on every push to `main`, and as part of the release gate:
 
 - **`trivy-fs`** scans the source tree and Go module dependencies.
-- **`docker`** job's image-scan step scans the locally-built image.
+- **`image`** job's Trivy step scans the locally built `linux/amd64` image.
 
 Both jobs fail the build on `CRITICAL` or `HIGH` severity findings (`ignore-unfixed: true` — issues without an upstream fix don't gate the build).
 
@@ -152,7 +164,7 @@ Schedule: weekly Mondays. PRs are labeled per ecosystem with caps so the queue d
 
 ### Container
 
-- **Image**: `gcr.io/distroless/static:nonroot`. Statically-linked Go binary; no shell, no package manager, no setuid binaries.
+- **Image**: `gcr.io/distroless/static-debian13:nonroot`, pinned by digest in the `Dockerfile`. Statically-linked Go binary; no shell, no package manager, no setuid binaries.
 - **User**: `65532:65532` (the `nonroot` user from distroless).
 - **Read-only root filesystem**: yes.
 - **All capabilities dropped**: `securityContext.capabilities.drop: [ALL]`.
@@ -168,7 +180,7 @@ These are configured both in `config/manager/manager.yaml` (the Kustomize instal
 - The operator container exposes:
   - `:8080` — Prometheus metrics. Not exposed via a Service by default; opt in with `metricsService.enabled=true` or `podMonitor.enabled=true`.
   - `:8081` — health/readiness probes.
-  - `:9443` — only with `webhook.enabled=true`: the admission webhook server, reached by the apiserver through the `<release>-webhook` Service (TLS; certificate from the chart or cert-manager).
+  - `:9443` — only with `webhook.enabled=true`: the admission webhook server, reached by the apiserver through the `<release>-webhook` Service (TLS; certificate from the chart or cert-manager). Readiness waits for it to accept TLS, so a replica that cannot serve admission is not in the Service.
 - Only with `webhook.networkWait.enabled=true`: a beacon DaemonSet listens on `:9444` on every Linux node, and a chart-owned NetworkPolicy opens it to every pod. A beacon accepts a TCP connection and closes it at once; it reads nothing and has no ServiceAccount token. The init container injected into opted-in pods only resolves and dials the beacons ([ADR 0045](../adr/0045-network-wait-for-opted-in-pods.md)).
 - It makes egress only to the apiserver (and to CoreDNS for resolution).
 - The release namespace is disabled for the operator itself, so no kube-vnet policy restricts ingress to it.
