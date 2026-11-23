@@ -13,7 +13,7 @@ helm install kube-vnet oci://ghcr.io/lhns/charts/kube-vnet \
   --set operator.clusterBaseline.ingressIsolationLevel=cluster   # required: pod | namespace | cluster
 ```
 
-`<version>` is a release tag without the `v`. `operator.clusterBaseline.ingressIsolationLevel` (or an explicit `operator.clusterBaseline.memberships` map) is required; the chart fails without one. To install a specific image tag, add `--set image.tag=<tag>`.
+`<version>` is a release tag without the `v`. `operator.clusterBaseline.ingressIsolationLevel` (or an explicit `operator.clusterBaseline.memberships` map) is required; the chart fails without one. The published chart pins the operator image by digest, so a default install pulls exactly the image that was released. To install another image tag, add `--set image.tag=<tag>` (the digest is then ignored).
 
 ## Verify the chart and image (cosign keyless)
 
@@ -37,7 +37,8 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
 | `webhook.timeoutSeconds` | `5` | Admission timeout. Resolution is served from cache, so a slow reply means the operator is unhealthy |
 | `webhook.networkWait.enabled` | `false` | Ship per-node network beacons and let pods opt in with `kube-vnet/network-max-wait: "30s"`: the app starts once every node has applied the pod's rules, or when the maximum runs out (ADR 0045). Requires `webhook.enabled` |
 | `image.repository` | `ghcr.io/lhns/kube-vnet` | Operator image repository |
-| `image.tag` | `""` (chart appVersion) | Operator image tag |
+| `image.tag` | `""` (chart appVersion) | Operator image tag. Setting it makes the chart ignore `image.digest` |
+| `image.digest` | `""` (set to the release's image digest in the published chart) | Pins the image as `tag@digest`; used only while `image.tag` is empty |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
 | `replicaCount` | `1` | Operator replicas (2+ for HA, and with `webhook.enabled`) |
 | `operator.disabledNamespaces` | `[kube-system]` | Namespaces the operator never touches (mirrors `kube-vnet/disabled=true`). Removing `kube-system` enrolls it; `dnsCarveout` then keeps CoreDNS reachable |

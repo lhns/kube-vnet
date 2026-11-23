@@ -3,7 +3,8 @@
 name: release
 
 # Two modes, one code path:
-#   release - a `v*` tag: image tags <TAG_PREFIX>X.Y.Z and latest, chart X.Y.Z, GitHub Release.
+#   release - a `v*` tag on a commit of main: image tags <TAG_PREFIX>X.Y.Z (and latest, when this is
+#             the highest stable release), chart X.Y.Z, GitHub Release.
 #   dev     - any other branch push, or run by hand: image tags 0.0.0-dev.g<sha7>, sha-<sha7> and
 #             the branch, chart 0.0.0-dev.g<sha7>. No GitHub Release.
 # Both build linux/amd64 and linux/arm64, push by digest, check each platform's binary, and only
@@ -60,6 +61,8 @@ jobs:
       id-token: write   # cosign keyless signing (release mode only)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # release mode: all tags (the `latest` decision) and main's history (the ancestry check)
       # PER-REPO: pv-reaper only, its Dockerfile RUNs on the target platform:
       # - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -90,7 +93,25 @@ jobs:
             MODE=release
             CHART_VERSION="${GITHUB_REF_NAME#v}"
             APP_VERSION="${TAG_PREFIX}${CHART_VERSION}"
-            EXTRA_TAGS=latest
+            # A tag cannot release a commit that never landed on main: the gates and the signing
+            # identity come from the tagged commit's own workflow files, so an unreviewed branch
+            # could otherwise be released by tagging it. This does not stop someone who can edit
+            # this workflow; a tag ruleset restricting who can create v* tags does.
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main; release from a commit of main"
+              exit 1
+            fi
+            # `latest` is what unpinned installs pull: move it only for the highest stable release,
+            # so a prerelease or an older patch tagged later does not take it over.
+            stable='^v[0-9]+\.[0-9]+\.[0-9]+$'
+            EXTRA_TAGS=""
+            if [[ "$GITHUB_REF_NAME" =~ $stable ]] \
+                && [ "$(git tag -l 'v*' | grep -E "$stable" | sort -V | tail -n1)" = "$GITHUB_REF_NAME" ]; then
+              EXTRA_TAGS=latest
+            else
+              echo "::notice::not moving latest: $GITHUB_REF_NAME is not the highest stable release"
+            fi
           else
             MODE=dev
             # The g is required: an all-digit sha with a leading zero (0054012) is an invalid
@@ -160,7 +181,8 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t refs <<< "$REFS"
-          IFS=, read -ra tags <<< "$APP_VERSION,$EXTRA_TAGS"
+          tags=("$APP_VERSION")
+          if [ -n "$EXTRA_TAGS" ]; then IFS=, read -ra extra <<< "$EXTRA_TAGS"; tags+=("${extra[@]}"); fi
           for ref in "${refs[@]}"; do
             name=${ref%@*} digest=${ref#*@}
             for t in "${tags[@]}"; do crane tag "$ref" "$t"; done
@@ -192,6 +214,24 @@ jobs:
             fi
           done
 
+      # vnet-only: a default install pulls the operator image by digest (F-21). Set in the packaged
+      # chart only; the repo's values.yaml keeps `digest: ""`. Runs in dev mode too, to stay exercised.
+      - name: Pin the chart's image by digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::unexpected image digest: $IMAGE_DIGEST"; exit 1; }
+          values="$CHART_PATH/values.yaml"
+          # Anchored to the `digest:` line inside the top-level `image:` block.
+          sed -i -E '/^image:/,/^[^ #]/ s|^(  digest: )""$|\1"'"$IMAGE_DIGEST"'"|' "$values"
+          # Exactly that one line changed.
+          [ "$(git diff --numstat -- "$values" | cut -f1,2)" = "$(printf '1\t1')" ] \
+            || { echo "::error::pinning the digest did not change exactly one line of $values"; git diff -- "$values"; exit 1; }
+          git diff -U0 -- "$values" | grep -qxF "+  digest: \"$IMAGE_DIGEST\"" \
+            || { echo "::error::image.digest was not set in $values"; exit 1; }
+          git diff -U0 -- "$values" | tail -n 2
+
       - name: Package and push the chart; in release mode, sign it
         id: chart
         env:
@@ -216,25 +256,30 @@ jobs:
         env:
           APP_VERSION: ${{ steps.v.outputs.app_version }}
           CHART_VERSION: ${{ steps.v.outputs.chart_version }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           kubectl_version=v1.31.0
-          curl -sLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
+          # sha256 of the linux/amd64 binary, from dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl.sha256.
+          # Update both together; this job holds the signing identity (F-20).
+          kubectl_sha256=7c27adc64a84d1c0cc3dcf7bf4b6e916cc00f3f576a2dbac51b318d926032437
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl"
+          echo "${kubectl_sha256}  kubectl" | sha256sum -c -
           chmod +x kubectl
-          # Pin the image this run pushed; config/manager uses :latest.
+          # Pin the image this run pushed, by tag and digest; config/manager uses :latest.
           # Stamp the version labels too: config/admission is rendered from
           # the chart at its source version (0.1.0), so its VAPs would
           # otherwise claim helm.sh/chart: kube-vnet-0.1.0 in every release.
           ./kubectl kustomize config/default \
-            | sed -e "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${APP_VERSION}|" \
+            | sed -e "s|image: ghcr.io/lhns/kube-vnet:latest$|image: ghcr.io/lhns/kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}|" \
                   -e "s|^\( *helm\.sh/chart:\) .*$|\1 kube-vnet-${CHART_VERSION}|" \
                   -e "s|^\( *app\.kubernetes\.io/version:\) .*$|\1 \"${APP_VERSION}\"|" \
             > dist/release.yaml
           # It must deploy this release's image, and no other.
-          grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$" dist/release.yaml \
-            || { echo "::error::release.yaml does not deploy kube-vnet:${APP_VERSION}"; exit 1; }
-          if grep -nE '^ *(- )?image: ' dist/release.yaml | grep -v "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}$"; then
-            echo "::error::release.yaml deploys an image other than kube-vnet:${APP_VERSION}"
+          grep -q "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}$" dist/release.yaml \
+            || { echo "::error::release.yaml does not deploy kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}"; exit 1; }
+          if grep -nE '^ *(- )?image: ' dist/release.yaml | grep -v "image: ghcr.io/lhns/kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}$"; then
+            echo "::error::release.yaml deploys an image other than kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}"
             exit 1
           fi
           # Every chart/version label must carry this build's version.
@@ -266,14 +311,16 @@ jobs:
             --chart "dist/kube-vnet-${CHART_VERSION}.tgz" \
             --chart-ref "oci://$REGISTRY/charts/kube-vnet" \
             --chart-digest "$CHART_DIGEST" \
-            --digest "$REGISTRY/kube-vnet:${APP_VERSION}=${IMAGE_DIGEST}" \
-            --image-sbom "$REGISTRY/kube-vnet:${APP_VERSION}=dist/kube-vnet-image.sbom.spdx.json" \
+            --image-sbom "$REGISTRY/kube-vnet:${APP_VERSION}@${IMAGE_DIGEST}=dist/kube-vnet-image.sbom.spdx.json" \
             --resolve-digests \
             --created "$CREATED" \
             "${args[@]}" \
             -o dist/kube-vnet-chart.sbom.spdx.json
           cat dist/kube-vnet-chart.sbom.spdx.json
-          pipx run --spec spdx-tools==0.8.5 pyspdxtools -i dist/kube-vnet-chart.sbom.spdx.json
+          # Hash-pinned, with its dependencies (F-20); the venv's bundled pip downloads nothing itself.
+          python3 -m venv "$RUNNER_TEMP/spdx"
+          "$RUNNER_TEMP/spdx/bin/pip" install --quiet --require-hashes --no-deps -r .github/requirements/spdx-tools.txt
+          "$RUNNER_TEMP/spdx/bin/pyspdxtools" -i dist/kube-vnet-chart.sbom.spdx.json
           # The script leaves out a digest it cannot resolve; ours must be there.
           jq -e --arg d "$IMAGE_DIGEST" '
             .spdxVersion == "SPDX-2.3"
