@@ -187,17 +187,6 @@ func (r *VirtualNetworkBindingReconciler) writeStatus(
 	return r.Status().Update(ctx, b)
 }
 
-// isStampedMember reports whether resolution has made pod a member of the vnet
-// whose stamp key is stampKey: resolved, and stamped with a direction other
-// than none.
-func isStampedMember(pod *corev1.Pod, stampKey string) bool {
-	if pod.Annotations[AnnotationResolvedGeneration] == "" {
-		return false
-	}
-	dir, ok := ParseBareDirection(pod.Labels[stampKey])
-	return ok && dir != DirectionNone
-}
-
 func setBindingReady(b *vnetv1alpha1.VirtualNetworkBinding, status metav1.ConditionStatus, reason, msg string) {
 	meta.SetStatusCondition(&b.Status.Conditions, metav1.Condition{Type: "Ready", Status: status, Reason: reason, Message: msg})
 }

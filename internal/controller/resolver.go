@@ -326,3 +326,75 @@ func ServiceAccountUsername(namespace, name string) string {
 	}
 	return "system:serviceaccount:" + namespace + ":" + name
 }
+
+// CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
+// or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
+// cluster-singleton exception per ADR 0033 (Amendment):
+//
+//   - bare `cluster`              → `cluster` (the singleton has no namespace)
+//   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
+//   - bare `namespace`            → `<scopeNS>.namespace`
+//   - bare user vnet `<name>`     → `<scopeNS>.<name>`
+//
+// A prefixed `<X>.cluster` is not a join label at all: podLabelRules drops it
+// (isPrefixedClusterSuffix) before canonicalizing. `scopeNS` is the pod's
+// namespace.
+func CanonicalSuffix(suffix, scopeNS string) string {
+	if suffix == SystemVnetCluster {
+		return SystemVnetCluster
+	}
+	if strings.IndexByte(suffix, '.') >= 0 {
+		return suffix
+	}
+	return scopeNS + "." + suffix
+}
+
+// notJoinableHint returns a targeted suggestion when a ref names one of the
+// reserved system vnets, whose namespace semantics trip people up. It is
+// formatting only and must never influence control flow (ADR 0043).
+func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
+	switch ref.Name {
+	case SystemVnetCluster:
+		return " hint: `cluster` is a cluster-wide singleton living in the operator's namespace; " +
+			"omit `namespace` (recommended) or set it to the operator's namespace."
+	case SystemVnetNamespace:
+		return " hint: the `namespace` system vnet exists in every managed namespace — not in the " +
+			"operator's (unmanaged) namespace; omit `namespace` to mean the pod's own namespace."
+	default:
+		return ""
+	}
+}
+
+// bareJoinLabelHint returns the guidance to append when a bare join label
+// `kube-vnet/net.<suffix>` can't be honored: the bare form resolves in the
+// pod's own namespace, so the user likely meant a vnet hosted elsewhere. The
+// prefixed form and the system vnets' bare names get no hint.
+func bareJoinLabelHint(labelKey, suffix string) string {
+	if strings.Contains(suffix, ".") ||
+		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
+		return ""
+	}
+	return fmt.Sprintf(" hint: the bare form %q is only honored in the vnet's home namespace; "+
+		"to join a vnet hosted in another namespace use the prefixed form %q.",
+		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
+}
+
+// ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
+// baseline/binding/label rule names a vnet the pod's namespace cannot join.
+// It is deliberately uniform across system and user vnets (ADR 0043): the
+// reason is the machine contract that alerts and field-selectors key on, so
+// it must never branch on vnet kind. Only the human-readable note is
+// enriched, by notJoinableHint.
+const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
+
+// desiredHostPortStamps returns the `kube-vnet.system/host-port.<port>.<proto>`
+// keys for every hostPort the pod declares (ADR 0040), for the
+// HostPortReconciler to select on. Uses the same key set as that reconciler,
+// so hostNetwork pods get none.
+func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
+	out := map[string]bool{}
+	for key := range desiredHostPortKeys([]corev1.Pod{*pod}) {
+		out[LabelSystemHostPortPrefix+key.String()] = true
+	}
+	return out
+}

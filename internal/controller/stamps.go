@@ -65,3 +65,24 @@ func ClearResolved(pod *corev1.Pod) bool {
 	delete(pod.Annotations, AnnotationResolvedBy)
 	return hadGen || hadBy
 }
+
+// AnnotationResolvedGeneration marks a pod as resolved, by the reconciler or
+// the admission webhook. VirtualNetworkReconciler skips pods without it, so a
+// pod is no member until resolution has run (fail closed).
+const AnnotationResolvedGeneration = "kube-vnet.system/resolved-generation"
+
+// AnnotationResolvedBy records which path stamped the pod: the admission
+// webhook (ADR 0034) or the reconciler. Purely diagnostic — nothing branches
+// on it — but when the webhook is unreachable the reconciler takes over
+// silently, and this is the only way to see that from the pod itself.
+const AnnotationResolvedBy = "kube-vnet.system/resolved-by"
+
+const (
+	ResolvedByAdmission  = "admission"
+	ResolvedByController = "controller"
+)
+
+// LabelSystemNetPrefix is the prefix on operator-stamped membership labels:
+// `kube-vnet.system/net.<VnetKey>=<direction>`. Generator selectors match on
+// these (not on the user-input `kube-vnet/net.<vnet>` labels). See ADR 0030.
+const LabelSystemNetPrefix = "kube-vnet.system/net."

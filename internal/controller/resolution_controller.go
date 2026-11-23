@@ -21,27 +21,6 @@ import (
 	vnetv1alpha1 "github.com/lhns/kube-vnet/api/v1alpha1"
 )
 
-// LabelSystemNetPrefix is the prefix on operator-stamped membership labels:
-// `kube-vnet.system/net.<VnetKey>=<direction>`. Generator selectors match on
-// these (not on the user-input `kube-vnet/net.<vnet>` labels). See ADR 0030.
-const LabelSystemNetPrefix = "kube-vnet.system/net."
-
-// AnnotationResolvedGeneration marks a pod as resolved, by the reconciler or
-// the admission webhook. VirtualNetworkReconciler skips pods without it, so a
-// pod is no member until resolution has run (fail closed).
-const AnnotationResolvedGeneration = "kube-vnet.system/resolved-generation"
-
-// AnnotationResolvedBy records which path stamped the pod: the admission
-// webhook (ADR 0034) or the reconciler. Purely diagnostic — nothing branches
-// on it — but when the webhook is unreachable the reconciler takes over
-// silently, and this is the only way to see that from the pod itself.
-const AnnotationResolvedBy = "kube-vnet.system/resolved-by"
-
-const (
-	ResolvedByAdmission  = "admission"
-	ResolvedByController = "controller"
-)
-
 // ResolutionReconciler resolves each pod's memberships through the Resolver
 // (the tiers of ADR 0031) and stamps them as `kube-vnet.system/net.*`
 // labels, re-resolving pods when any input changes. Pods in disabled
@@ -191,14 +170,6 @@ func notAMember(d Direction) string {
 	return ""
 }
 
-// ReasonVirtualNetworkNotJoinable is the Event reason emitted when a
-// baseline/binding/label rule names a vnet the pod's namespace cannot join.
-// It is deliberately uniform across system and user vnets (ADR 0043): the
-// reason is the machine contract that alerts and field-selectors key on, so
-// it must never branch on vnet kind. Only the human-readable note is
-// enriched, by notJoinableHint.
-const ReasonVirtualNetworkNotJoinable = "VirtualNetworkNotJoinable"
-
 // Event reasons for the two ways resolution silently narrows a pod's
 // membership (ADR 0031). Both results are correct and fail closed; without
 // these the only symptom is a pod that is not a member, with nothing saying
@@ -212,58 +183,6 @@ const (
 	ReasonOverrideRejected = "OverrideRejected"
 )
 
-// notJoinableHint returns a targeted suggestion when a ref names one of the
-// reserved system vnets, whose namespace semantics trip people up. It is
-// formatting only and must never influence control flow (ADR 0043).
-func notJoinableHint(ref vnetv1alpha1.VirtualNetworkRef) string {
-	switch ref.Name {
-	case SystemVnetCluster:
-		return " hint: `cluster` is a cluster-wide singleton living in the operator's namespace; " +
-			"omit `namespace` (recommended) or set it to the operator's namespace."
-	case SystemVnetNamespace:
-		return " hint: the `namespace` system vnet exists in every managed namespace — not in the " +
-			"operator's (unmanaged) namespace; omit `namespace` to mean the pod's own namespace."
-	default:
-		return ""
-	}
-}
-
-// bareJoinLabelHint returns the guidance to append when a bare join label
-// `kube-vnet/net.<suffix>` can't be honored: the bare form resolves in the
-// pod's own namespace, so the user likely meant a vnet hosted elsewhere. The
-// prefixed form and the system vnets' bare names get no hint.
-func bareJoinLabelHint(labelKey, suffix string) string {
-	if strings.Contains(suffix, ".") ||
-		suffix == SystemVnetCluster || suffix == SystemVnetNamespace {
-		return ""
-	}
-	return fmt.Sprintf(" hint: the bare form %q is only honored in the vnet's home namespace; "+
-		"to join a vnet hosted in another namespace use the prefixed form %q.",
-		labelKey, fmt.Sprintf("%snet.<homeNS>.%s", DefaultLabelPrefix, suffix))
-}
-
-// CanonicalSuffix translates a label suffix (the part after `kube-vnet/net.`
-// or `kube-vnet.system/net.`) into the canonical form per ADR 0033, with the
-// cluster-singleton exception per ADR 0033 (Amendment):
-//
-//   - bare `cluster`              → `cluster` (the singleton has no namespace)
-//   - prefixed `<homeNS>.<name>`  → `<homeNS>.<name>` (already FQ, pass-through)
-//   - bare `namespace`            → `<scopeNS>.namespace`
-//   - bare user vnet `<name>`     → `<scopeNS>.<name>`
-//
-// A prefixed `<X>.cluster` is not a join label at all: podLabelRules drops it
-// (isPrefixedClusterSuffix) before canonicalizing. `scopeNS` is the pod's
-// namespace.
-func CanonicalSuffix(suffix, scopeNS string) string {
-	if suffix == SystemVnetCluster {
-		return SystemVnetCluster
-	}
-	if strings.IndexByte(suffix, '.') >= 0 {
-		return suffix
-	}
-	return scopeNS + "." + suffix
-}
-
 // applyResolution patches the pod's operator-managed labels to desired and
 // marks it resolved. No write happens when both are already in place.
 func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.Pod, desired map[string]string) error {
@@ -276,18 +195,6 @@ func (r *ResolutionReconciler) applyResolution(ctx context.Context, pod *corev1.
 	// reconcile of a webhook-stamped pod an API write.
 	MarkResolved(patched, ResolvedByController)
 	return r.Patch(ctx, patched, client.MergeFrom(pod))
-}
-
-// desiredHostPortStamps returns the `kube-vnet.system/host-port.<port>.<proto>`
-// keys for every hostPort the pod declares (ADR 0040), for the
-// HostPortReconciler to select on. Uses the same key set as that reconciler,
-// so hostNetwork pods get none.
-func desiredHostPortStamps(pod *corev1.Pod) map[string]bool {
-	out := map[string]bool{}
-	for key := range desiredHostPortKeys([]corev1.Pod{*pod}) {
-		out[LabelSystemHostPortPrefix+key.String()] = true
-	}
-	return out
 }
 
 // stripStampedLabels removes the operator-managed labels and the resolution
