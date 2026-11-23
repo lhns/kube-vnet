@@ -208,6 +208,23 @@ func TestIntegration_ApiserverReachable_AnnotationOptIn_PolicyAppears(t *testing
 	}
 }
 
+// A headless Service with a selector, named by a webhook, gets the policy: the
+// apiserver can dial its endpoints with --enable-aggregator-routing.
+func TestIntegration_ApiserverReachable_HeadlessWebhookService_PolicyAppears(t *testing.T) {
+	ns := uniqueNS(t, "ar-headless")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+
+	svc := makeWebhookService(ns, "webhook")
+	svc.Spec.ClusterIP = corev1.ClusterIPNone
+	mustCreate(t, svc)
+	mustCreateValidatingWebhook(t, "ar-headless-"+ns, serviceWebhookClientConfig(ns, "webhook"))
+
+	pol := waitForPolicy(t, ns, apiserverReachablePolicyNameFor(ns, "webhook"), 10*time.Second)
+	if pol.Spec.Ingress[0].Ports[0].Port.IntValue() != 8443 {
+		t.Errorf("expected pod-side targetPort 8443, got %v", pol.Spec.Ingress[0].Ports[0].Port)
+	}
+}
+
 func TestIntegration_ApiserverReachable_NoEmissionWithoutDiscoveryOrAnnotation(t *testing.T) {
 	ns := uniqueNS(t, "ar-bare")
 	mustCreate(t, makeNamespace(ns, nil, nil))

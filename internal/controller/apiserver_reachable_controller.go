@@ -71,10 +71,11 @@ func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.R
 // desired returns the Service's policy, or nil if nothing the apiserver dials
 // names it and it hasn't opted in.
 func (r *ApiserverReachableReconciler) desired(ctx context.Context, svc *corev1.Service) (*networkingv1.NetworkPolicy, error) {
-	// Headless / ExternalName / selector-less Services have no podSelector
-	// to mirror.
-	if svc.Spec.ClusterIP == corev1.ClusterIPNone || svc.Spec.Type == corev1.ServiceTypeExternalName ||
-		len(svc.Spec.Selector) == 0 {
+	// ExternalName Services are dialed at their DNS name, and selector-less
+	// ones have no podSelector to mirror. Headless Services with a selector
+	// do get a policy: with --enable-aggregator-routing the apiserver dials
+	// their endpoints.
+	if svc.Spec.Type == corev1.ServiceTypeExternalName || len(svc.Spec.Selector) == 0 {
 		return nil, nil
 	}
 	ports, err := r.collectReferencedPorts(ctx, svc)

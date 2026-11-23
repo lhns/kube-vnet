@@ -254,3 +254,31 @@ func TestApiserverReachableReconcile_ExternalName_NoPolicy(t *testing.T) {
 		t.Errorf("got %d policies for an ExternalName Service, want 0", len(got))
 	}
 }
+
+// With --enable-aggregator-routing the apiserver dials a headless Service's
+// endpoints, so it gets a policy like any selector-bearing Service; without a
+// selector there is nothing to mirror.
+func TestApiserverReachableReconcile_Headless(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		selector map[string]string
+		want     int
+	}{
+		{"with_selector", map[string]string{"app": "x"}, 1},
+		{"without_selector", nil, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := optedInService("ns", "webhook")
+			s.Spec.ClusterIP = corev1.ClusterIPNone
+			s.Spec.Selector = c.selector
+			cl := autoAllowClient(t, mkNamespace("ns", nil), s)
+			r := &ApiserverReachableReconciler{Client: cl, Scheme: cl.Scheme(), NSFilter: NewNamespaceFilter(nil)}
+			if err := reconcileName(t, r.Reconcile, "ns", "webhook"); err != nil {
+				t.Fatal(err)
+			}
+			if got := listPolicies(t, cl, "ns"); len(got) != c.want {
+				t.Errorf("got %d policies, want %d", len(got), c.want)
+			}
+		})
+	}
+}
