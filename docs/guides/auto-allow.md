@@ -57,7 +57,7 @@ Only the literal value `"false"` opts out. Opting out means you take over: write
 
 **Emitted** — `kube-vnet.ext.host.<port>.<proto>-<8hex>`: ingress `ipBlock 0.0.0.0/0` on the pod-side `containerPort`(s) mapped to that hostPort (NetworkPolicy ports are evaluated after the hostPort DNAT, so a `443` → `8443` mapping allows `8443`), selecting pods via an operator-stamped marker label `kube-vnet.system/host-port.<port>.<proto>=true` (the resolution controller stamps it on every pod declaring that hostPort; the stamp is VAP-protected like all `kube-vnet.system/*` keys).
 
-If pods map one hostPort to different containerPorts (for example during a rollout), the policy allows all of them for every stamped pod in the namespace until the old pods are gone.
+If pods map one hostPort to different containerPorts (for example during a rollout), the policy allows all of them for every stamped pod in the namespace until the old pods are gone. Pods that finished (`Succeeded` or `Failed`, e.g. evicted) don't count, so their ports leave the policy; `Pending` pods do.
 
 Only `spec.containers` count: the kubelet doesn't forward a `hostPort` declared on an init container, native sidecars included, so it gets no policy.
 
@@ -86,7 +86,7 @@ context deadline exceeded
 
 Entries using `clientConfig.url` (out-of-cluster webhooks) are ignored — no in-cluster policy can help them.
 
-**Emitted** — `kube-vnet.ext.apiserver.<service>-<8hex>` in the Service's namespace, allowing ingress on the referenced targetPort(s) from `operator.apiserverSourceCIDR`.
+**Emitted** — `kube-vnet.ext.apiserver.<service>-<8hex>` in the Service's namespace, allowing ingress on the referenced targetPort(s) from `operator.apiserverSourceCIDR`. Headless Services with a selector qualify too (the apiserver can dial their endpoints with `--enable-aggregator-routing`); `ExternalName` and selector-less Services don't.
 
 **The CIDR knob** — default `0.0.0.0/0`. That sounds wide, but it matches the posture the webhook had *before* kube-vnet existed (default Kubernetes is allow-all), and webhook/APIService backends authenticate their callers at the TLS layer (caBundle / requestheader CA) — the network allow is not the security boundary. If your pod network is reachable from outside the cluster and you want a narrower allow:
 

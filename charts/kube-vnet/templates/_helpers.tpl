@@ -99,9 +99,19 @@ arrives as a number.
 {{ include "kube-vnet.fullname" . }}
 {{- end -}}
 
+{{/*
+The operator image. The release pins image.digest to the image it pushed, so a
+default install pulls by digest (tag@digest; the tag is informative). A user
+who sets image.tag gets exactly that tag: the digest belongs to the appVersion
+image and would otherwise silently override their choice.
+*/}}
 {{- define "kube-vnet.image" -}}
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
+{{- if and .Values.image.digest (not .Values.image.tag) -}}
+{{- printf "%s:%s@%s" .Values.image.repository $tag .Values.image.digest -}}
+{{- else -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
+{{- end -}}
 {{- end -}}
 
 {{/*

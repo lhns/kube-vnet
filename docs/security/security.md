@@ -108,13 +108,13 @@ Only releases are signed. Dev builds (`0.0.0-dev.g<sha>`, `sha-<sha>`, `:<branch
 
 What a signature does not cover ([threat model F-19–F-21](threat-model.md#7-findings-register)):
 
-- It does not prove the tagged commit is on `main` or was reviewed: the release gates come from the tagged commit's own workflow files.
-- The chart and `release.yaml` reference the image by tag, and tags can be moved. A verify at install time does not bind what a node pulls later. To bind it, pin the digest (`image.tag: v<version>@sha256:<digest>`) or enforce the signature at admission (sigstore policy-controller, Kyverno).
-- `config/manager` (the from-source install) runs `:latest`, which moves with every release tag.
+- It does not prove the tagged commit was reviewed: the release gates come from the tagged commit's own workflow files. The release job refuses a tag whose commit is not on `main`, but someone who can push a tag can also edit that check; a tag ruleset on `v*` is the full fix.
+- The published chart and the `release.yaml` asset pin the operator image by digest (`repo:tag@sha256:...`), so a moved tag does not change what a default install pulls. The chart ignores the digest once you set `image.tag`, and installs that name a tag (including `latest`) pull by tag: pin `image.tag: v<version>@sha256:<digest>` or enforce the signature at admission (sigstore policy-controller, Kyverno).
+- `config/manager` (the from-source install) runs `:latest`, which moves only for the highest stable release.
 
 ### Build and release pipeline
 
-`.github/workflows/release.yaml` builds `linux/amd64` and `linux/arm64`, pushes by digest, checks that each platform's binary has the right architecture (`scripts/check-binary-arch.sh`), and only then tags the digest with `crane`, failing if any tag does not resolve to exactly that digest. A `v*` tag first runs the full `ci.yaml` and `e2e.yaml` pipelines (`workflow_call`); a failed or cancelled gate blocks the release. The rendered `release.yaml` asset must deploy this release's image and no other. Actions are pinned by commit SHA, the Go and distroless base images by digest. Two downloads in the release job are not pinned to content yet ([threat model F-20](threat-model.md#7-findings-register)).
+`.github/workflows/release.yaml` builds `linux/amd64` and `linux/arm64`, pushes by digest, checks that each platform's binary has the right architecture (`scripts/check-binary-arch.sh`), and only then tags the digest with `crane`, failing if any tag does not resolve to exactly that digest. A `v*` tag first runs the full `ci.yaml` and `e2e.yaml` pipelines (`workflow_call`); a failed or cancelled gate blocks the release. The rendered `release.yaml` asset must deploy this release's image, by tag and digest, and no other. A tag is released only if its commit is on `main`, and `latest` moves only for the highest stable release. Actions are pinned by commit SHA, the Go and distroless base images by digest. The release job verifies `kubectl` against a hardcoded sha256 and installs `spdx-tools` from hash-pinned requirements; the setup actions' own tool downloads are not all checksummed ([threat model F-20](threat-model.md#7-findings-register)).
 
 ### SBOMs
 

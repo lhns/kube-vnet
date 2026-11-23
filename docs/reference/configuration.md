@@ -60,7 +60,8 @@ Mirror of `charts/kube-vnet/values.yaml`, including `nameOverride`/`fullnameOver
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `image.repository` | string | `ghcr.io/lhns/kube-vnet` | Operator image repository. |
-| `image.tag` | string | `""` (uses `Chart.appVersion`) | Operator image tag. |
+| `image.tag` | string | `""` (uses `Chart.appVersion`) | Operator image tag. Setting it makes the chart ignore `image.digest`. |
+| `image.digest` | string | `""` in the source; the published chart sets the release's image digest | Pins the operator image (`sha256:...`), rendered as `repo:tag@digest`. Used only while `image.tag` is empty, so a tag override is never silently replaced by the release's digest. Also pins the network-wait image. |
 | `image.pullPolicy` | string | `IfNotPresent` | Standard Kubernetes pull policy. |
 | `image.pullSecrets` | `[]LocalObjectReference` | `[]` | Image-pull secrets in the release namespace. |
 

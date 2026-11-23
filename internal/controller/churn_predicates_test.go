@@ -150,6 +150,9 @@ func TestHostPortChangedPredicate(t *testing.T) {
 	// them, so both sides derive to the empty set.
 	hostNetOld, hostNetNew := mk(8080, corev1.ProtocolTCP), mk(9090, corev1.ProtocolTCP)
 	hostNetOld.Spec.HostNetwork, hostNetNew.Spec.HostNetwork = true, true
+	// A finished pod stops counting (F-17), so the phase change must enqueue.
+	running, failed := mk(8080, corev1.ProtocolTCP), mk(8080, corev1.ProtocolTCP)
+	running.Status.Phase, failed.Status.Phase = corev1.PodRunning, corev1.PodFailed
 
 	for _, tc := range []struct {
 		name     string
@@ -163,6 +166,7 @@ func TestHostPortChangedPredicate(t *testing.T) {
 		{"same mapping", mapped(443, 8443), mapped(443, 8443), false},
 		{"status-only update", mk(8080, corev1.ProtocolTCP), restarted, false},
 		{"hostNetwork pod", hostNetOld, hostNetNew, false},
+		{"running to failed", running, failed, true},
 	} {
 		if got := p.Update(event.UpdateEvent{ObjectOld: tc.old, ObjectNew: tc.new}); got != tc.wantFire {
 			t.Errorf("%s: fired=%v, want %v", tc.name, got, tc.wantFire)

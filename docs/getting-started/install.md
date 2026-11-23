@@ -71,7 +71,8 @@ metadata:
 ### Common values
 
 ```bash
-# Pin a specific image tag (default: chart appVersion)
+# Use another image tag (default: chart appVersion, pinned by digest in the published chart;
+# setting a tag drops the digest pin)
 helm install ... --set image.tag=v<version>
 
 # Same-NS connectivity by default (every pod auto-joins the per-NS `namespace` system vnet
@@ -160,7 +161,7 @@ Dev builds are multi-arch (`linux/amd64`, `linux/arm64`) like releases, and use 
 
 ## `kubectl apply` install
 
-Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag and the release version stamped into the `helm.sh/chart` and `app.kubernetes.io/version` labels. One file, no Helm:
+Each release has a `release.yaml` asset that is the rendered output of `kubectl kustomize config/default`, with the operator image pinned to the release tag and digest (`...:v<version>@sha256:...`) and the release version stamped into the `helm.sh/chart` and `app.kubernetes.io/version` labels. One file, no Helm:
 
 ```bash
 kubectl apply -f https://github.com/lhns/kube-vnet/releases/latest/download/release.yaml

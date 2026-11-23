@@ -10,6 +10,25 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- Host-port policies no longer count finished pods (`Succeeded`, `Failed`, e.g.
+  evicted): their containerPorts stayed open on the live pods until the pods
+  were deleted.
+- Headless Services with a selector now get apiserver-reachable policies
+  (webhooks and aggregated APIs behind them, with `--enable-aggregator-routing`).
+
+### Changed
+
+- The chart and the `release.yaml` asset pin the operator image by digest
+  (`repo:tag@sha256:...`). Setting `image.tag` makes the chart use that tag
+  alone. New value `image.digest`.
+- `latest` moves only for the highest stable release, not for prereleases or
+  older patches.
+- The release job verifies its `kubectl` download by hash and installs
+  `spdx-tools` from hash-pinned requirements.
+- A release requires the tagged commit to be on `main`.
+
 ## [0.9.2] — 2026-11-23
 
 ### Fixed

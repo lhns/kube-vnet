@@ -140,3 +140,19 @@ func TestDesiredHostPortKeys_InitContainersNotCounted(t *testing.T) {
 		}
 	}
 }
+
+// Finished pods never run again, so their containerPorts must not stay open
+// (F-17). A Pending pod may still be scheduling and counts.
+func TestDesiredHostPortKeys_FinishedPodsNotCounted(t *testing.T) {
+	for phase, want := range map[corev1.PodPhase]bool{
+		corev1.PodPending: true, corev1.PodRunning: true, "": true,
+		corev1.PodSucceeded: false, corev1.PodFailed: false,
+	} {
+		p := podWithHostPorts("p", corev1.ContainerPort{HostPort: 8080, ContainerPort: 22, Protocol: corev1.ProtocolTCP})
+		p.Status.Phase = phase
+		got := desiredHostPortKeys([]corev1.Pod{*p})
+		if (len(got) > 0) != want {
+			t.Errorf("phase %q: got %v, counted=%v want %v", phase, got, len(got) > 0, want)
+		}
+	}
+}

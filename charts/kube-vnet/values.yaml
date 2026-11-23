@@ -9,6 +9,10 @@ image:
   repository: ghcr.io/lhns/kube-vnet
   # tag overrides Chart.appVersion when set.
   tag: ""
+  # digest pins the image (sha256:...) and is used only while tag is empty. The
+  # release workflow sets it in the published chart to the image it pushed, so
+  # a default install pulls by digest; set tag to use another image instead.
+  digest: ""
   pullPolicy: IfNotPresent
   # imagePullSecrets is a list of references to secrets in the same namespace.
   pullSecrets: []
