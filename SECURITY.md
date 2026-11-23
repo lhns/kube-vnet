@@ -45,4 +45,4 @@ These are analysed in [`docs/security/threat-model.md`](docs/security/threat-mod
 
 ## Supply chain
 
-Released container images and Helm charts are signed with [cosign](https://github.com/sigstore/cosign) (keyless, GitHub OIDC) and ship SPDX SBOMs as cosign attestations and release assets. Verification instructions are in [`docs/security/security.md`](docs/security/security.md#supply-chain).
+Released container images and Helm charts are signed with [cosign](https://github.com/sigstore/cosign) (keyless, GitHub OIDC) and ship SPDX SBOMs as cosign attestations and release assets. Only releases are signed: dev builds (`0.0.0-dev.g<sha>`, `sha-<sha>`, `:<branch>`) are published unsigned, without the CI gates, and are for testing only. Verification instructions are in [`docs/security/security.md`](docs/security/security.md#supply-chain).

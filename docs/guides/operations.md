@@ -330,7 +330,7 @@ See [`troubleshooting.md`](troubleshooting.md) — most common causes: CNI doesn
 
 Velero restores a pod with its backed-up labels, including the operator-owned `kube-vnet.system/*` stamps. Into another namespace they are stale.
 
-**Webhook on** ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md), [ADR 0046](../adr/0046-rewrite-stamps-on-pod-create.md)): restores into any namespace work. On pod creation the webhook recomputes the stamps and warns about the ones it replaced. If the vnets are restored after the pods, the reconciler stamps the pods once the vnets exist.
+**Webhook on** ([ADR 0034](../adr/0034-admission-webhook-for-pod-resolution.md), [ADR 0046](../adr/0046-rewrite-stamps-on-pod-create.md)): restores into namespaces kube-vnet manages work. On pod creation the webhook recomputes the stamps and warns about the ones it replaced. If the vnets are restored after the pods, the reconciler stamps the pods once the vnets exist. This does not cover namespaces marked `kube-vnet/disabled` (the webhook leaves the pod alone, so the stale stamps stay and the validating webhook denies the pod) or the namespaces the operator excludes (the webhooks skip them, so the `system-labels-vap` denies the pod). For those, strip the stamps with the resource modifier below.
 
 **Webhook off** (the chart default): the `system-labels-vap` rejects any pod created with `kube-vnet.system/*` labels, so restored pods are denied and bare pods are lost. Enable the webhook, or strip the stamps during the restore with a [resource modifier](https://velero.io/docs/main/restore-resource-modifiers/). JSON patch removes one exact path, not a prefix, so name each key. `/` is escaped as `~1`:
 
