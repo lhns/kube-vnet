@@ -45,8 +45,8 @@ func TestDesiredHostPortKeys(t *testing.T) {
 		// Out of scope (ADR 0040): NetworkPolicy on hostNetwork pods is
 		// CNI-dependent.
 		{"host_network_skipped", []*corev1.Pod{hostNet}, map[hostPortKey][]int32{}},
-		{"protocol_defaults_to_tcp", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999})},
-			map[hostPortKey][]int32{key(9999, corev1.ProtocolTCP): {0}}},
+		{"protocol_defaults_to_tcp", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999, ContainerPort: 9999})},
+			map[hostPortKey][]int32{key(9999, corev1.ProtocolTCP): {9999}}},
 		{"container_port_differs_from_host_port", []*corev1.Pod{podWithHostPorts("p", mapped(443, 8443))},
 			map[hostPortKey][]int32{key(443, corev1.ProtocolTCP): {8443}}},
 		{"container_ports_of_several_pods_sorted_and_deduped", []*corev1.Pod{

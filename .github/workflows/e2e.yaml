@@ -290,9 +290,10 @@ jobs:
             exit 1
           fi
 
-          # kube-router's CNI chain has no portmap plugin, so the kubelet's hostPort
-          # is never forwarded and the node refuses the connection (a policy
-          # drop would time out). The policy assertion above still holds.
+          # kube-router's kubeadm manifest installs a CNI conflist with only the
+          # bridge plugin, no portmap, so hostPorts are never forwarded in this
+          # lane. A refused connection can't tell that apart from a policy
+          # reject (kube-router rejects), so only the policy is checked here.
           if [ "$E2E_CNI" = "kube-router" ]; then
             echo "OK: policy allows the containerPort; CNI has no hostPort support, skipping curl."
             exit 0

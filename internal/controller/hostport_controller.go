@@ -30,7 +30,8 @@ import (
 // the host-port stamp resolution puts on those pods and allowing the
 // containerPort(s) mapped to it: NetworkPolicy ports are evaluated after the
 // hostPort DNAT. Keying on the port, not the pod, keeps rollouts from churning
-// policies. A namespace opted out (`kube-vnet/disabled=true` or `kube-vnet/external-allow=false`) gets none.
+// policies. A namespace opted out (`kube-vnet/disabled=true` or
+// `kube-vnet/external-allow=false`) gets none.
 type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
