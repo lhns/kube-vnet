@@ -36,7 +36,10 @@ type ExternalAllowReconciler struct {
 
 func (r *ExternalAllowReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	return svcSourcePolicies.reconcile(ctx, req,
-		serviceReconciler{r.Client, r.Scheme, r.NSFilter, r.Recorder, &r.restores, &r.pending}, r.desired)
+		serviceReconciler{
+			Client: r.Client, scheme: r.Scheme, nsFilter: r.NSFilter, rec: r.Recorder,
+			restores: &r.restores, pending: &r.pending,
+		}, r.desired)
 }
 
 // desired returns the Service's policy, or nil if it isn't externally exposed
@@ -75,12 +78,8 @@ func buildExternalAllowPolicy(svc *corev1.Service, podsInNS []corev1.Pod) (*netw
 		if err != nil {
 			return nil, err
 		}
-		proto := sp.Protocol
-		if proto == "" {
-			proto = corev1.ProtocolTCP
-		}
 		for _, tp := range targetPorts {
-			ports = appendPolicyPort(ports, proto, tp)
+			ports = appendPolicyPort(ports, protocolOrTCP(sp.Protocol), tp)
 		}
 	}
 	return svcSourcePolicies.policy(svc, externalAllowPolicyName(svc), "0.0.0.0/0", ports), nil

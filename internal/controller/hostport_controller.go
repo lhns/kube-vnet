@@ -135,11 +135,7 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey][]int32 {
 				if cp.HostPort == 0 {
 					continue
 				}
-				proto := cp.Protocol
-				if proto == "" {
-					proto = corev1.ProtocolTCP
-				}
-				key := hostPortKey{port: cp.HostPort, protocol: proto}
+				key := hostPortKey{port: cp.HostPort, protocol: protocolOrTCP(cp.Protocol)}
 				out[key] = append(out[key], cp.ContainerPort)
 			}
 		}

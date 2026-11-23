@@ -38,16 +38,6 @@ func makeLBService(ns, name string) *corev1.Service {
 	}
 }
 
-func waitForExternalAllowPolicy(t *testing.T, ns, svcName string, timeout time.Duration) *networkingv1.NetworkPolicy {
-	t.Helper()
-	return waitForPolicy(t, ns, extAllowPolicyName(ns, svcName), timeout)
-}
-
-func waitForExternalAllowPolicyAbsent(t *testing.T, ns, svcName string, timeout time.Duration) {
-	t.Helper()
-	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, svcName), timeout)
-}
-
 func TestIntegration_ExternalAllow_LBServiceCreated_PolicyAppears(t *testing.T) {
 	ns := uniqueNS(t, "extallow-lb")
 	mustCreate(t, makeNamespace(ns, nil, nil))
@@ -55,7 +45,7 @@ func TestIntegration_ExternalAllow_LBServiceCreated_PolicyAppears(t *testing.T) 
 	svc := makeLBService(ns, "web")
 	mustCreate(t, svc)
 
-	pol := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 	if pol.Labels[LabelManagedBy] != LabelManagedByValue {
 		t.Errorf("missing managed-by label: %v", pol.Labels)
 	}
@@ -82,13 +72,13 @@ func TestIntegration_ExternalAllow_ServiceDeleted_PolicyCollected(t *testing.T) 
 
 	svc := makeLBService(ns, "web")
 	mustCreate(t, svc)
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	if err := testClient.Delete(context.Background(), svc); err != nil {
 		t.Fatalf("delete svc: %v", err)
 	}
 	// Removed by label on the NotFound path; envtest has no owner-ref GC.
-	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_LBToClusterIP_PolicyRemoved(t *testing.T) {
@@ -96,10 +86,10 @@ func TestIntegration_ExternalAllow_LBToClusterIP_PolicyRemoved(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateService(t, ns, "web", func(s *corev1.Service) { s.Spec.Type = corev1.ServiceTypeClusterIP })
-	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_SelectorChanged_PolicyUpdated(t *testing.T) {
@@ -107,7 +97,7 @@ func TestIntegration_ExternalAllow_SelectorChanged_PolicyUpdated(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateService(t, ns, "web", func(s *corev1.Service) { s.Spec.Selector = map[string]string{"app": "web-v2"} })
 
@@ -128,7 +118,7 @@ func TestIntegration_ExternalAllow_PortsChanged_PolicyUpdated(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateService(t, ns, "web", func(s *corev1.Service) {
 		s.Spec.Ports = append(s.Spec.Ports, corev1.ServicePort{
@@ -153,7 +143,7 @@ func TestIntegration_ExternalAllow_DriftCorrection_PolicyDeleted(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	pol := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	if err := testClient.Delete(context.Background(), pol); err != nil {
 		t.Fatalf("delete policy: %v", err)
@@ -176,13 +166,13 @@ func TestIntegration_ExternalAllow_AnnotationOptOut_ServiceLevel(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateService(t, ns, "web", func(s *corev1.Service) {
 		metav1.SetMetaDataAnnotation(&s.ObjectMeta, AnnotationExternalAllow, "false")
 	})
 
-	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_AnnotationOptOut_NSLevel(t *testing.T) {
@@ -191,15 +181,15 @@ func TestIntegration_ExternalAllow_AnnotationOptOut_NSLevel(t *testing.T) {
 
 	mustCreate(t, makeLBService(ns, "web-a"))
 	mustCreate(t, makeLBService(ns, "web-b"))
-	waitForExternalAllowPolicy(t, ns, "web-a", 10*time.Second)
-	waitForExternalAllowPolicy(t, ns, "web-b", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web-a"), 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web-b"), 10*time.Second)
 
 	updateNamespace(t, ns, func(n *corev1.Namespace) {
 		metav1.SetMetaDataAnnotation(&n.ObjectMeta, AnnotationExternalAllow, "false")
 	})
 
-	waitForExternalAllowPolicyAbsent(t, ns, "web-a", 10*time.Second)
-	waitForExternalAllowPolicyAbsent(t, ns, "web-b", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web-a"), 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web-b"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_AnnotationOptOut_NSLevelFlip(t *testing.T) {
@@ -212,7 +202,7 @@ func TestIntegration_ExternalAllow_AnnotationOptOut_NSLevelFlip(t *testing.T) {
 	// Removing the opt-out makes the policy appear.
 	updateNamespace(t, ns, func(n *corev1.Namespace) { delete(n.Annotations, AnnotationExternalAllow) })
 
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_DisabledNamespace_NoEmission(t *testing.T) {
@@ -229,7 +219,7 @@ func TestIntegration_ExternalAllow_OwnerReference(t *testing.T) {
 
 	mustCreate(t, makeLBService(ns, "web"))
 
-	pol := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 	if len(pol.OwnerReferences) != 1 {
 		t.Fatalf("expected 1 owner ref, got %d", len(pol.OwnerReferences))
 	}
@@ -266,7 +256,7 @@ func TestIntegration_ExternalAllow_NamedTargetPort_PendingThenReady(t *testing.T
 	mustCreate(t, pod)
 
 	// The Pod watch re-enqueues the Service; this must not need the 30s requeue.
-	pol := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 8080 {
 		t.Errorf("port = %d, want 8080 (resolved from named 'http')", got)
 	}
@@ -347,13 +337,13 @@ func TestIntegration_ExternalAllow_NSDisabledMidFlight(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateNamespace(t, ns, func(n *corev1.Namespace) {
 		metav1.SetMetaDataAnnotation(&n.ObjectMeta, "kube-vnet/disabled", "true")
 	})
 
-	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 // A Service that loses its selector (manually managed Endpoints) has nothing
@@ -363,11 +353,11 @@ func TestIntegration_ExternalAllow_SelectorClearedMidFlight(t *testing.T) {
 	mustCreate(t, makeNamespace(ns, nil, nil))
 
 	mustCreate(t, makeLBService(ns, "web"))
-	waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 
 	updateService(t, ns, "web", func(s *corev1.Service) { s.Spec.Selector = nil })
 
-	waitForExternalAllowPolicyAbsent(t, ns, "web", 10*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 }
 
 func TestIntegration_ExternalAllow_NoSelector_NoEmission(t *testing.T) {
@@ -453,7 +443,7 @@ func TestIntegration_ExternalAllow_Regression_TraefikDaemonSet(t *testing.T) {
 	}
 	mustCreate(t, svc)
 
-	pol := waitForExternalAllowPolicy(t, ns, "traefik", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "traefik"), 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 80 {
 		t.Errorf("traefik regression: port = %d, want 80 (targetPort)", got)
 	}
@@ -476,7 +466,7 @@ func TestIntegration_ExternalAllow_LongServiceName_PolicyStillApplies(t *testing
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	mustCreate(t, makeLBService(ns, longSvcName))
 
-	pol := waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, longSvcName), 15*time.Second)
 
 	src := pol.Labels[LabelSource]
 	if len(src) > 63 {
@@ -495,12 +485,12 @@ func TestIntegration_ExternalAllow_LongServiceName_DeleteRemovesPolicy(t *testin
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	svc := makeLBService(ns, longSvcName)
 	mustCreate(t, svc)
-	waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, longSvcName), 15*time.Second)
 
 	if err := testClient.Delete(context.Background(), svc); err != nil {
 		t.Fatalf("delete service: %v", err)
 	}
-	waitForExternalAllowPolicyAbsent(t, ns, longSvcName, 15*time.Second)
+	waitForPolicyAbsent(t, ns, extAllowPolicyName(ns, longSvcName), 15*time.Second)
 }
 
 // The drift handler can't parse a truncated LabelSource back into a Service
@@ -511,9 +501,9 @@ func TestIntegration_ExternalAllow_LongServiceName_PolicyDriftRestored(t *testin
 	mustCreate(t, makeNamespace(ns, nil, nil))
 	mustCreate(t, makeLBService(ns, longSvcName))
 
-	pol := waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, longSvcName), 15*time.Second)
 	if err := testClient.Delete(context.Background(), pol); err != nil {
 		t.Fatalf("delete policy: %v", err)
 	}
-	waitForExternalAllowPolicy(t, ns, longSvcName, 15*time.Second)
+	waitForPolicy(t, ns, extAllowPolicyName(ns, longSvcName), 15*time.Second)
 }

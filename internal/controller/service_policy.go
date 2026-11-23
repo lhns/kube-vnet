@@ -251,6 +251,14 @@ func externalAllowPolicy(name, ns, sourceKind, source string, podSelector map[st
 	}
 }
 
+// protocolOrTCP applies the Kubernetes default: an empty protocol means TCP.
+func protocolOrTCP(p corev1.Protocol) corev1.Protocol {
+	if p == "" {
+		return corev1.ProtocolTCP
+	}
+	return p
+}
+
 // appendPolicyPort appends (proto, port) to ports unless already present.
 func appendPolicyPort(ports []networkingv1.NetworkPolicyPort, proto corev1.Protocol, port int32) []networkingv1.NetworkPolicyPort {
 	for _, p := range ports {

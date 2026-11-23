@@ -360,26 +360,6 @@ func TestDirection_Bare(t *testing.T) {
 	}
 }
 
-func TestNameRegex(t *testing.T) {
-	cases := map[string]bool{
-		"payments":    true,
-		"a":           true,
-		"a-b-c":       true,
-		"payments.v2": false,
-		"Payments":    false,
-		"-leading":    false,
-		"trailing-":   false,
-		"":            false,
-		"under_score": false,
-	}
-	for in, want := range cases {
-		got := nameRegex.MatchString(in)
-		if got != want {
-			t.Errorf("name=%q got=%v want=%v", in, got, want)
-		}
-	}
-}
-
 // --- helpers --------------------------------------------------------------
 
 type kpolicySummary struct {

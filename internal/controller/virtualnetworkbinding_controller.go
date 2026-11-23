@@ -3,7 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -27,7 +27,7 @@ const (
 	// namespace: the same reason as the binding's Event, the message says
 	// which.
 	ReasonBindingVNetNotJoinable   = ReasonVirtualNetworkNotJoinable
-	ReasonBindingNamespaceExcluded = "NamespaceExcluded"
+	ReasonBindingNamespaceExcluded = ReasonNamespaceExcluded
 	ReasonBindingInvalidDirection  = ReasonInvalidDirection
 	ReasonBindingInvalidSelector   = "InvalidSelector"
 	// The selector matches pods, but resolution made none of them a member
@@ -35,7 +35,7 @@ const (
 	ReasonBindingNoPodsAttached = "NoPodsAttached"
 	// The target vnet's home namespace is excluded or disabled, so the vnet
 	// is not served and has no membership policies.
-	ReasonBindingHomeNamespaceExcluded = "HomeNamespaceExcluded"
+	ReasonBindingHomeNamespaceExcluded = ReasonHomeNamespaceExcluded
 	// The target vnet is being deleted; its membership policies are gone.
 	ReasonBindingVNetTerminating = "VirtualNetworkTerminating"
 )
@@ -147,7 +147,7 @@ func (r *VirtualNetworkBindingReconciler) Reconcile(ctx context.Context, req ctr
 			names = append(names, pods.Items[i].Name)
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	selected, attached := len(pods.Items), len(names)
 	switch {

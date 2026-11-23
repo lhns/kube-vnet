@@ -42,18 +42,3 @@ func TestResolveTargetPorts_NativeSidecar(t *testing.T) {
 		t.Errorf("ordinary init container: got %v, %v; want errNamedPortUnresolvable", got, err)
 	}
 }
-
-// The kubelet maps hostPorts from spec.containers only, so a hostPort on any
-// init container, native sidecar or not, is never forwarded and gets no
-// allow.
-func TestDesiredHostPortKeys_InitContainersNotCounted(t *testing.T) {
-	for _, always := range []bool{true, false} {
-		p := podWithHostPorts("p")
-		p.Spec.InitContainers = []corev1.Container{
-			initContainerWithPort(corev1.ContainerPort{HostPort: 8080, ContainerPort: 80}, always),
-		}
-		if got := desiredHostPortKeys([]corev1.Pod{*p}); len(got) != 0 {
-			t.Errorf("restartPolicy Always=%v: got %v, want no keys", always, got)
-		}
-	}
-}

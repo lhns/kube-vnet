@@ -62,7 +62,10 @@ type serviceRef struct {
 
 func (r *ApiserverReachableReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	return apiserverPolicies.reconcile(ctx, req,
-		serviceReconciler{r.Client, r.Scheme, r.NSFilter, r.Recorder, &r.restores, &r.pending}, r.desired)
+		serviceReconciler{
+			Client: r.Client, scheme: r.Scheme, nsFilter: r.NSFilter, rec: r.Recorder,
+			restores: &r.restores, pending: &r.pending,
+		}, r.desired)
 }
 
 // desired returns the Service's policy, or nil if nothing the apiserver dials

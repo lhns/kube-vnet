@@ -115,14 +115,20 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	priorDegraded := conditionStatus(vnet, "Degraded")
 	storedStatus := vnet.Status.DeepCopy()
 
-	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
-	if !nameRegex.MatchString(vnet.Name) {
-		setReady(vnet, metav1.ConditionFalse, ReasonInvalidName,
-			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name))
-		setDegraded(vnet, metav1.ConditionTrue, ReasonInvalidName,
-			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
+	// reject marks the vnet not Ready and Degraded for reason, writes the
+	// status (best effort) and emits the transition events.
+	reject := func(reason, readyMsg, degradedMsg string) {
+		setReady(vnet, metav1.ConditionFalse, reason, readyMsg)
+		setDegraded(vnet, metav1.ConditionTrue, reason, degradedMsg)
 		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
 		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
+	}
+
+	// Defense-in-depth name validation. The CRD CEL rule should already reject names with dots.
+	if !nameRegex.MatchString(vnet.Name) {
+		reject(ReasonInvalidName,
+			fmt.Sprintf("name %q is not a DNS-1123 label", vnet.Name),
+			fmt.Sprintf("VirtualNetwork name %q must match %s", vnet.Name, nameRegex.String()))
 		return ctrl.Result{}, nil
 	}
 
@@ -136,12 +142,9 @@ func (r *VirtualNetworkReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if !isSystem && !homeManaged {
-		setReady(vnet, metav1.ConditionFalse, ReasonHomeNamespaceExcluded,
-			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace))
-		setDegraded(vnet, metav1.ConditionTrue, ReasonHomeNamespaceExcluded,
+		reject(ReasonHomeNamespaceExcluded,
+			fmt.Sprintf("home namespace %q is excluded by the operator", vnet.Namespace),
 			fmt.Sprintf("home namespace %q is in the operator excluded list or has kube-vnet/disabled=true", vnet.Namespace))
-		_ = r.updateStatus(ctx, vnet, nil, nil, storedStatus)
-		r.emitTransitionEvents(vnet, priorReady, priorDegraded)
 		setMembers(vnet.Namespace, vnet.Name, 0)
 		// Remove policies from earlier reconciles; a failure must retry, or
 		// the stale grants stay.
@@ -330,8 +333,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		nsAdmitted[ns] = ok
 		return ok, err
 	}
-	// ineligible returns why pods in ns cannot be members, or "" if they can.
 	nsReason := map[string]string{}
+	// ineligible returns why pods in ns cannot be members, or "" if they can.
 	ineligible := func(ns string) (string, error) {
 		if reason, seen := nsReason[ns]; seen {
 			return reason, nil
@@ -380,10 +383,8 @@ func (r *VirtualNetworkReconciler) discoverMembers(
 		}
 		if len(userVals) > 0 {
 			reason := ""
-			for _, v := range userVals {
-				if _, ok := ParseBareDirection(v); !ok {
-					reason = ReasonInvalidDirection
-				}
+			if slices.ContainsFunc(userVals, func(v string) bool { _, ok := ParseBareDirection(v); return !ok }) {
+				reason = ReasonInvalidDirection
 			}
 			if reason == "" {
 				if reason, err = ineligible(p.Namespace); err != nil {

@@ -131,3 +131,23 @@ func TestReconcile_HomeNamespaceExcluded_DeleteErrorRequeues(t *testing.T) {
 		t.Fatalf("Reconcile err = %v, want the delete error so the stale policy is retried", err)
 	}
 }
+
+func TestNameRegex(t *testing.T) {
+	cases := map[string]bool{
+		"payments":    true,
+		"a":           true,
+		"a-b-c":       true,
+		"payments.v2": false,
+		"Payments":    false,
+		"-leading":    false,
+		"trailing-":   false,
+		"":            false,
+		"under_score": false,
+	}
+	for in, want := range cases {
+		got := nameRegex.MatchString(in)
+		if got != want {
+			t.Errorf("name=%q got=%v want=%v", in, got, want)
+		}
+	}
+}

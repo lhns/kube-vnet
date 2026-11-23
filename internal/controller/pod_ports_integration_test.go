@@ -33,7 +33,7 @@ func TestIntegration_ExternalAllow_NamedTargetPort_NativeSidecar(t *testing.T) {
 		},
 	})
 
-	pol := waitForExternalAllowPolicy(t, ns, "web", 10*time.Second)
+	pol := waitForPolicy(t, ns, extAllowPolicyName(ns, "web"), 10*time.Second)
 	if got := pol.Spec.Ingress[0].Ports[0].Port.IntValue(); got != 15001 {
 		t.Errorf("port = %d, want 15001 (resolved from the sidecar's 'proxy')", got)
 	}

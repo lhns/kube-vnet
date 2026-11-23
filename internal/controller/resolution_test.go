@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"maps"
 	"strings"
 	"testing"
 
@@ -298,6 +299,24 @@ func TestCanonicalSuffix_PrefixedClusterDoesNotCollapse(t *testing.T) {
 	}
 }
 
+func TestCanonicalSuffix_NamespaceFollowsBareRule(t *testing.T) {
+	if got := CanonicalSuffix("namespace", "platform"); got != "platform.namespace" {
+		t.Errorf("got %q, want platform.namespace", got)
+	}
+}
+
+func TestCanonicalSuffix_BareUserVnetFollowsBareRule(t *testing.T) {
+	if got := CanonicalSuffix("payments", "platform"); got != "platform.payments" {
+		t.Errorf("got %q, want platform.payments", got)
+	}
+}
+
+func TestCanonicalSuffix_FQUserVnetPassThrough(t *testing.T) {
+	if got := CanonicalSuffix("monitoring.observability", "platform"); got != "monitoring.observability" {
+		t.Errorf("got %q, want monitoring.observability", got)
+	}
+}
+
 // Every namespaced cluster join label is dropped with a VirtualNetworkNotJoinable
 // Warning on the pod, including the operator's own namespace; the bare form
 // still joins.
@@ -353,20 +372,17 @@ func TestStampedVnetKey(t *testing.T) {
 	}
 }
 
-func TestCanonicalSuffix_NamespaceFollowsBareRule(t *testing.T) {
-	if got := CanonicalSuffix("namespace", "platform"); got != "platform.namespace" {
-		t.Errorf("got %q, want platform.namespace", got)
+func TestDesiredHostPortStamps(t *testing.T) {
+	p := podWithHostPorts("p",
+		corev1.ContainerPort{HostPort: 80, Protocol: corev1.ProtocolTCP},
+		corev1.ContainerPort{HostPort: 9999, Protocol: corev1.ProtocolUDP},
+	)
+	want := map[string]bool{LabelSystemHostPortPrefix + "80.tcp": true, LabelSystemHostPortPrefix + "9999.udp": true}
+	if got := desiredHostPortStamps(p); !maps.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
-}
-
-func TestCanonicalSuffix_BareUserVnetFollowsBareRule(t *testing.T) {
-	if got := CanonicalSuffix("payments", "platform"); got != "platform.payments" {
-		t.Errorf("got %q, want platform.payments", got)
-	}
-}
-
-func TestCanonicalSuffix_FQUserVnetPassThrough(t *testing.T) {
-	if got := CanonicalSuffix("monitoring.observability", "platform"); got != "monitoring.observability" {
-		t.Errorf("got %q, want monitoring.observability", got)
+	p.Spec.HostNetwork = true
+	if got := desiredHostPortStamps(p); len(got) != 0 {
+		t.Errorf("hostNetwork pod should have no stamps, got %v", got)
 	}
 }

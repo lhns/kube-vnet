@@ -91,7 +91,7 @@ func TestClusterBaselineRules_NotFoundIsNotAnError(t *testing.T) {
 	}
 }
 
-func TestFilterPermittedRules_NotPermittedStillDropsSilently(t *testing.T) {
+func TestFilterPermittedRules_MissingVnetDroppedWithoutError(t *testing.T) {
 	scheme := resolutionSchemeForTest(t)
 	// Vnet genuinely doesn't exist → NotFound inside Permits → rule
 	// dropped, NO error. The legitimate deny path is unchanged.
