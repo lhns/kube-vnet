@@ -2,6 +2,8 @@
 
 **Status**: Accepted (2026-06-26)
 
+> **Amendment (2026-11-22) — the policy allows the containerPort, not the hostPort.** NetworkPolicy ports are evaluated on the pod after the hostPort DNAT, i.e. against the containerPort. The policy listed the hostPort, so a pod mapping 443 to 8443 stayed unreachable from outside; only equal ports (the examples below) worked. The stamp, the policy name and the hash stay keyed on `(hostPort, protocol)`, so names on existing clusters do not change. The policy's `ports` are now the `containerPort`s mapped to that key by any pod in the namespace, sorted and deduplicated, and the pod predicate also fires when a mapped `containerPort` changes. Tradeoff: when pods map one hostPort to different containerPorts (rare, e.g. mid-rollout), every stamped pod in the namespace accepts all of those containerPorts from `0.0.0.0/0` until the old pods are gone.
+
 ## Context
 
 ADR 0038 closed the external-traffic gap for Services (LoadBalancer / NodePort / ClusterIP+externalIPs) but deliberately deferred `hostPort`. The same default-deny problem applies to hostPort pods — once any `Ingress` NetworkPolicy selects them, external traffic to the node IP at the declared port is blocked — but the design needs more work than Service-source emission did:

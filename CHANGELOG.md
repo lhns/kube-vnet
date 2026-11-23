@@ -10,6 +10,15 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Fixed
+
+- Host-port policies allowed the hostPort instead of the containerPort, so pods
+  mapping different numbers (e.g. 443 → 8443) were unreachable from outside
+  the cluster. NetworkPolicy ports are evaluated after the hostPort DNAT. The
+  policy now allows the containerPort(s) mapped to each hostPort; names and
+  stamps are unchanged. Affected since host-port auto-allow ([ADR 0040](docs/adr/0040-auto-allow-hostport-pods.md))
+  was added in 0.4.0, through 0.9.1.
+
 ## [0.9.1] — 2026-11-22
 
 ### Changed

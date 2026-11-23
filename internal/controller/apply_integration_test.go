@@ -172,7 +172,7 @@ func TestIntegration_ConvergedPoliciesMatchTheirBuilders(t *testing.T) {
 	})
 
 	upToDate(hostPortPolicyName(ns, hostPortKey{port: 18090, protocol: corev1.ProtocolTCP}), func() (*networkingv1.NetworkPolicy, error) {
-		return buildHostPortPolicy(ns, hostPortKey{port: 18090, protocol: corev1.ProtocolTCP}), nil
+		return buildHostPortPolicy(ns, hostPortKey{port: 18090, protocol: corev1.ProtocolTCP}, []int32{80}), nil
 	})
 
 	// Both Service-owned kinds, owned by the live Service.

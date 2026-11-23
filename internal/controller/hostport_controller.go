@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -26,9 +27,11 @@ import (
 
 // HostPortReconciler emits one external-allow NetworkPolicy per (namespace,
 // port, protocol) that a pod declares as `hostPort` (ADR 0040), selecting
-// the host-port stamp resolution puts on those pods. Keying on the port, not
-// the pod, keeps rollouts from churning policies. A namespace opted out
-// (`kube-vnet/disabled=true` or `kube-vnet/external-allow=false`) gets none.
+// the host-port stamp resolution puts on those pods and allowing the
+// containerPort(s) mapped to it: NetworkPolicy ports are evaluated after the
+// hostPort DNAT. Keying on the port, not the pod, keeps rollouts from churning
+// policies. A namespace opted out (`kube-vnet/disabled=true` or
+// `kube-vnet/external-allow=false`) gets none.
 type HostPortReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -91,8 +94,8 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// tracking survives until an apply succeeds.
 	keep := map[client.ObjectKey]bool{}
 	var applyErrs []error
-	for key := range desiredHostPortKeys(pods.Items) {
-		pol := buildHostPortPolicy(ns.Name, key)
+	for key, containerPorts := range desiredHostPortKeys(pods.Items) {
+		pol := buildHostPortPolicy(ns.Name, key, containerPorts)
 		keep[client.ObjectKeyFromObject(pol)] = true
 		created, err := applyPolicy(ctx, r.Client, r.Client, pol)
 		if err != nil {
@@ -115,10 +118,12 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{}, errors.Join(append(applyErrs, sweepErr)...)
 }
 
-// desiredHostPortKeys returns the set of distinct (port, protocol) tuples
-// declared via hostPort on any container in any pod in the namespace.
-func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
-	out := map[hostPortKey]bool{}
+// desiredHostPortKeys returns the distinct (hostPort, protocol) tuples declared
+// on any container in any pod in the namespace, each with the sorted,
+// deduplicated containerPorts mapped to it. Several containerPorts occur while
+// pods of different revisions coexist.
+func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey][]int32 {
+	out := map[hostPortKey][]int32{}
 	for _, p := range pods {
 		if p.Spec.HostNetwork {
 			// Out of scope (ADR 0040): most CNIs don't enforce
@@ -136,22 +141,32 @@ func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey]bool {
 				if proto == "" {
 					proto = corev1.ProtocolTCP
 				}
-				out[hostPortKey{port: cp.HostPort, protocol: proto}] = true
+				key := hostPortKey{port: cp.HostPort, protocol: proto}
+				out[key] = append(out[key], cp.ContainerPort)
 			}
 		}
+	}
+	for key, ports := range out {
+		slices.Sort(ports)
+		out[key] = slices.Compact(ports)
 	}
 	return out
 }
 
-// buildHostPortPolicy constructs the policy for one (namespace, port,
-// protocol): pods carrying the matching host-port stamp accept that port
-// from `0.0.0.0/0`.
-func buildHostPortPolicy(ns string, key hostPortKey) *networkingv1.NetworkPolicy {
+// buildHostPortPolicy constructs the policy for one (namespace, hostPort,
+// protocol): pods carrying the matching host-port stamp accept the
+// containerPorts from `0.0.0.0/0`. The policy is evaluated after the hostPort
+// DNAT, so it names the containerPort, not the hostPort.
+func buildHostPortPolicy(ns string, key hostPortKey, containerPorts []int32) *networkingv1.NetworkPolicy {
+	var ports []networkingv1.NetworkPolicyPort
+	for _, p := range containerPorts {
+		ports = appendPolicyPort(ports, key.protocol, p)
+	}
 	return externalAllowPolicy(hostPortPolicyName(ns, key), ns, LabelSourceKindHost,
 		fmt.Sprintf("host-%d-%s", key.port, strings.ToLower(string(key.protocol))),
 		map[string]string{LabelSystemHostPortPrefix + key.String(): "true"},
 		"0.0.0.0/0",
-		appendPolicyPort(nil, key.protocol, key.port))
+		ports)
 }
 
 // hostPortPolicyName returns `kube-vnet.ext.host.<port>.<proto>-<8hex>`
@@ -181,14 +196,15 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// HostPortChangedPredicate fires only when a pod's derived hostPort key set
-// changes, so status updates on hostPort pods don't enqueue their namespace.
+// HostPortChangedPredicate fires only when a pod's derived hostPort key to
+// containerPorts mapping changes (the policy names the containerPorts), so
+// status updates on hostPort pods don't enqueue their namespace.
 // Deriving through desiredHostPortKeys also ignores hostNetwork pods.
 func HostPortChangedPredicate() predicate.Predicate {
-	keysOf := func(obj client.Object) map[hostPortKey]bool {
+	keysOf := func(obj client.Object) map[hostPortKey][]int32 {
 		pod, ok := obj.(*corev1.Pod)
 		if !ok || pod == nil {
-			return map[hostPortKey]bool{}
+			return map[hostPortKey][]int32{}
 		}
 		return desiredHostPortKeys([]corev1.Pod{*pod})
 	}
@@ -199,7 +215,7 @@ func HostPortChangedPredicate() predicate.Predicate {
 		DeleteFunc:  func(e event.DeleteEvent) bool { return has(e.Object) },
 		GenericFunc: func(e event.GenericEvent) bool { return has(e.Object) },
 		UpdateFunc: func(e event.UpdateEvent) bool {
-			return !maps.Equal(keysOf(e.ObjectOld), keysOf(e.ObjectNew))
+			return !maps.EqualFunc(keysOf(e.ObjectOld), keysOf(e.ObjectNew), slices.Equal[[]int32])
 		},
 	}
 }

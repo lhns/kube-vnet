@@ -56,7 +56,7 @@ func TestAllBuilders_StampStandardManagedByLabel(t *testing.T) {
 	check(t, "ext.svc", extPol.Labels)
 
 	// 4. External-allow (host source).
-	check(t, "ext.host", buildHostPortPolicy("ns", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}).Labels)
+	check(t, "ext.host", buildHostPortPolicy("ns", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}, []int32{80}).Labels)
 
 	// 5. External-allow (apiserver source).
 	webhookSvc := &corev1.Service{

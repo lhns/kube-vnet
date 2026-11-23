@@ -2,6 +2,7 @@ package controller
 
 import (
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -22,27 +23,37 @@ func TestDesiredHostPortKeys(t *testing.T) {
 	tcp := func(port int32) corev1.ContainerPort {
 		return corev1.ContainerPort{HostPort: port, ContainerPort: 80, Protocol: corev1.ProtocolTCP}
 	}
+	mapped := func(host, container int32) corev1.ContainerPort {
+		return corev1.ContainerPort{HostPort: host, ContainerPort: container, Protocol: corev1.ProtocolTCP}
+	}
 	key := func(port int32, proto corev1.Protocol) hostPortKey { return hostPortKey{port: port, protocol: proto} }
 	hostNet := podWithHostPorts("p", tcp(8080))
 	hostNet.Spec.HostNetwork = true
 	cases := []struct {
 		name string
 		pods []*corev1.Pod
-		want map[hostPortKey]bool
+		want map[hostPortKey][]int32
 	}{
-		{"single_port", []*corev1.Pod{podWithHostPorts("p", tcp(8080))}, map[hostPortKey]bool{key(8080, corev1.ProtocolTCP): true}},
+		{"single_port", []*corev1.Pod{podWithHostPorts("p", tcp(8080))}, map[hostPortKey][]int32{key(8080, corev1.ProtocolTCP): {80}}},
 		{"same_port_both_protocols", []*corev1.Pod{
 			podWithHostPorts("a", tcp(8080)),
 			podWithHostPorts("b", corev1.ContainerPort{HostPort: 8080, ContainerPort: 80, Protocol: corev1.ProtocolUDP}),
-		}, map[hostPortKey]bool{key(8080, corev1.ProtocolTCP): true, key(8080, corev1.ProtocolUDP): true}},
+		}, map[hostPortKey][]int32{key(8080, corev1.ProtocolTCP): {80}, key(8080, corev1.ProtocolUDP): {80}}},
 		{"several_ports", []*corev1.Pod{podWithHostPorts("p", tcp(80), tcp(443))},
-			map[hostPortKey]bool{key(80, corev1.ProtocolTCP): true, key(443, corev1.ProtocolTCP): true}},
-		{"no_host_port", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{ContainerPort: 80})}, map[hostPortKey]bool{}},
+			map[hostPortKey][]int32{key(80, corev1.ProtocolTCP): {80}, key(443, corev1.ProtocolTCP): {80}}},
+		{"no_host_port", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{ContainerPort: 80})}, map[hostPortKey][]int32{}},
 		// Out of scope (ADR 0040): NetworkPolicy on hostNetwork pods is
 		// CNI-dependent.
-		{"host_network_skipped", []*corev1.Pod{hostNet}, map[hostPortKey]bool{}},
-		{"protocol_defaults_to_tcp", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999})},
-			map[hostPortKey]bool{key(9999, corev1.ProtocolTCP): true}},
+		{"host_network_skipped", []*corev1.Pod{hostNet}, map[hostPortKey][]int32{}},
+		{"protocol_defaults_to_tcp", []*corev1.Pod{podWithHostPorts("p", corev1.ContainerPort{HostPort: 9999, ContainerPort: 9999})},
+			map[hostPortKey][]int32{key(9999, corev1.ProtocolTCP): {9999}}},
+		{"container_port_differs_from_host_port", []*corev1.Pod{podWithHostPorts("p", mapped(443, 8443))},
+			map[hostPortKey][]int32{key(443, corev1.ProtocolTCP): {8443}}},
+		{"container_ports_of_several_pods_sorted_and_deduped", []*corev1.Pod{
+			podWithHostPorts("a", mapped(443, 9443)),
+			podWithHostPorts("b", mapped(443, 8443)),
+			podWithHostPorts("c", mapped(443, 9443)),
+		}, map[hostPortKey][]int32{key(443, corev1.ProtocolTCP): {8443, 9443}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -50,7 +61,7 @@ func TestDesiredHostPortKeys(t *testing.T) {
 			for _, p := range c.pods {
 				pods = append(pods, *p)
 			}
-			if got := desiredHostPortKeys(pods); !maps.Equal(got, c.want) {
+			if got := desiredHostPortKeys(pods); !maps.EqualFunc(got, c.want, slices.Equal[[]int32]) {
 				t.Errorf("got %v, want %v", got, c.want)
 			}
 		})
@@ -58,7 +69,7 @@ func TestDesiredHostPortKeys(t *testing.T) {
 }
 
 func TestBuildHostPortPolicy_ShapeAndLabels(t *testing.T) {
-	pol := buildHostPortPolicy("ns1", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP})
+	pol := buildHostPortPolicy("ns1", hostPortKey{port: 8080, protocol: corev1.ProtocolTCP}, []int32{80})
 	if pol.Labels[LabelManagedBy] != LabelManagedByValue {
 		t.Errorf("missing managed-by label")
 	}
@@ -76,9 +87,9 @@ func TestBuildHostPortPolicy_ShapeAndLabels(t *testing.T) {
 	if pol.Spec.PodSelector.MatchLabels[want] != "true" {
 		t.Errorf("podSelector missing %q=true, got: %v", want, pol.Spec.PodSelector.MatchLabels)
 	}
-	// Allow on the right port + protocol.
+	// Allow the containerPort (not the hostPort 8080), on the right protocol.
 	port := pol.Spec.Ingress[0].Ports[0]
-	if port.Port.IntValue() != 8080 || *port.Protocol != corev1.ProtocolTCP {
+	if port.Port.IntValue() != 80 || *port.Protocol != corev1.ProtocolTCP {
 		t.Errorf("wrong allow port: %+v", port)
 	}
 	// ipBlock 0.0.0.0/0.
@@ -110,5 +121,22 @@ func TestDesiredHostPortStamps(t *testing.T) {
 	p.Spec.HostNetwork = true
 	if got := desiredHostPortStamps(p); len(got) != 0 {
 		t.Errorf("hostNetwork pod should have no stamps, got %v", got)
+	}
+}
+
+// NetworkPolicy ports are evaluated after the hostPort DNAT, so a 443 -> 8443
+// mapping must allow 8443 and nothing else; the key and names stay on 443.
+func TestBuildHostPortPolicy_AllowsContainerPorts(t *testing.T) {
+	key := hostPortKey{port: 443, protocol: corev1.ProtocolTCP}
+	pol := buildHostPortPolicy("ns", key, []int32{8443, 9443})
+	var got []int32
+	for _, p := range pol.Spec.Ingress[0].Ports {
+		got = append(got, int32(p.Port.IntValue()))
+	}
+	if !slices.Equal(got, []int32{8443, 9443}) {
+		t.Errorf("allowed ports = %v, want [8443 9443]", got)
+	}
+	if pol.Name != hostPortPolicyName("ns", key) || pol.Spec.PodSelector.MatchLabels[LabelSystemHostPortPrefix+"443.tcp"] != "true" {
+		t.Errorf("name and selector must stay on the hostPort, got %q %v", pol.Name, pol.Spec.PodSelector.MatchLabels)
 	}
 }
