@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-11-23
+
 ### Fixed
 
 - Host-port policies allowed the hostPort instead of the containerPort, so pods
