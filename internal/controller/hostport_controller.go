@@ -119,13 +119,18 @@ func (r *HostPortReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // desiredHostPortKeys returns the distinct (hostPort, protocol) tuples declared
 // on any container in any pod in the namespace, each with the sorted,
 // deduplicated containerPorts mapped to it. Several containerPorts occur while
-// pods of different revisions coexist.
+// pods of different revisions coexist. Finished pods (Succeeded, Failed; an
+// evicted pod lingers until deleted) never run again and don't count; Pending
+// ones may still be scheduling and do.
 func desiredHostPortKeys(pods []corev1.Pod) map[hostPortKey][]int32 {
 	out := map[hostPortKey][]int32{}
 	for _, p := range pods {
 		if p.Spec.HostNetwork {
 			// Out of scope (ADR 0040): most CNIs don't enforce
 			// NetworkPolicy on hostNetwork pods.
+			continue
+		}
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
 			continue
 		}
 		// spec.containers only, as the kubelet's port mappings: a native
@@ -193,7 +198,8 @@ func (r *HostPortReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // HostPortChangedPredicate fires only when a pod's derived hostPort key to
 // containerPorts mapping changes (the policy names the containerPorts), so
 // status updates on hostPort pods don't enqueue their namespace.
-// Deriving through desiredHostPortKeys also ignores hostNetwork pods.
+// Deriving through desiredHostPortKeys also ignores hostNetwork pods, and a
+// pod turning Succeeded/Failed fires because its keys vanish.
 func HostPortChangedPredicate() predicate.Predicate {
 	keysOf := func(obj client.Object) map[hostPortKey][]int32 {
 		pod, ok := obj.(*corev1.Pod)

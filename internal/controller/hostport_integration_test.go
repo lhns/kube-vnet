@@ -209,3 +209,53 @@ func TestIntegration_HostPort_DifferingContainerPortsAllAllowed(t *testing.T) {
 		return nil
 	})
 }
+
+// A finished pod's containerPort leaves the policy (F-17): the other pod
+// keeps its port, and the policy goes away once no live pod declares it.
+func TestIntegration_HostPort_FailedPodDropsPort(t *testing.T) {
+	ns := uniqueNS(t, "hp-failed")
+	mustCreate(t, makeNamespace(ns, nil, nil))
+	live := makeHostPortPod(ns, "live", 18093, corev1.ProtocolTCP)
+	live.Spec.Containers[0].Ports[0].ContainerPort = 8443
+	dead := makeHostPortPod(ns, "dead", 18093, corev1.ProtocolTCP)
+	dead.Spec.Containers[0].Ports[0].ContainerPort = 22
+	mustCreate(t, live)
+	mustCreate(t, dead)
+
+	name := hostPortPolicyName(ns, hostPortKey{port: 18093, protocol: corev1.ProtocolTCP})
+	eventually(t, 10*time.Second, func() error {
+		pol, err := findPolicy(context.Background(), ns, name)
+		if err != nil {
+			return err
+		}
+		if got := policyAllowedPorts(pol); !slices.Equal(got, []string{"22/TCP", "8443/TCP"}) {
+			return fmt.Errorf("allowed ports = %v, want [22/TCP 8443/TCP]", got)
+		}
+		return nil
+	})
+
+	setPhase := func(p *corev1.Pod) {
+		t.Helper()
+		if err := testClient.Get(context.Background(), client.ObjectKeyFromObject(p), p); err != nil {
+			t.Fatalf("get %s: %v", p.Name, err)
+		}
+		p.Status.Phase = corev1.PodFailed
+		if err := testClient.Status().Update(context.Background(), p); err != nil {
+			t.Fatalf("set %s Failed: %v", p.Name, err)
+		}
+	}
+	setPhase(dead)
+	eventually(t, 10*time.Second, func() error {
+		pol, err := findPolicy(context.Background(), ns, name)
+		if err != nil {
+			return err
+		}
+		if got := policyAllowedPorts(pol); !slices.Equal(got, []string{"8443/TCP"}) {
+			return fmt.Errorf("allowed ports = %v, want [8443/TCP]", got)
+		}
+		return nil
+	})
+
+	setPhase(live)
+	waitForPolicyAbsent(t, ns, name, 10*time.Second)
+}
