@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -56,6 +57,9 @@ func main() {
 		metricsAddr         string
 		probeAddr           string
 		enableLeaderElect   bool
+		leaseDuration       time.Duration
+		renewDeadline       time.Duration
+		retryPeriod         time.Duration
 		disabledNamespaces  string
 		apiserverSourceCIDR string
 		showVersion         bool
@@ -70,6 +74,14 @@ func main() {
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "metrics endpoint")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "health probe endpoint")
 	flag.BoolVar(&enableLeaderElect, "leader-elect", false, "enable leader election for HA")
+	// Defaults equal controller-runtime's. Slow apiserver storage (SQLite on an
+	// SD card) needs a longer renew deadline, or the leader loses the lease.
+	flag.DurationVar(&leaseDuration, "leader-election-lease-duration", 15*time.Second,
+		"how long a standby waits before taking over an unrenewed lease; must exceed the renew deadline")
+	flag.DurationVar(&renewDeadline, "leader-election-renew-deadline", 10*time.Second,
+		"how long the leader retries a lease renewal before giving up and exiting; must exceed 1.2 x the retry period")
+	flag.DurationVar(&retryPeriod, "leader-election-retry-period", 2*time.Second,
+		"how often leader election actions are retried")
 	flag.StringVar(&disabledNamespaces, "disabled-namespaces",
 		"kube-system",
 		"comma-separated namespaces the operator never touches: no baseline or "+
@@ -164,6 +176,9 @@ func main() {
 		Metrics:                 metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress:  probeAddr,
 		LeaderElection:          enableLeaderElect,
+		LeaseDuration:           &leaseDuration,
+		RenewDeadline:           &renewDeadline,
+		RetryPeriod:             &retryPeriod,
 		LeaderElectionID:        "kube-vnet.lhns.de",
 		LeaderElectionNamespace: operatorNS,
 		WebhookServer: webhook.NewServer(webhook.Options{
