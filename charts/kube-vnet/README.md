@@ -48,6 +48,9 @@ cosign verify ghcr.io/lhns/charts/kube-vnet:<version> \
 | `operator.clusterBaseline.ingressIsolationLevel` | `""` (required unless `memberships` is set) | Preset: `pod` \| `namespace` \| `cluster`. See ADR 0031. |
 | `operator.clusterBaseline.memberships` | `null` | Explicit override map: `<vnet-key>: <direction>`. Mutually exclusive with `ingressIsolationLevel`. |
 | `operator.leaderElect` | `true` | Enable leader election |
+| `operator.leaderElection.leaseDuration` | `""` (binary: `15s`) | Go duration; how long standbys wait before taking over an unrenewed lease. Only with `leaderElect` |
+| `operator.leaderElection.renewDeadline` | `""` (binary: `10s`) | Go duration; how long the leader retries a renewal before exiting. Raise on slow apiserver storage |
+| `operator.leaderElection.retryPeriod` | `""` (binary: `2s`) | Go duration; interval between leader-election attempts |
 | `rbac.aggregate` | `true` | Ship aggregated end-user ClusterRoles for the namespace-scoped CRDs (auto-merge into upstream `admin`/`edit`/`view`) plus an unbound editor + viewer pair for `ClusterVirtualNetworkBaseline`. Set `false` to manage all RBAC outside Helm. |
 | `cleanup.enabled` | `true` | Run a pre-delete hook that removes operator-managed NetworkPolicies on `helm uninstall`. Without it the deny-all baselines survive uninstall and keep enforcing. See ADR 0036. |
 | `cleanup.image.repository` | `registry.k8s.io/kubectl` | Image for the pre-delete hook Job |

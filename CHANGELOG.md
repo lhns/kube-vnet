@@ -10,6 +10,13 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+### Added
+
+- Leader-election timings are configurable: flags `--leader-election-lease-duration`,
+  `--leader-election-renew-deadline`, `--leader-election-retry-period` and chart values
+  `operator.leaderElection.*`. Defaults are unchanged; raise them when slow apiserver
+  storage makes the operator miss the renew deadline.
+
 ### Fixed
 
 - Host-port policies no longer count finished pods (`Succeeded`, `Failed`, e.g.

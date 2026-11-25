@@ -36,6 +36,15 @@ spec:
           args:
             {{- if .Values.operator.leaderElect }}
             - --leader-elect
+            {{- with .Values.operator.leaderElection.leaseDuration }}
+            - --leader-election-lease-duration={{ . }}
+            {{- end }}
+            {{- with .Values.operator.leaderElection.renewDeadline }}
+            - --leader-election-renew-deadline={{ . }}
+            {{- end }}
+            {{- with .Values.operator.leaderElection.retryPeriod }}
+            - --leader-election-retry-period={{ . }}
+            {{- end }}
             {{- end }}
             - --metrics-bind-address={{ .Values.operator.metricsBindAddress }}
             - --health-probe-bind-address={{ .Values.operator.healthProbeBindAddress }}
