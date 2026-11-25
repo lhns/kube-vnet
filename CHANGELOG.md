@@ -10,6 +10,8 @@ release. Pinning to an exact version is recommended.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-25
+
 ### Added
 
 - Leader-election timings are configurable: flags `--leader-election-lease-duration`,
